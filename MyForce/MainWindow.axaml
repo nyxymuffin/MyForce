@@ -8,7 +8,9 @@
         mc:Ignorable="d"
         d:DesignWidth="1366"
         d:DesignHeight="768"
-        WindowState="Maximized"
+        WindowState="FullScreen"
+        ExtendClientAreaToDecorationsHint="True"
+        ExtendClientAreaTitleBarHeightHint="-1"
         SystemDecorations="None"
         WindowStartupLocation="CenterScreen"
         Background="#2D090B"
@@ -63,10 +65,8 @@
     </Window.Styles>
 
     <Grid Background="{StaticResource ShellBrush}">
-        <Viewbox Stretch="Uniform"
-                 StretchDirection="DownOnly"
-                 HorizontalAlignment="Center"
-                 VerticalAlignment="Center">
+        <Viewbox Stretch="Fill"
+                 StretchDirection="DownOnly">
             <Grid Width="1280"
                   Height="760"
                   HorizontalAlignment="Center"
@@ -267,7 +267,8 @@
                                 Background="{StaticResource AlertBrush}"
                                 BorderBrush="{StaticResource ActiveButtonBorderBrush}"
                                 BorderThickness="2"
-                                CornerRadius="3">
+                                CornerRadius="3"
+                                PointerPressed="OnEmergencyExitPressed">
                             <Viewbox Stretch="Uniform">
                                 <TextBlock Classes="white"
                                            TextAlignment="Center"
