@@ -122,6 +122,8 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 	private static readonly decimal[] AmFmPresetStations = [88.1m, 88.1m, 88.1m, 88.1m, 88.1m, 88.1m];
 	private const string AdminPinCode = "2135";
 	private const string AudioProcessorStatusTopic = "myforce/ap/status/service";
+	private const string AudioProcessorChannelGainCommandTopic = "myforce/ap/cmd/channel-gain";
+	private const string AudioProcessorEntertainmentChannelId = "entertainment";
 	private const string GpioControllerStatusTopic = "myforce/gpio/status/service";
 	private const string SirenInterfaceStatusTopic = "myforce/siren/status/service";
 	private static readonly TimeSpan ComponentHeartbeatTimeout = TimeSpan.FromSeconds(15);
@@ -1174,6 +1176,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 	{
 		_amFmVolume = Math.Min(_amFmVolume + 1, 40);
 		SaveAmFmUiState();
+		PublishEntertainmentVolumeCommand();
 		RaiseAmFmStateChanged();
 	}
 
@@ -1181,6 +1184,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 	{
 		_amFmVolume = Math.Max(_amFmVolume - 1, 0);
 		SaveAmFmUiState();
+		PublishEntertainmentVolumeCommand();
 		RaiseAmFmStateChanged();
 	}
 
@@ -1299,7 +1303,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 				? serviceIdElement.GetString()
 				: GetComponentIdFromTopic(topic);
 			var stateLabel = root.TryGetProperty("state", out var stateElement)
-				? stateElement.ToString()
+				? GetServiceStateLabel(stateElement)
 				: string.Empty;
 			var detail = root.TryGetProperty("detail", out var detailElement)
 				? detailElement.GetString()
@@ -1373,6 +1377,18 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 	private async Task PublishInternetRadioStopCommandAsync()
 	{
 		await _mqttConnectionService.PublishAsync(InternetRadioMqttTopics.StopCommandTopic, "{}" ).ConfigureAwait(false);
+	}
+
+	/// <summary>
+	/// Publishes the local entertainment volume to the AP mixer so AM/FM and INT playback follow the UI volume controls.
+	/// </summary>
+	private void PublishEntertainmentVolumeCommand()
+	{
+		var command = new AudioChannelGainCommandMessage(
+			AudioProcessorEntertainmentChannelId,
+			MapEntertainmentVolumeToGain(_amFmVolume));
+		var payload = JsonSerializer.Serialize(command, MqttJsonSerializerOptions);
+		_ = _mqttConnectionService.PublishAsync(AudioProcessorChannelGainCommandTopic, payload);
 	}
 
 	/// <summary>
@@ -1631,6 +1647,27 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 	private static string FormatPresetLabel(decimal frequency)
 	{
 		return frequency.ToString("0.0", CultureInfo.InvariantCulture);
+	}
+
+	private static decimal MapEntertainmentVolumeToGain(int volume)
+	{
+		var normalizedVolume = Math.Clamp(volume, 0, 40);
+		return decimal.Round(normalizedVolume / 20m, 2, MidpointRounding.AwayFromZero);
+	}
+
+	private static string GetServiceStateLabel(JsonElement stateElement)
+	{
+		if (stateElement.ValueKind == JsonValueKind.Number && stateElement.TryGetInt32(out var numericState))
+		{
+			return numericState switch
+			{
+				0 => "Stopped",
+				1 => "Running",
+				_ => $"State {numericState}"
+			};
+		}
+
+		return stateElement.ToString();
 	}
 
 	private void UpdateSystemComponentStatus(string componentId, AdminComponentStatus status, string detail, string topic)

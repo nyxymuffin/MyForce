@@ -1341,70 +1341,77 @@
                           RowSpacing="16">
                         <Border IsVisible="{Binding IsAdminPinPromptVisible}"
                                 Classes="panel"
-                                Padding="20">
+                                Padding="16"
+                                MaxWidth="500"
+                                HorizontalAlignment="Center"
+                                VerticalAlignment="Center">
                             <Grid RowDefinitions="Auto,Auto,Auto,Auto,*"
-                                  RowSpacing="16">
+                                  RowSpacing="12">
                                 <TextBlock Classes="white"
-                                           FontSize="30"
+                                           FontSize="24"
+                                           HorizontalAlignment="Center"
                                            Text="ADMIN ACCESS" />
                                 <TextBlock Grid.Row="1"
                                            Classes="white"
-                                           FontSize="18"
+                                           FontSize="16"
+                                           TextAlignment="Center"
                                            TextWrapping="Wrap"
                                            Text="Enter the admin PIN to unlock configuration pages." />
                                 <Border Grid.Row="2"
                                         Classes="panel"
-                                        Padding="16">
+                                        Padding="12">
                                     <TextBlock Classes="white"
-                                               FontSize="32"
+                                               FontSize="26"
                                                TextAlignment="Center"
                                                Text="{Binding AdminPinMaskedEntry}" />
                                 </Border>
                                 <TextBlock Grid.Row="3"
                                            Classes="white"
-                                           FontSize="18"
+                                           FontSize="15"
+                                           TextAlignment="Center"
+                                           TextWrapping="Wrap"
                                            Text="{Binding AdminPinStatus}" />
                                 <Grid Grid.Row="4"
                                       ColumnDefinitions="Auto,Auto,Auto"
                                       RowDefinitions="Auto,Auto,Auto,Auto"
-                                      ColumnSpacing="12"
-                                      RowSpacing="12"
+                                       ColumnSpacing="8"
+                                       RowSpacing="8"
                                       HorizontalAlignment="Center"
                                       VerticalAlignment="Center">
-                                    <Border Grid.Row="0" Grid.Column="0" Classes="buttonFrame" Width="120" Height="88" PointerPressed="OnAdminPinDigitPressed" Tag="1">
+                                    <Border Grid.Row="0" Grid.Column="0" Classes="buttonFrame" Width="96" Height="72" PointerPressed="OnAdminPinDigitPressed" Tag="1">
                                         <Viewbox Stretch="Uniform"><TextBlock Classes="white" Text="1" /></Viewbox>
                                     </Border>
-                                    <Border Grid.Row="0" Grid.Column="1" Classes="buttonFrame" Width="120" Height="88" PointerPressed="OnAdminPinDigitPressed" Tag="2">
+                                    <Border Grid.Row="0" Grid.Column="1" Classes="buttonFrame" Width="96" Height="72" PointerPressed="OnAdminPinDigitPressed" Tag="2">
                                         <Viewbox Stretch="Uniform"><TextBlock Classes="white" Text="2" /></Viewbox>
                                     </Border>
-                                    <Border Grid.Row="0" Grid.Column="2" Classes="buttonFrame" Width="120" Height="88" PointerPressed="OnAdminPinDigitPressed" Tag="3">
+                                    <Border Grid.Row="0" Grid.Column="2" Classes="buttonFrame" Width="96" Height="72" PointerPressed="OnAdminPinDigitPressed" Tag="3">
                                         <Viewbox Stretch="Uniform"><TextBlock Classes="white" Text="3" /></Viewbox>
                                     </Border>
-                                    <Border Grid.Row="1" Grid.Column="0" Classes="buttonFrame" Width="120" Height="88" PointerPressed="OnAdminPinDigitPressed" Tag="4">
+                                    <Border Grid.Row="1" Grid.Column="0" Classes="buttonFrame" Width="96" Height="72" PointerPressed="OnAdminPinDigitPressed" Tag="4">
                                         <Viewbox Stretch="Uniform"><TextBlock Classes="white" Text="4" /></Viewbox>
                                     </Border>
-                                    <Border Grid.Row="1" Grid.Column="1" Classes="buttonFrame" Width="120" Height="88" PointerPressed="OnAdminPinDigitPressed" Tag="5">
+                                    <Border Grid.Row="1" Grid.Column="1" Classes="buttonFrame" Width="96" Height="72" PointerPressed="OnAdminPinDigitPressed" Tag="5">
                                         <Viewbox Stretch="Uniform"><TextBlock Classes="white" Text="5" /></Viewbox>
                                     </Border>
-                                    <Border Grid.Row="1" Grid.Column="2" Classes="buttonFrame" Width="120" Height="88" PointerPressed="OnAdminPinDigitPressed" Tag="6">
+                                    <Border Grid.Row="1" Grid.Column="2" Classes="buttonFrame" Width="96" Height="72" PointerPressed="OnAdminPinDigitPressed" Tag="6">
                                         <Viewbox Stretch="Uniform"><TextBlock Classes="white" Text="6" /></Viewbox>
                                     </Border>
-                                    <Border Grid.Row="2" Grid.Column="0" Classes="buttonFrame" Width="120" Height="88" PointerPressed="OnAdminPinDigitPressed" Tag="7">
+                                    <Border Grid.Row="2" Grid.Column="0" Classes="buttonFrame" Width="96" Height="72" PointerPressed="OnAdminPinDigitPressed" Tag="7">
                                         <Viewbox Stretch="Uniform"><TextBlock Classes="white" Text="7" /></Viewbox>
                                     </Border>
-                                    <Border Grid.Row="2" Grid.Column="1" Classes="buttonFrame" Width="120" Height="88" PointerPressed="OnAdminPinDigitPressed" Tag="8">
+                                    <Border Grid.Row="2" Grid.Column="1" Classes="buttonFrame" Width="96" Height="72" PointerPressed="OnAdminPinDigitPressed" Tag="8">
                                         <Viewbox Stretch="Uniform"><TextBlock Classes="white" Text="8" /></Viewbox>
                                     </Border>
-                                    <Border Grid.Row="2" Grid.Column="2" Classes="buttonFrame" Width="120" Height="88" PointerPressed="OnAdminPinDigitPressed" Tag="9">
+                                    <Border Grid.Row="2" Grid.Column="2" Classes="buttonFrame" Width="96" Height="72" PointerPressed="OnAdminPinDigitPressed" Tag="9">
                                         <Viewbox Stretch="Uniform"><TextBlock Classes="white" Text="9" /></Viewbox>
                                     </Border>
-                                    <Border Grid.Row="3" Grid.Column="0" Classes="buttonFrame" Width="120" Height="88" PointerPressed="OnAdminPinClearPressed">
+                                    <Border Grid.Row="3" Grid.Column="0" Classes="buttonFrame" Width="96" Height="72" PointerPressed="OnAdminPinClearPressed">
                                         <Viewbox Stretch="Uniform"><TextBlock Classes="white" Text="CLR" /></Viewbox>
                                     </Border>
-                                    <Border Grid.Row="3" Grid.Column="1" Classes="buttonFrame" Width="120" Height="88" PointerPressed="OnAdminPinDigitPressed" Tag="0">
+                                    <Border Grid.Row="3" Grid.Column="1" Classes="buttonFrame" Width="96" Height="72" PointerPressed="OnAdminPinDigitPressed" Tag="0">
                                         <Viewbox Stretch="Uniform"><TextBlock Classes="white" Text="0" /></Viewbox>
                                     </Border>
-                                    <Border Grid.Row="3" Grid.Column="2" Classes="buttonFrame" Width="120" Height="88" PointerPressed="OnAdminPinBackspacePressed">
+                                    <Border Grid.Row="3" Grid.Column="2" Classes="buttonFrame" Width="96" Height="72" PointerPressed="OnAdminPinBackspacePressed">
                                         <Viewbox Stretch="Uniform"><TextBlock Classes="white" Text="DEL" /></Viewbox>
                                     </Border>
                                 </Grid>

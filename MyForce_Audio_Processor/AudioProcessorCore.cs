@@ -79,6 +79,7 @@ internal sealed class AudioProcessorCoordinator : IAsyncDisposable
             }
 
             _mixerState.SetGain(command.ChannelId, command.Gain);
+            _internetRadioController.SetOutputGain(command.ChannelId, command.Gain);
             await PublishMixerStateAsync(CancellationToken.None).ConfigureAwait(false);
             return;
         }
@@ -371,6 +372,8 @@ internal sealed record AudioChannelId(string Value)
 {
     public static AudioChannelId OperatorMic { get; } = new("operator-mic");
 
+    public static AudioChannelId Entertainment { get; } = new("entertainment");
+
     public static AudioChannelId SpeakerMonitor { get; } = new("speaker-monitor");
 
     public static AudioChannelId RecorderFeed { get; } = new("recorder-feed");
@@ -442,6 +445,7 @@ internal sealed class AudioFrameworkCatalog
         var channels = new List<AudioChannelStrip>
         {
             new(AudioChannelId.OperatorMic, "Operator Mic", "operator-mic -> tx-bus", "operator", 1.0m, false, true),
+            new(AudioChannelId.Entertainment, "Entertainment", "entertainment -> speaker", "entertainment", 1.0m, false, false),
             new(AudioChannelId.SpeakerMonitor, "Speaker Monitor", "monitor-bus -> speaker", "speaker", 1.0m, false, false),
             new(AudioChannelId.RecorderFeed, "Recorder Feed", "mix-bus -> recorder", "recorder", 1.0m, false, false)
         };
@@ -467,7 +471,7 @@ internal sealed class AudioFrameworkCatalog
                 true)));
 
         var monitorBusChannels = channels
-            .Where(static channel => channel.Id == AudioChannelId.SpeakerMonitor || channel.Id.Value.EndsWith("-rx", StringComparison.Ordinal))
+            .Where(static channel => channel.Id == AudioChannelId.SpeakerMonitor || channel.Id == AudioChannelId.Entertainment || channel.Id.Value.EndsWith("-rx", StringComparison.Ordinal))
             .Select(static channel => channel.Id.Value)
             .ToArray();
 
@@ -820,6 +824,7 @@ internal sealed class InternetRadioPlaybackController : IAsyncDisposable
     private readonly HttpClient _httpClient;
     private IWavePlayer? _waveOut;
     private MediaFoundationReader? _reader;
+    private decimal _outputGain = 1.0m;
 
     public InternetRadioPlaybackController()
     {
@@ -847,6 +852,7 @@ internal sealed class InternetRadioPlaybackController : IAsyncDisposable
         _reader = new MediaFoundationReader(command.StreamUrl);
         _waveOut = new WaveOutEvent();
         _waveOut.Init(_reader);
+        ApplyCurrentOutputGain();
         _waveOut.Play();
 
         CurrentState = new InternetRadioPlaybackState(
@@ -876,6 +882,32 @@ internal sealed class InternetRadioPlaybackController : IAsyncDisposable
             Status = "STOPPED",
             Detail = "Internet radio playback stopped."
         };
+    }
+
+    /// <summary>
+    /// Applies the AP entertainment mixer gain to the active internet-radio output path.
+    /// </summary>
+    public void SetOutputGain(string channelId, decimal gain)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(channelId);
+
+        if (!string.Equals(channelId, AudioChannelId.Entertainment.Value, StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        _outputGain = decimal.Clamp(gain, 0m, 2m);
+        ApplyCurrentOutputGain();
+    }
+
+    private void ApplyCurrentOutputGain()
+    {
+        if (_waveOut is null)
+        {
+            return;
+        }
+
+        _waveOut.Volume = (float)Math.Clamp(_outputGain / 2.0m, 0m, 1.0m);
     }
 
     public ValueTask DisposeAsync()

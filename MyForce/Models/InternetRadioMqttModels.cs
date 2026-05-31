@@ -32,3 +32,10 @@ internal sealed record InternetRadioPlaybackStateMessage(
 	string? Language,
 	string Status,
 	string Detail);
+
+/// <summary>
+/// Represents a UI request to update an AP mixer channel gain.
+/// </summary>
+internal sealed record AudioChannelGainCommandMessage(
+	string ChannelId,
+	decimal Gain);
