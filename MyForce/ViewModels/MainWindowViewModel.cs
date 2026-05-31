@@ -31,6 +31,31 @@ using MyForce.Services;
 
 namespace MyForce.ViewModels;
 
+public enum AdminComponentStatus
+{
+	Unknown,
+	Online,
+	Offline,
+}
+
+public sealed record AdminSystemComponentStatus(
+	string Id,
+	string DisplayName,
+	AdminComponentStatus Status,
+	string Detail,
+	string Topic)
+{
+	/// <summary>
+	/// Gets the operator-facing status label shown in the System status page.
+	/// </summary>
+	public string StatusLabel => Status switch
+	{
+		AdminComponentStatus.Online => "ONLINE",
+		AdminComponentStatus.Offline => "OFFLINE",
+		_ => "UNKNOWN",
+	};
+}
+
 public enum MainConsoleTab
 {
 	Patrol,
@@ -45,6 +70,7 @@ public enum MainConsoleTab
 public enum AdminSection
 {
 	System,
+	SystemStatus,
 	Audio,
 	Radio,
 	Network,
@@ -94,6 +120,11 @@ public enum AuxiliaryAudioSourceMode
 public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 {
 	private static readonly decimal[] AmFmPresetStations = [88.1m, 88.1m, 88.1m, 88.1m, 88.1m, 88.1m];
+	private const string AdminPinCode = "2135";
+	private const string AudioProcessorStatusTopic = "myforce/ap/status/service";
+	private const string GpioControllerStatusTopic = "myforce/gpio/status/service";
+	private const string SirenInterfaceStatusTopic = "myforce/siren/status/service";
+	private static readonly TimeSpan ComponentHeartbeatTimeout = TimeSpan.FromSeconds(15);
 
 	private const int InternetStationViewportSize = 6;
 
@@ -184,12 +215,25 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 	private MainConsoleTab _selectedTab = MainConsoleTab.Patrol;
 
 	private bool _isAdminOverlayVisible;
+	private bool _isAdminAuthenticated;
 
 	private AdminSection _selectedAdminSection = AdminSection.System;
 
 	private string _adminSectionTitle = "SYSTEM";
 
 	private string _adminSectionDescription = "Core console configuration and startup settings will live here.";
+
+	private string _adminPinEntry = string.Empty;
+
+	private string _adminPinStatus = "Enter PIN to unlock admin controls.";
+
+	private IReadOnlyList<AdminSystemComponentStatus> _systemComponentStatuses =
+	[
+		new("ui", "Main UI", AdminComponentStatus.Online, "Local console is running.", "LOCAL"),
+		new("audio-processor", "Audio Processor", AdminComponentStatus.Unknown, "Waiting for retained MQTT status.", AudioProcessorStatusTopic),
+		new("gpio-controller", "GPIO Controller", AdminComponentStatus.Unknown, "Waiting for retained MQTT status.", GpioControllerStatusTopic),
+		new("siren-interface", "Siren Interface", AdminComponentStatus.Unknown, "Waiting for retained MQTT status.", SirenInterfaceStatusTopic),
+	];
 
 	// Tracks the currently selected directional mode.
 	private DirectionalMode _selectedDirectional = DirectionalMode.Off;
@@ -601,6 +645,61 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 		private set => SetProperty(ref _adminSectionDescription, value);
 	}
 
+	/// <summary>
+	/// Indicates whether the admin overlay is unlocked for configuration changes.
+	/// </summary>
+	public bool IsAdminAuthenticated
+	{
+		get => _isAdminAuthenticated;
+		private set => SetProperty(ref _isAdminAuthenticated, value);
+	}
+
+	/// <summary>
+	/// Indicates whether the PIN entry keypad should be shown.
+	/// </summary>
+	public bool IsAdminPinPromptVisible => IsAdminOverlayVisible && !IsAdminAuthenticated;
+
+	/// <summary>
+	/// Indicates whether the authenticated admin content should be shown.
+	/// </summary>
+	public bool IsAdminContentVisible => IsAdminOverlayVisible && IsAdminAuthenticated;
+
+	/// <summary>
+	/// Gets the masked PIN entry displayed above the virtual numpad.
+	/// </summary>
+	public string AdminPinMaskedEntry => string.IsNullOrEmpty(_adminPinEntry)
+		? "----"
+		: string.Concat(Enumerable.Repeat("*", _adminPinEntry.Length).Concat(Enumerable.Repeat("-", Math.Max(AdminPinCode.Length - _adminPinEntry.Length, 0))));
+
+	/// <summary>
+	/// Gets the current admin PIN prompt status text.
+	/// </summary>
+	public string AdminPinStatus
+	{
+		get => _adminPinStatus;
+		private set => SetProperty(ref _adminPinStatus, value);
+	}
+
+	/// <summary>
+	/// Gets the summary line shown in the System status page.
+	/// </summary>
+	public string AdminSystemStatusSummary => $"ONLINE: {SystemComponentStatuses.Count(component => component.Status == AdminComponentStatus.Online)}  OFFLINE: {SystemComponentStatuses.Count(component => component.Status == AdminComponentStatus.Offline)}  UNKNOWN: {SystemComponentStatuses.Count(component => component.Status == AdminComponentStatus.Unknown)}";
+
+	/// <summary>
+	/// Gets the component status rows displayed in the System status page.
+	/// </summary>
+	public IReadOnlyList<AdminSystemComponentStatus> SystemComponentStatuses
+	{
+		get => _systemComponentStatuses;
+		private set => SetProperty(ref _systemComponentStatuses, value);
+	}
+
+	public bool IsAdminSystemGeneralSectionSelected => SelectedAdminSection == AdminSection.System;
+
+	public bool IsAdminSystemStatusSectionSelected => SelectedAdminSection == AdminSection.SystemStatus;
+
+	public bool IsAdminNonSystemSectionSelected => !IsAdminSystemGeneralSectionSelected && !IsAdminSystemStatusSectionSelected;
+
 	// Indicates whether the left directional button is active.
 	public bool IsDirectionalLeftSelected => SelectedDirectional == DirectionalMode.Left;
 
@@ -683,12 +782,20 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 
 	public void OpenAdminOverlay()
 	{
+		_adminPinEntry = string.Empty;
+		AdminPinStatus = "Enter PIN to unlock admin controls.";
+		IsAdminAuthenticated = false;
 		IsAdminOverlayVisible = true;
+		RaiseAdminOverlayStateChanged();
 	}
 
 	public void CloseAdminOverlay()
 	{
+		_adminPinEntry = string.Empty;
+		AdminPinStatus = "Enter PIN to unlock admin controls.";
+		IsAdminAuthenticated = false;
 		IsAdminOverlayVisible = false;
+		RaiseAdminOverlayStateChanged();
 	}
 
 	public void SelectAdminSection(AdminSection section)
@@ -698,8 +805,12 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 		switch (section)
 		{
 			case AdminSection.System:
-				AdminSectionTitle = "SYSTEM";
-				AdminSectionDescription = "Core console configuration and startup settings will live here.";
+				AdminSectionTitle = "SYSTEM / GENERAL";
+				AdminSectionDescription = "General system settings and overview content live here.";
+				break;
+			case AdminSection.SystemStatus:
+				AdminSectionTitle = "SYSTEM / STATUS";
+				AdminSectionDescription = "Live component availability is shown here using retained MQTT state plus heartbeat freshness checks.";
 				break;
 			case AdminSection.Audio:
 				AdminSectionTitle = "AUDIO";
@@ -728,6 +839,75 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 			default:
 				throw new ArgumentOutOfRangeException(nameof(section), section, null);
 		}
+
+		RaiseAdminSystemStatusChanged();
+	}
+
+	/// <summary>
+	/// Adds a digit to the admin PIN entry and unlocks the admin overlay when the configured PIN is entered.
+	/// </summary>
+	public void AppendAdminPinDigit(char digit)
+	{
+		if (!char.IsDigit(digit) || IsAdminAuthenticated)
+		{
+			return;
+		}
+
+		if (_adminPinEntry.Length >= AdminPinCode.Length)
+		{
+			return;
+		}
+
+		_adminPinEntry += digit;
+		AdminPinStatus = "Enter PIN to unlock admin controls.";
+		RaiseAdminOverlayStateChanged();
+
+		if (_adminPinEntry.Length < AdminPinCode.Length)
+		{
+			return;
+		}
+
+		if (string.Equals(_adminPinEntry, AdminPinCode, StringComparison.Ordinal))
+		{
+			IsAdminAuthenticated = true;
+			AdminPinStatus = "Admin access granted.";
+			RaiseAdminOverlayStateChanged();
+			return;
+		}
+
+		_adminPinEntry = string.Empty;
+		AdminPinStatus = "Invalid PIN. Try again.";
+		RaiseAdminOverlayStateChanged();
+	}
+
+	/// <summary>
+	/// Removes the last entered admin PIN digit.
+	/// </summary>
+	public void BackspaceAdminPin()
+	{
+		if (string.IsNullOrEmpty(_adminPinEntry) || IsAdminAuthenticated)
+		{
+			return;
+		}
+
+		_adminPinEntry = _adminPinEntry[..^1];
+		AdminPinStatus = "Enter PIN to unlock admin controls.";
+		RaiseAdminOverlayStateChanged();
+	}
+
+	/// <summary>
+	/// Clears the current admin PIN entry.
+	/// </summary>
+	public void ClearAdminPin()
+	{
+		if (IsAdminAuthenticated)
+		{
+			return;
+		}
+
+		_adminPinEntry = string.Empty;
+		AdminPinStatus = "Enter PIN to unlock admin controls.";
+		RaiseAdminOverlayStateChanged();
 	}
 
 	// Toggles the directional selection, allowing the active choice to turn off.
@@ -1033,11 +1213,15 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 
 		await _mqttConnectionService.ConnectAsync(settings).ConfigureAwait(false);
 		await _mqttConnectionService.SubscribeAsync(InternetRadioMqttTopics.StateTopic).ConfigureAwait(false);
+		await _mqttConnectionService.SubscribeAsync(AudioProcessorStatusTopic).ConfigureAwait(false);
+		await _mqttConnectionService.SubscribeAsync(GpioControllerStatusTopic).ConfigureAwait(false);
+		await _mqttConnectionService.SubscribeAsync(SirenInterfaceStatusTopic).ConfigureAwait(false);
 	}
 
 	private void OnClockTimerTick(object? sender, EventArgs e)
 	{
 		UpdateClock();
+		RefreshComponentHeartbeatStatus();
 	}
 
 	private void OnMqttStateChanged(object? sender, MqttConnectionState state)
@@ -1047,6 +1231,15 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 
 	private void OnMqttMessageReceived(object? sender, MqttApplicationMessage message)
 	{
+		if (string.Equals(message.Topic, AudioProcessorStatusTopic, StringComparison.OrdinalIgnoreCase)
+			|| string.Equals(message.Topic, GpioControllerStatusTopic, StringComparison.OrdinalIgnoreCase)
+			|| string.Equals(message.Topic, SirenInterfaceStatusTopic, StringComparison.OrdinalIgnoreCase))
+		{
+			var statusPayload = message.ConvertPayloadToString();
+			Dispatcher.UIThread.Post(() => ApplyComponentStatusMessage(message.Topic, statusPayload));
+			return;
+		}
+
 		if (!string.Equals(message.Topic, InternetRadioMqttTopics.StateTopic, StringComparison.OrdinalIgnoreCase))
 		{
 			return;
@@ -1072,6 +1265,62 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 		MqttStatus = state.Status;
 		MqttEndpoint = string.IsNullOrWhiteSpace(state.Endpoint) ? "127.0.0.1:1883" : state.Endpoint;
 		MqttDetail = state.Detail;
+
+		if (state.IsConnected)
+		{
+			UpdateSystemComponentStatus("ui", AdminComponentStatus.Online, "Local console is connected to the MQTT broker.", "LOCAL");
+			return;
+		}
+
+		UpdateSystemComponentStatus("ui", AdminComponentStatus.Online, "Local console is running without broker connectivity.", "LOCAL");
+	}
+
+	/// <summary>
+	/// Applies retained service health messages so the System status page can reflect live component availability.
+	/// </summary>
+	private void ApplyComponentStatusMessage(string topic, string? payload)
+	{
+		if (string.IsNullOrWhiteSpace(topic))
+		{
+			return;
+		}
+
+		if (string.IsNullOrWhiteSpace(payload))
+		{
+			UpdateSystemComponentStatus(GetComponentIdFromTopic(topic), AdminComponentStatus.Unknown, "Status payload was empty.", topic);
+			return;
+		}
+
+		try
+		{
+			using var json = JsonDocument.Parse(payload);
+			var root = json.RootElement;
+			var serviceId = root.TryGetProperty("serviceId", out var serviceIdElement)
+				? serviceIdElement.GetString()
+				: GetComponentIdFromTopic(topic);
+			var stateLabel = root.TryGetProperty("state", out var stateElement)
+				? stateElement.ToString()
+				: string.Empty;
+			var detail = root.TryGetProperty("detail", out var detailElement)
+				? detailElement.GetString()
+				: null;
+
+			var status = string.Equals(stateLabel, "Running", StringComparison.OrdinalIgnoreCase)
+				? AdminComponentStatus.Online
+				: string.Equals(stateLabel, "Stopped", StringComparison.OrdinalIgnoreCase)
+					? AdminComponentStatus.Offline
+					: AdminComponentStatus.Unknown;
+
+			UpdateSystemComponentStatus(
+				string.IsNullOrWhiteSpace(serviceId) ? GetComponentIdFromTopic(topic) : serviceId,
+				status,
+				string.IsNullOrWhiteSpace(detail) ? $"State: {stateLabel}" : detail,
+				topic);
+		}
+		catch (JsonException)
+		{
+			UpdateSystemComponentStatus(GetComponentIdFromTopic(topic), AdminComponentStatus.Unknown, "Status payload was not valid JSON.", topic);
+		}
 	}
 
 	/// <summary>
@@ -1168,6 +1417,25 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 		PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IsAmFmContentVisible)));
 		PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IsCadContentVisible)));
 		PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IsCameraContentVisible)));
+	}
+
+	private void RaiseAdminOverlayStateChanged()
+	{
+		PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IsAdminOverlayVisible)));
+		PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IsAdminAuthenticated)));
+		PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IsAdminPinPromptVisible)));
+		PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IsAdminContentVisible)));
+		PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(AdminPinMaskedEntry)));
+		PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(AdminPinStatus)));
+	}
+
+	private void RaiseAdminSystemStatusChanged()
+	{
+		PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(SystemComponentStatuses)));
+		PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(AdminSystemStatusSummary)));
+		PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IsAdminSystemGeneralSectionSelected)));
+		PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IsAdminSystemStatusSectionSelected)));
+		PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IsAdminNonSystemSectionSelected)));
 	}
 
 	private void RaiseDirectionalStateChanged()
@@ -1363,6 +1631,118 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 	private static string FormatPresetLabel(decimal frequency)
 	{
 		return frequency.ToString("0.0", CultureInfo.InvariantCulture);
+	}
+
+	private void UpdateSystemComponentStatus(string componentId, AdminComponentStatus status, string detail, string topic)
+	{
+		ArgumentException.ThrowIfNullOrWhiteSpace(componentId);
+		ArgumentException.ThrowIfNullOrWhiteSpace(detail);
+
+		var updatedStatuses = SystemComponentStatuses
+			.Select(component => string.Equals(component.Id, componentId, StringComparison.OrdinalIgnoreCase)
+				? component with { Status = status, Detail = detail, Topic = topic }
+				: component)
+			.ToArray();
+
+		if (!updatedStatuses.Any(component => string.Equals(component.Id, componentId, StringComparison.OrdinalIgnoreCase)))
+		{
+			updatedStatuses =
+			[
+				..updatedStatuses,
+				new AdminSystemComponentStatus(componentId, GetDisplayNameFromComponentId(componentId), status, detail, topic)
+			];
+		}
+
+		SystemComponentStatuses = updatedStatuses;
+		RaiseAdminSystemStatusChanged();
+	}
+
+	/// <summary>
+	/// Downgrades stale component rows to offline when heartbeat updates stop arriving.
+	/// </summary>
+	private void RefreshComponentHeartbeatStatus()
+	{
+		var now = DateTime.UtcNow;
+		var hasChanges = false;
+		var refreshedStatuses = SystemComponentStatuses
+			.Select(component =>
+			{
+				if (string.Equals(component.Id, "ui", StringComparison.OrdinalIgnoreCase)
+					|| string.IsNullOrWhiteSpace(component.Detail))
+				{
+					return component;
+				}
+
+				if (!TryParseHeartbeatTimestamp(component.Detail, out var lastSeenUtc))
+				{
+					return component;
+				}
+
+				if (now - lastSeenUtc <= ComponentHeartbeatTimeout)
+				{
+					return component;
+				}
+
+				hasChanges = true;
+				return component with
+				{
+					Status = AdminComponentStatus.Offline,
+					Detail = $"Heartbeat timed out. Last seen {lastSeenUtc:O}",
+				};
+			})
+			.ToArray();
+
+		if (!hasChanges)
+		{
+			return;
+		}
+
+		SystemComponentStatuses = refreshedStatuses;
+		RaiseAdminSystemStatusChanged();
+	}
+
+	private static bool TryParseHeartbeatTimestamp(string detail, out DateTime lastSeenUtc)
+	{
+		const string prefix = "Heartbeat: ";
+		if (!detail.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+		{
+			lastSeenUtc = default;
+			return false;
+		}
+
+		return DateTime.TryParse(detail[prefix.Length..], CultureInfo.InvariantCulture, DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal, out lastSeenUtc);
+	}
+
+	private static string GetComponentIdFromTopic(string topic)
+	{
+		if (string.Equals(topic, AudioProcessorStatusTopic, StringComparison.OrdinalIgnoreCase))
+		{
+			return "audio-processor";
+		}
+
+		if (string.Equals(topic, GpioControllerStatusTopic, StringComparison.OrdinalIgnoreCase))
+		{
+			return "gpio-controller";
+		}
+
+		if (string.Equals(topic, SirenInterfaceStatusTopic, StringComparison.OrdinalIgnoreCase))
+		{
+			return "siren-interface";
+		}
+
+		return topic;
+	}
+
+	private static string GetDisplayNameFromComponentId(string componentId)
+	{
+		return componentId switch
+		{
+			"ui" => "Main UI",
+			"audio-processor" => "Audio Processor",
+			"gpio-controller" => "GPIO Controller",
+			"siren-interface" => "Siren Interface",
+			_ => componentId.Replace('-', ' ').ToUpperInvariant(),
+		};
 	}
 
 	private bool SetProperty<T>(ref T field, T value, [CallerMemberName] string? propertyName = null)

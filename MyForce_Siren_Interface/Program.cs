@@ -1,5 +1,6 @@
 ﻿using MQTTnet;
 using MQTTnet.Formatter;
+using System.Text.Json;
 
 var sirenInterface = new SirenInterfaceMqttApp();
 await sirenInterface.RunAsync();
@@ -7,10 +8,17 @@ await sirenInterface.RunAsync();
 internal sealed class SirenInterfaceMqttApp
 {
     private readonly MqttServiceRuntime _mqttRuntime;
+    private readonly PeriodicTimer _statusHeartbeatTimer = new(TimeSpan.FromSeconds(5));
+    private Task? _statusHeartbeatTask;
+    private readonly string _serviceStatusTopic = "myforce/siren/status/service";
+    private readonly MqttLastWillMessage _lastWillMessage;
 
     public SirenInterfaceMqttApp()
     {
-        _mqttRuntime = new MqttServiceRuntime("siren-interface");
+        var lastWillPayload = JsonSerializer.Serialize(new SirenServiceStatusPayload("siren-interface", "Stopped", "Heartbeat stopped."));
+        _lastWillMessage = new MqttLastWillMessage(_serviceStatusTopic, lastWillPayload, true);
+        _mqttRuntime = new MqttServiceRuntime("siren-interface", _lastWillMessage);
+        _mqttRuntime.SetConnectedHandler(PublishStatusAsync);
     }
 
     public async Task RunAsync()
@@ -23,8 +31,54 @@ internal sealed class SirenInterfaceMqttApp
         };
 
         await _mqttRuntime.ConnectAsync(cts.Token);
+        await PublishStatusAsync(cts.Token);
+        _statusHeartbeatTask = RunStatusHeartbeatAsync(cts.Token);
         Console.WriteLine("Siren Interface MQTT framework ready.");
         await _mqttRuntime.RunUntilStoppedAsync(cts.Token);
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        _statusHeartbeatTimer.Dispose();
+
+        if (_statusHeartbeatTask is not null)
+        {
+            try
+            {
+                await _statusHeartbeatTask.ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+            }
+        }
+
+        await _mqttRuntime.DisposeAsync().ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Publishes the Siren Interface heartbeat payload so the UI can actively monitor service freshness.
+    /// </summary>
+    private async Task PublishStatusAsync(CancellationToken cancellationToken)
+    {
+        var payload = JsonSerializer.Serialize(new SirenServiceStatusPayload(
+            ServiceId: "siren-interface",
+            State: "Running",
+            Detail: $"Heartbeat: {DateTime.UtcNow:O}"));
+        await _mqttRuntime.PublishAsync(_serviceStatusTopic, payload, retain: true, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task RunStatusHeartbeatAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            while (await _statusHeartbeatTimer.WaitForNextTickAsync(cancellationToken).ConfigureAwait(false))
+            {
+                await PublishStatusAsync(cancellationToken).ConfigureAwait(false);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+        }
     }
 }
 
@@ -33,16 +87,19 @@ internal sealed class MqttServiceRuntime : IAsyncDisposable
     private readonly IMqttClient _client;
     private readonly Lock _syncRoot = new();
     private readonly CancellationTokenSource _lifetimeCancellationTokenSource = new();
+    private readonly MqttLastWillMessage? _lastWillMessage;
     private readonly MqttServiceOptions _options;
     private readonly string _serviceName;
     private MqttClientOptions? _clientOptions;
     private Task? _reconnectTask;
     private bool _isDisposed;
     private bool _isReconnectLoopRunning;
+    private Func<CancellationToken, Task>? _connectedHandler;
 
-    public MqttServiceRuntime(string serviceName)
+    public MqttServiceRuntime(string serviceName, MqttLastWillMessage? lastWillMessage = null)
     {
         _serviceName = serviceName;
+        _lastWillMessage = lastWillMessage;
         _options = MqttServiceOptions.FromEnvironment(serviceName);
         _client = new MqttClientFactory().CreateMqttClient();
         _client.ConnectedAsync += OnConnectedAsync;
@@ -60,6 +117,14 @@ internal sealed class MqttServiceRuntime : IAsyncDisposable
             .WithTcpServer(_options.Host, _options.Port)
             .WithCleanSession();
 
+        if (_lastWillMessage is not null)
+        {
+            optionsBuilder = optionsBuilder
+                .WithWillTopic(_lastWillMessage.Topic)
+                .WithWillPayload(_lastWillMessage.Payload)
+                .WithWillRetain(_lastWillMessage.Retain);
+        }
+
         if (!string.IsNullOrWhiteSpace(_options.Username))
         {
             optionsBuilder = optionsBuilder.WithCredentials(_options.Username, _options.Password);
@@ -73,6 +138,12 @@ internal sealed class MqttServiceRuntime : IAsyncDisposable
         _clientOptions = optionsBuilder.Build();
         await TryConnectAsync(cancellationToken).ConfigureAwait(false);
         StartReconnectLoop();
+    }
+
+    public void SetConnectedHandler(Func<CancellationToken, Task> connectedHandler)
+    {
+        ArgumentNullException.ThrowIfNull(connectedHandler);
+        _connectedHandler = connectedHandler;
     }
 
     public async Task SubscribeAsync(string topicFilter, CancellationToken cancellationToken = default)
@@ -188,10 +259,26 @@ internal sealed class MqttServiceRuntime : IAsyncDisposable
         _lifetimeCancellationTokenSource.Dispose();
     }
 
-    private Task OnConnectedAsync(MqttClientConnectedEventArgs arg)
+    private async Task OnConnectedAsync(MqttClientConnectedEventArgs arg)
     {
         Console.WriteLine($"[{_serviceName}] Connected to MQTT broker at {_options.Host}:{_options.Port}.");
-        return Task.CompletedTask;
+
+        if (_connectedHandler is null)
+        {
+            return;
+        }
+
+        try
+        {
+            await _connectedHandler(_lifetimeCancellationTokenSource.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (_lifetimeCancellationTokenSource.IsCancellationRequested)
+        {
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[{_serviceName}] MQTT connected handler failed: {ex.Message}");
+        }
     }
 
     private Task OnDisconnectedAsync(MqttClientDisconnectedEventArgs arg)
@@ -288,6 +375,10 @@ internal sealed class MqttServiceRuntime : IAsyncDisposable
         }
     }
 }
+
+internal sealed record MqttLastWillMessage(string Topic, string Payload, bool Retain);
+
+internal sealed record SirenServiceStatusPayload(string ServiceId, string State, string Detail);
 
 internal sealed record MqttServiceOptions(
     string Host,

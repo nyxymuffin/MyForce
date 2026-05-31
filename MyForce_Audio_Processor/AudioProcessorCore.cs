@@ -37,6 +37,15 @@ internal sealed class AudioProcessorCoordinator : IAsyncDisposable
         await PublishBirthSnapshotAsync(cancellationToken).ConfigureAwait(false);
     }
 
+    /// <summary>
+    /// Reapplies retained subscriptions and republishes the current AP health snapshot after MQTT reconnects.
+    /// </summary>
+    public async Task HandleConnectedAsync(CancellationToken cancellationToken)
+    {
+        await _mqttRuntime.SubscribeAsync(_topics.AllCommandsTopicFilter, cancellationToken).ConfigureAwait(false);
+        await PublishHeartbeatAsync(cancellationToken).ConfigureAwait(false);
+    }
+
     public async Task HandleMessageAsync(MqttApplicationMessageReceivedEventArgs args)
     {
         ArgumentNullException.ThrowIfNull(args);
@@ -110,6 +119,14 @@ internal sealed class AudioProcessorCoordinator : IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         await _internetRadioController.DisposeAsync().ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Publishes a recurring AP heartbeat so the UI can actively detect stale component status.
+    /// </summary>
+    public async Task PublishHeartbeatAsync(CancellationToken cancellationToken)
+    {
+        await PublishStatusAsync(cancellationToken).ConfigureAwait(false);
     }
 
     private void ApplyManualPtt(ManualPttRequest request)

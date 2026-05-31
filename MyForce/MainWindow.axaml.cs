@@ -338,6 +338,11 @@ public partial class MainWindow : Window
 		SelectAdminSection(AdminSection.System);
 	}
 
+	private void OnAdminSystemStatusPressed(object? sender, PointerPressedEventArgs e)
+	{
+		SelectAdminSection(AdminSection.SystemStatus);
+	}
+
 	private void OnAdminAudioPressed(object? sender, PointerPressedEventArgs e)
 	{
 		SelectAdminSection(AdminSection.Audio);
@@ -366,6 +371,26 @@ public partial class MainWindow : Window
 	private void OnAdminDiagnosticsPressed(object? sender, PointerPressedEventArgs e)
 	{
 		SelectAdminSection(AdminSection.Diagnostics);
+	}
+
+	private void OnAdminPinDigitPressed(object? sender, PointerPressedEventArgs e)
+	{
+		if (sender is not Border { Tag: string digitText } || digitText.Length != 1)
+		{
+			return;
+		}
+
+		_viewModel.AppendAdminPinDigit(digitText[0]);
+	}
+
+	private void OnAdminPinBackspacePressed(object? sender, PointerPressedEventArgs e)
+	{
+		_viewModel.BackspaceAdminPin();
+	}
+
+	private void OnAdminPinClearPressed(object? sender, PointerPressedEventArgs e)
+	{
+		_viewModel.ClearAdminPin();
 	}
 
 	private void SelectTab(MainConsoleTab tab)

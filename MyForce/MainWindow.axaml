@@ -4,6 +4,7 @@
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         xmlns:viewModels="using:MyForce.ViewModels"
         xmlns:models="using:MyForce.Models"
+        xmlns:system="clr-namespace:System;assembly=System.Runtime"
         x:Class="MyForce.MainWindow"
         x:DataType="viewModels:MainWindowViewModel"
         mc:Ignorable="d"
@@ -1265,6 +1266,9 @@
                                         <Border Classes="buttonFrame" PointerPressed="OnAdminSystemPressed" Padding="10">
                                             <TextBlock Classes="white" Text="General" />
                                         </Border>
+                                        <Border Classes="buttonFrame" PointerPressed="OnAdminSystemStatusPressed" Padding="10">
+                                            <TextBlock Classes="white" Text="Status" />
+                                        </Border>
                                     </StackPanel>
                                 </Expander>
 
@@ -1335,23 +1339,170 @@
                         Padding="20">
                     <Grid RowDefinitions="Auto,Auto,*"
                           RowSpacing="16">
-                        <TextBlock Classes="white"
-                                   FontSize="30"
-                                   Text="{Binding AdminSectionTitle}" />
-                        <TextBlock Grid.Row="1"
-                                   Classes="white"
-                                   FontSize="18"
-                                   TextWrapping="Wrap"
-                                   Text="{Binding AdminSectionDescription}" />
-                        <Border Grid.Row="2"
+                        <Border IsVisible="{Binding IsAdminPinPromptVisible}"
                                 Classes="panel"
                                 Padding="20">
-                            <TextBlock Classes="white"
-                                       FontSize="22"
-                                       TextWrapping="Wrap"
-                                       VerticalAlignment="Center"
-                                       Text="Configuration editor placeholder. The selected admin category will render here full screen." />
+                            <Grid RowDefinitions="Auto,Auto,Auto,Auto,*"
+                                  RowSpacing="16">
+                                <TextBlock Classes="white"
+                                           FontSize="30"
+                                           Text="ADMIN ACCESS" />
+                                <TextBlock Grid.Row="1"
+                                           Classes="white"
+                                           FontSize="18"
+                                           TextWrapping="Wrap"
+                                           Text="Enter the admin PIN to unlock configuration pages." />
+                                <Border Grid.Row="2"
+                                        Classes="panel"
+                                        Padding="16">
+                                    <TextBlock Classes="white"
+                                               FontSize="32"
+                                               TextAlignment="Center"
+                                               Text="{Binding AdminPinMaskedEntry}" />
+                                </Border>
+                                <TextBlock Grid.Row="3"
+                                           Classes="white"
+                                           FontSize="18"
+                                           Text="{Binding AdminPinStatus}" />
+                                <Grid Grid.Row="4"
+                                      ColumnDefinitions="Auto,Auto,Auto"
+                                      RowDefinitions="Auto,Auto,Auto,Auto"
+                                      ColumnSpacing="12"
+                                      RowSpacing="12"
+                                      HorizontalAlignment="Center"
+                                      VerticalAlignment="Center">
+                                    <Border Grid.Row="0" Grid.Column="0" Classes="buttonFrame" Width="120" Height="88" PointerPressed="OnAdminPinDigitPressed" Tag="1">
+                                        <Viewbox Stretch="Uniform"><TextBlock Classes="white" Text="1" /></Viewbox>
+                                    </Border>
+                                    <Border Grid.Row="0" Grid.Column="1" Classes="buttonFrame" Width="120" Height="88" PointerPressed="OnAdminPinDigitPressed" Tag="2">
+                                        <Viewbox Stretch="Uniform"><TextBlock Classes="white" Text="2" /></Viewbox>
+                                    </Border>
+                                    <Border Grid.Row="0" Grid.Column="2" Classes="buttonFrame" Width="120" Height="88" PointerPressed="OnAdminPinDigitPressed" Tag="3">
+                                        <Viewbox Stretch="Uniform"><TextBlock Classes="white" Text="3" /></Viewbox>
+                                    </Border>
+                                    <Border Grid.Row="1" Grid.Column="0" Classes="buttonFrame" Width="120" Height="88" PointerPressed="OnAdminPinDigitPressed" Tag="4">
+                                        <Viewbox Stretch="Uniform"><TextBlock Classes="white" Text="4" /></Viewbox>
+                                    </Border>
+                                    <Border Grid.Row="1" Grid.Column="1" Classes="buttonFrame" Width="120" Height="88" PointerPressed="OnAdminPinDigitPressed" Tag="5">
+                                        <Viewbox Stretch="Uniform"><TextBlock Classes="white" Text="5" /></Viewbox>
+                                    </Border>
+                                    <Border Grid.Row="1" Grid.Column="2" Classes="buttonFrame" Width="120" Height="88" PointerPressed="OnAdminPinDigitPressed" Tag="6">
+                                        <Viewbox Stretch="Uniform"><TextBlock Classes="white" Text="6" /></Viewbox>
+                                    </Border>
+                                    <Border Grid.Row="2" Grid.Column="0" Classes="buttonFrame" Width="120" Height="88" PointerPressed="OnAdminPinDigitPressed" Tag="7">
+                                        <Viewbox Stretch="Uniform"><TextBlock Classes="white" Text="7" /></Viewbox>
+                                    </Border>
+                                    <Border Grid.Row="2" Grid.Column="1" Classes="buttonFrame" Width="120" Height="88" PointerPressed="OnAdminPinDigitPressed" Tag="8">
+                                        <Viewbox Stretch="Uniform"><TextBlock Classes="white" Text="8" /></Viewbox>
+                                    </Border>
+                                    <Border Grid.Row="2" Grid.Column="2" Classes="buttonFrame" Width="120" Height="88" PointerPressed="OnAdminPinDigitPressed" Tag="9">
+                                        <Viewbox Stretch="Uniform"><TextBlock Classes="white" Text="9" /></Viewbox>
+                                    </Border>
+                                    <Border Grid.Row="3" Grid.Column="0" Classes="buttonFrame" Width="120" Height="88" PointerPressed="OnAdminPinClearPressed">
+                                        <Viewbox Stretch="Uniform"><TextBlock Classes="white" Text="CLR" /></Viewbox>
+                                    </Border>
+                                    <Border Grid.Row="3" Grid.Column="1" Classes="buttonFrame" Width="120" Height="88" PointerPressed="OnAdminPinDigitPressed" Tag="0">
+                                        <Viewbox Stretch="Uniform"><TextBlock Classes="white" Text="0" /></Viewbox>
+                                    </Border>
+                                    <Border Grid.Row="3" Grid.Column="2" Classes="buttonFrame" Width="120" Height="88" PointerPressed="OnAdminPinBackspacePressed">
+                                        <Viewbox Stretch="Uniform"><TextBlock Classes="white" Text="DEL" /></Viewbox>
+                                    </Border>
+                                </Grid>
+                            </Grid>
                         </Border>
+
+                        <Grid IsVisible="{Binding IsAdminContentVisible}"
+                              RowDefinitions="Auto,Auto,*"
+                              RowSpacing="16">
+                            <TextBlock Classes="white"
+                                       FontSize="30"
+                                       Text="{Binding AdminSectionTitle}" />
+                            <TextBlock Grid.Row="1"
+                                       Classes="white"
+                                       FontSize="18"
+                                       TextWrapping="Wrap"
+                                       Text="{Binding AdminSectionDescription}" />
+                            <Border Grid.Row="2"
+                                    Classes="panel"
+                                    Padding="20">
+                                <Grid RowDefinitions="Auto,Auto,*"
+                                      RowSpacing="16">
+                                    <TextBlock IsVisible="{Binding IsAdminSystemGeneralSectionSelected}"
+                                               Classes="white"
+                                               FontSize="22"
+                                               TextWrapping="Wrap"
+                                               VerticalAlignment="Top"
+                                               Text="General system settings content will render here. Select Status under System to view live component health." />
+
+                                    <StackPanel Grid.Row="1"
+                                                IsVisible="{Binding IsAdminSystemStatusSectionSelected}"
+                                                Spacing="16">
+                                        <Border Classes="panel"
+                                                Padding="14">
+                                            <Grid ColumnDefinitions="Auto,*"
+                                                  ColumnSpacing="16">
+                                                <TextBlock Classes="white"
+                                                           FontSize="24"
+                                                           Text="SYSTEM STATUS" />
+                                                <TextBlock Grid.Column="1"
+                                                           Classes="white"
+                                                           FontSize="18"
+                                                           HorizontalAlignment="Right"
+                                                           Text="{Binding AdminSystemStatusSummary}" />
+                                            </Grid>
+                                        </Border>
+
+                                        <ItemsControl ItemsSource="{Binding SystemComponentStatuses}">
+                                            <ItemsControl.ItemTemplate>
+                                                <DataTemplate x:DataType="viewModels:AdminSystemComponentStatus">
+                                                    <Border Classes="buttonFrame"
+                                                            Margin="0,0,0,10"
+                                                            Padding="14">
+                                                        <Grid ColumnDefinitions="220,120,*,220"
+                                                              ColumnSpacing="12">
+                                                            <TextBlock Classes="white"
+                                                                       FontSize="20"
+                                                                       VerticalAlignment="Center"
+                                                                       Text="{Binding DisplayName}" />
+                                                            <Border Grid.Column="1"
+                                                                    Background="#1E1E1E"
+                                                                    BorderBrush="{StaticResource ActiveButtonBorderBrush}"
+                                                                    BorderThickness="1"
+                                                                    CornerRadius="2"
+                                                                    Padding="8,4">
+                                                                <TextBlock Classes="white"
+                                                                           FontSize="16"
+                                                                           TextAlignment="Center"
+                                                                           Text="{Binding StatusLabel}" />
+                                                            </Border>
+                                                            <TextBlock Grid.Column="2"
+                                                                       Classes="white"
+                                                                       FontSize="16"
+                                                                       TextWrapping="Wrap"
+                                                                       Text="{Binding Detail}" />
+                                                            <TextBlock Grid.Column="3"
+                                                                       Classes="white"
+                                                                       FontSize="14"
+                                                                       HorizontalAlignment="Right"
+                                                                       TextWrapping="Wrap"
+                                                                       Text="{Binding Topic}" />
+                                                        </Grid>
+                                                    </Border>
+                                                </DataTemplate>
+                                            </ItemsControl.ItemTemplate>
+                                        </ItemsControl>
+                                    </StackPanel>
+
+                                    <TextBlock Grid.Row="1"
+                                               IsVisible="{Binding IsAdminNonSystemSectionSelected}"
+                                               Classes="white"
+                                               FontSize="22"
+                                               TextWrapping="Wrap"
+                                               VerticalAlignment="Center"
+                                                Text="Configuration editor placeholder. The selected admin category will render here full screen." />
+                                </Grid>
+                            </Border>
+                        </Grid>
                     </Grid>
                 </Border>
             </Grid>

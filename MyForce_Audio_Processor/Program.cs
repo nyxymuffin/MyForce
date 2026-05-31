@@ -8,6 +8,8 @@ internal sealed class AudioProcessorMqttApp : IAsyncDisposable
 {
     private readonly MqttServiceRuntime _mqttRuntime;
     private readonly AudioProcessorCoordinator _coordinator;
+    private readonly PeriodicTimer _statusHeartbeatTimer = new(TimeSpan.FromSeconds(5));
+    private Task? _statusHeartbeatTask;
 
     public AudioProcessorMqttApp()
     {
@@ -23,6 +25,7 @@ internal sealed class AudioProcessorMqttApp : IAsyncDisposable
             serviceName: "audio-processor",
             lastWillMessage: new MqttLastWillMessage(topics.ServiceStatusTopic, lastWillPayload, true));
         _coordinator = new AudioProcessorCoordinator(_mqttRuntime, topics);
+        _mqttRuntime.SetConnectedHandler(_coordinator.HandleConnectedAsync);
         _mqttRuntime.SetMessageHandler(_coordinator.HandleMessageAsync);
     }
 
@@ -41,6 +44,7 @@ internal sealed class AudioProcessorMqttApp : IAsyncDisposable
         {
             await _mqttRuntime.ConnectAsync(cts.Token);
             await _coordinator.StartAsync(cts.Token);
+            _statusHeartbeatTask = RunStatusHeartbeatAsync(cts.Token);
             Console.WriteLine("Audio Processor basics ready.");
             await _mqttRuntime.RunUntilStoppedAsync(cts.Token);
         }
@@ -52,8 +56,35 @@ internal sealed class AudioProcessorMqttApp : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
+        _statusHeartbeatTimer.Dispose();
+
+        if (_statusHeartbeatTask is not null)
+        {
+            try
+            {
+                await _statusHeartbeatTask.ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+            }
+        }
+
         await _coordinator.DisposeAsync();
         await _mqttRuntime.DisposeAsync();
+    }
+
+    private async Task RunStatusHeartbeatAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            while (await _statusHeartbeatTimer.WaitForNextTickAsync(cancellationToken).ConfigureAwait(false))
+            {
+                await _coordinator.PublishHeartbeatAsync(cancellationToken).ConfigureAwait(false);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+        }
     }
 }
 
@@ -69,6 +100,7 @@ internal sealed class MqttServiceRuntime : IAsyncDisposable
     private Task? _reconnectTask;
     private bool _isDisposed;
     private bool _isReconnectLoopRunning;
+    private Func<CancellationToken, Task>? _connectedHandler;
     private Func<MqttApplicationMessageReceivedEventArgs, Task>? _messageHandler;
 
     public MqttServiceRuntime(string serviceName, MqttLastWillMessage? lastWillMessage = null)
@@ -119,6 +151,12 @@ internal sealed class MqttServiceRuntime : IAsyncDisposable
     {
         ArgumentNullException.ThrowIfNull(messageHandler);
         _messageHandler = messageHandler;
+    }
+
+    public void SetConnectedHandler(Func<CancellationToken, Task> connectedHandler)
+    {
+        ArgumentNullException.ThrowIfNull(connectedHandler);
+        _connectedHandler = connectedHandler;
     }
 
     public async Task SubscribeAsync(string topicFilter, CancellationToken cancellationToken = default)
@@ -230,10 +268,26 @@ internal sealed class MqttServiceRuntime : IAsyncDisposable
         _lifetimeCancellationTokenSource.Dispose();
     }
 
-    private Task OnConnectedAsync(MqttClientConnectedEventArgs arg)
+    private async Task OnConnectedAsync(MqttClientConnectedEventArgs arg)
     {
         Console.WriteLine($"[{_serviceName}] Connected to MQTT broker at {_options.Host}:{_options.Port}.");
-        return Task.CompletedTask;
+
+        if (_connectedHandler is null)
+        {
+            return;
+        }
+
+        try
+        {
+            await _connectedHandler(_lifetimeCancellationTokenSource.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (_lifetimeCancellationTokenSource.IsCancellationRequested)
+        {
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[{_serviceName}] MQTT connected handler failed: {ex.Message}");
+        }
     }
 
     private Task OnDisconnectedAsync(MqttClientDisconnectedEventArgs arg)
