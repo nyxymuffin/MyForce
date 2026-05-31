@@ -1,5 +1,6 @@
 ﻿using MQTTnet;
 using MQTTnet.Formatter;
+using Config.Net;
 
 await using var processor = new AudioProcessorMqttApp();
 await processor.RunAsync();
@@ -107,7 +108,7 @@ internal sealed class MqttServiceRuntime : IAsyncDisposable
     {
         _serviceName = serviceName;
         _lastWillMessage = lastWillMessage;
-        _options = MqttServiceOptions.FromEnvironment(serviceName);
+        _options = MqttServiceOptions.Load(serviceName);
         _client = new MqttClientFactory().CreateMqttClient();
         _client.ConnectedAsync += OnConnectedAsync;
         _client.DisconnectedAsync += OnDisconnectedAsync;
@@ -408,17 +409,54 @@ internal sealed record MqttServiceOptions(
     string? Username,
     string? Password)
 {
-    public static MqttServiceOptions FromEnvironment(string serviceName)
+    public static MqttServiceOptions Load(string serviceName)
     {
         var normalizedServiceName = serviceName.Replace(' ', '-').ToLowerInvariant();
-        var clientId = Environment.GetEnvironmentVariable("MYFORCE_MQTT_CLIENT_ID");
+        var configStore = new AudioProcessorConfigStore();
+        var clientId = configStore.StoredConfig.MqttClientId;
 
         return new MqttServiceOptions(
-            Host: Environment.GetEnvironmentVariable("MYFORCE_MQTT_HOST") ?? "127.0.0.1",
-            Port: int.TryParse(Environment.GetEnvironmentVariable("MYFORCE_MQTT_PORT"), out var port) ? port : 1883,
+            Host: string.IsNullOrWhiteSpace(configStore.StoredConfig.MqttHost) ? "127.0.0.1" : configStore.StoredConfig.MqttHost,
+            Port: int.TryParse(configStore.StoredConfig.MqttPort, out var port) ? port : 1883,
             ClientId: string.IsNullOrWhiteSpace(clientId) ? $"myforce-{normalizedServiceName}-{Environment.MachineName}" : clientId,
-            UseTls: bool.TryParse(Environment.GetEnvironmentVariable("MYFORCE_MQTT_TLS"), out var useTls) && useTls,
-            Username: Environment.GetEnvironmentVariable("MYFORCE_MQTT_USERNAME"),
-            Password: Environment.GetEnvironmentVariable("MYFORCE_MQTT_PASSWORD"));
+            UseTls: bool.TryParse(configStore.StoredConfig.MqttUseTls, out var useTls) && useTls,
+            Username: configStore.StoredConfig.MqttUsername,
+            Password: configStore.StoredConfig.MqttPassword);
     }
+}
+
+internal sealed class AudioProcessorConfigStore
+{
+    private const string ConfigFileName = "audio-processor.config.json";
+
+    public AudioProcessorConfigStore()
+    {
+        var configPath = Path.Combine(AppContext.BaseDirectory, ConfigFileName);
+        var configDirectory = Path.GetDirectoryName(configPath);
+        if (!string.IsNullOrWhiteSpace(configDirectory))
+        {
+            Directory.CreateDirectory(configDirectory);
+        }
+
+        StoredConfig = new ConfigurationBuilder<IAudioProcessorStoredConfig>()
+            .UseJsonFile(configPath)
+            .Build();
+    }
+
+    public IAudioProcessorStoredConfig StoredConfig { get; }
+}
+
+public interface IAudioProcessorStoredConfig
+{
+    string? MqttHost { get; set; }
+
+    string? MqttPort { get; set; }
+
+    string? MqttClientId { get; set; }
+
+    string? MqttUseTls { get; set; }
+
+    string? MqttUsername { get; set; }
+
+    string? MqttPassword { get; set; }
 }
