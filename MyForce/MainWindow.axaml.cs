@@ -148,22 +148,40 @@ public partial class MainWindow : Window
 	{ }
 
 	private void OnCode1Pressed(object? sender, PointerPressedEventArgs e)
-	{ }
+	{
+		// Toggle Code 1 on or off.
+		_viewModel.ToggleAlertCode(AlertCodeMode.Code1);
+	}
 
 	private void OnCode2Pressed(object? sender, PointerPressedEventArgs e)
-	{ }
+	{
+		// Toggle Code 2 on or off.
+		_viewModel.ToggleAlertCode(AlertCodeMode.Code2);
+	}
 
 	private void OnCode3Pressed(object? sender, PointerPressedEventArgs e)
-	{ }
+	{
+		// Toggle Code 3 on or off.
+		_viewModel.ToggleAlertCode(AlertCodeMode.Code3);
+	}
 
 	private void OnDirectionalLeftPressed(object? sender, PointerPressedEventArgs e)
-	{ }
+	{
+		// Toggle the left directional on or off.
+		_viewModel.ToggleDirectional(DirectionalMode.Left);
+	}
 
 	private void OnDirectionalCenterOutPressed(object? sender, PointerPressedEventArgs e)
-	{ }
+	{
+		// Toggle the center-out directional on or off.
+		_viewModel.ToggleDirectional(DirectionalMode.CenterOut);
+	}
 
 	private void OnDirectionalRightPressed(object? sender, PointerPressedEventArgs e)
-	{ }
+	{
+		// Toggle the right directional on or off.
+		_viewModel.ToggleDirectional(DirectionalMode.Right);
+	}
 
 	private void OnLightsAndSirensOffPressed(object? sender, PointerPressedEventArgs e)
 	{ }

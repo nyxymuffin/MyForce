@@ -48,6 +48,36 @@ public enum AdminSection
 	Diagnostics,
 }
 
+public enum DirectionalMode
+{
+	// Represents no active directional selection.
+	Off,
+
+	// Represents the left directional selection.
+	Left,
+
+	// Represents the center-out directional selection.
+	CenterOut,
+
+	// Represents the right directional selection.
+	Right,
+}
+
+public enum AlertCodeMode
+{
+	// Represents no active alert code selection.
+	Off,
+
+	// Represents alert code 1.
+	Code1,
+
+	// Represents alert code 2.
+	Code2,
+
+	// Represents alert code 3.
+	Code3,
+}
+
 public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 {
 	private readonly DispatcherTimer _clockTimer;
@@ -62,9 +92,11 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 
 	private string _currentRadioChannel = "CT OPS 800";
 
-	private string _alertLightSiren = "CODE 1";
+	// Stores the current alert light and siren status shown in the status panel.
+	private string _alertLightSiren = "OFF";
 
-	private string _directionalStatus = "RIGHT";
+	// Stores the current directional status shown in the status panel.
+	private string _directionalStatus = "OFF";
 
 	private string _sirenStatus = "DISABLED";
 
@@ -105,6 +137,12 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 	private string _adminSectionTitle = "SYSTEM";
 
 	private string _adminSectionDescription = "Core console configuration and startup settings will live here.";
+
+	// Tracks the currently selected directional mode.
+	private DirectionalMode _selectedDirectional = DirectionalMode.Off;
+
+	// Tracks the currently selected alert code mode.
+	private AlertCodeMode _selectedAlertCode = AlertCodeMode.Off;
 
 	public string _CurSelChExt1;
 
@@ -343,6 +381,81 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 		private set => SetProperty(ref _adminSectionDescription, value);
 	}
 
+	// Indicates whether the left directional button is active.
+	public bool IsDirectionalLeftSelected => SelectedDirectional == DirectionalMode.Left;
+
+	// Indicates whether the center-out directional button is active.
+	public bool IsDirectionalCenterOutSelected => SelectedDirectional == DirectionalMode.CenterOut;
+
+	// Indicates whether the right directional button is active.
+	public bool IsDirectionalRightSelected => SelectedDirectional == DirectionalMode.Right;
+
+	// Indicates whether the Code 1 button is active.
+	public bool IsCode1Selected => SelectedAlertCode == AlertCodeMode.Code1;
+
+	// Indicates whether the Code 2 button is active.
+	public bool IsCode2Selected => SelectedAlertCode == AlertCodeMode.Code2;
+
+	// Indicates whether the Code 3 button is active.
+	public bool IsCode3Selected => SelectedAlertCode == AlertCodeMode.Code3;
+
+	// Returns the current display text for the Code 1 button.
+	public string Code1StateText => IsCode1Selected ? "ON" : "OFF";
+
+	// Returns the current display text for the Code 2 button.
+	public string Code2StateText => IsCode2Selected ? "ON" : "OFF";
+
+	// Returns the current display text for the Code 3 button.
+	public string Code3StateText => IsCode3Selected ? "ON" : "OFF";
+
+	// Stores the selected directional mode and updates the derived UI state.
+	private DirectionalMode SelectedDirectional
+	{
+		get => _selectedDirectional;
+		set
+		{
+			if (!SetProperty(ref _selectedDirectional, value))
+			{
+				return;
+			}
+
+			DirectionalStatus = value switch
+			{
+				DirectionalMode.Off => "OFF",
+				DirectionalMode.Left => "LEFT",
+				DirectionalMode.CenterOut => "CENTER OUT",
+				DirectionalMode.Right => "RIGHT",
+				_ => throw new ArgumentOutOfRangeException(nameof(value), value, null),
+			};
+
+			RaiseDirectionalStateChanged();
+		}
+	}
+
+	// Stores the selected alert code mode and updates the derived UI state.
+	private AlertCodeMode SelectedAlertCode
+	{
+		get => _selectedAlertCode;
+		set
+		{
+			if (!SetProperty(ref _selectedAlertCode, value))
+			{
+				return;
+			}
+
+			AlertLightSiren = value switch
+			{
+				AlertCodeMode.Off => "OFF",
+				AlertCodeMode.Code1 => "CODE 1",
+				AlertCodeMode.Code2 => "CODE 2",
+				AlertCodeMode.Code3 => "CODE 3",
+				_ => throw new ArgumentOutOfRangeException(nameof(value), value, null),
+			};
+
+			RaiseAlertCodeStateChanged();
+		}
+	}
+
 	public void SelectTab(MainConsoleTab tab)
 	{
 		SelectedTab = tab;
@@ -395,6 +508,18 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 			default:
 				throw new ArgumentOutOfRangeException(nameof(section), section, null);
 		}
+	}
+
+	// Toggles the directional selection, allowing the active choice to turn off.
+	public void ToggleDirectional(DirectionalMode directional)
+	{
+		SelectedDirectional = SelectedDirectional == directional ? DirectionalMode.Off : directional;
+	}
+
+	// Toggles the alert code selection, allowing the active choice to turn off.
+	public void ToggleAlertCode(AlertCodeMode alertCode)
+	{
+		SelectedAlertCode = SelectedAlertCode == alertCode ? AlertCodeMode.Off : alertCode;
 	}
 
 	public void Dispose()
@@ -455,6 +580,23 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 		PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IsAmFmContentVisible)));
 		PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IsCadContentVisible)));
 		PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IsCameraContentVisible)));
+	}
+
+	private void RaiseDirectionalStateChanged()
+	{
+		PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IsDirectionalLeftSelected)));
+		PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IsDirectionalCenterOutSelected)));
+		PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IsDirectionalRightSelected)));
+	}
+
+	private void RaiseAlertCodeStateChanged()
+	{
+		PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IsCode1Selected)));
+		PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IsCode2Selected)));
+		PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IsCode3Selected)));
+		PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(Code1StateText)));
+		PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(Code2StateText)));
+		PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(Code3StateText)));
 	}
 
 	private bool SetProperty<T>(ref T field, T value, [CallerMemberName] string? propertyName = null)

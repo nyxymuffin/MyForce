@@ -24,6 +24,16 @@
         <SolidColorBrush x:Key="ActiveButtonBorderBrush" Color="#7DB4F0" />
         <SolidColorBrush x:Key="ActiveButtonBrush" Color="#2B71BB" />
         <SolidColorBrush x:Key="AlertBrush" Color="#96302A" />
+        <!-- Active directional flash colors. -->
+        <SolidColorBrush x:Key="DirectionalActiveBrush" Color="#F39900" />
+        <SolidColorBrush x:Key="DirectionalActiveBorderBrush" Color="#F39900" />
+        <!-- Active code button colors. -->
+        <SolidColorBrush x:Key="Code1ActiveBrush" Color="#1CFF1C" />
+        <SolidColorBrush x:Key="Code1ActiveBorderBrush" Color="#1CFF1C" />
+        <SolidColorBrush x:Key="Code2ActiveBrush" Color="#EED202" />
+        <SolidColorBrush x:Key="Code2ActiveBorderBrush" Color="#EED202" />
+        <SolidColorBrush x:Key="Code3ActiveBrush" Color="#CE2029" />
+        <SolidColorBrush x:Key="Code3ActiveBorderBrush" Color="#CE2029" />
 
         <LinearGradientBrush x:Key="PanelBrush" StartPoint="0,0" EndPoint="0,1">
             <GradientStop Color="#191919" Offset="0" />
@@ -55,6 +65,41 @@
         <Style Selector="Border.buttonFrame.active">
             <Setter Property="Background" Value="{StaticResource ActiveButtonBrush}" />
             <Setter Property="BorderBrush" Value="{StaticResource ActiveButtonBorderBrush}" />
+        </Style>
+
+        <!-- Flash the active directional selection. -->
+        <Style Selector="Border.buttonFrame.directionalActive">
+            <Setter Property="Background" Value="{StaticResource DirectionalActiveBrush}" />
+            <Setter Property="BorderBrush" Value="{StaticResource DirectionalActiveBorderBrush}" />
+            <Setter Property="Opacity" Value="1" />
+            <Style.Animations>
+                <Animation Duration="0:0:1" IterationCount="INFINITE" PlaybackDirection="Alternate">
+                    <KeyFrame Cue="0%">
+                        <Setter Property="Opacity" Value="1" />
+                    </KeyFrame>
+                    <KeyFrame Cue="100%">
+                        <Setter Property="Opacity" Value="0.35" />
+                    </KeyFrame>
+                </Animation>
+            </Style.Animations>
+        </Style>
+
+        <!-- Apply the active Code 1 color. -->
+        <Style Selector="Border.buttonFrame.code1Active">
+            <Setter Property="Background" Value="{StaticResource Code1ActiveBrush}" />
+            <Setter Property="BorderBrush" Value="{StaticResource Code1ActiveBorderBrush}" />
+        </Style>
+
+        <!-- Apply the active Code 2 color. -->
+        <Style Selector="Border.buttonFrame.code2Active">
+            <Setter Property="Background" Value="{StaticResource Code2ActiveBrush}" />
+            <Setter Property="BorderBrush" Value="{StaticResource Code2ActiveBorderBrush}" />
+        </Style>
+
+        <!-- Apply the active Code 3 color. -->
+        <Style Selector="Border.buttonFrame.code3Active">
+            <Setter Property="Background" Value="{StaticResource Code3ActiveBrush}" />
+            <Setter Property="BorderBrush" Value="{StaticResource Code3ActiveBorderBrush}" />
         </Style>
 
         <Style Selector="TextBlock.white">
@@ -558,30 +603,48 @@
                                       ColumnSpacing="6">
                                     <Grid Grid.Column="0" Width="180" Height="92" RowDefinitions="28,64">
                                         <TextBlock Classes="white" Width="180" Height="28" FontSize="18" TextAlignment="Center" Text="CODE 1" />
-                                        <Border Grid.Row="1" Classes="buttonFrame" Width="180" Height="64" PointerPressed="OnCode1Pressed">
-                                            <!-- Lights and Siren Code 1 Mode -->
-                                            <Viewbox Stretch="Fill">
-                                                <TextBlock Classes="white" TextAlignment="Center" VerticalAlignment="Center" FontSize="1" Text="OFF" />
-                                            </Viewbox>
-                                        </Border>
+                                        <Grid Grid.Row="1">
+                                            <Border Classes="buttonFrame" Width="180" Height="64" PointerPressed="OnCode1Pressed" IsVisible="{Binding !IsCode1Selected}">
+                                                <Viewbox Stretch="Fill">
+                                                    <TextBlock Classes="white" TextAlignment="Center" VerticalAlignment="Center" FontSize="1" Text="{Binding Code1StateText}" />
+                                                </Viewbox>
+                                            </Border>
+                                            <Border Classes="buttonFrame code1Active" Width="180" Height="64" PointerPressed="OnCode1Pressed" IsVisible="{Binding IsCode1Selected}">
+                                                <Viewbox Stretch="Fill">
+                                                    <TextBlock Classes="white" TextAlignment="Center" VerticalAlignment="Center" FontSize="1" Text="{Binding Code1StateText}" />
+                                                </Viewbox>
+                                            </Border>
+                                        </Grid>
                                     </Grid>
                                     <Grid Grid.Column="1" Width="180" Height="92" RowDefinitions="28,64">
                                         <TextBlock Classes="white" Width="180" Height="28" FontSize="18" TextAlignment="Center" Text="CODE 2" />
-                                        <Border Grid.Row="1" Classes="buttonFrame" Width="180" Height="64" PointerPressed="OnCode2Pressed">
-                                            <!-- Lights and Siren Code 2 Mode -->
-                                            <Viewbox Stretch="Fill">
-                                                <TextBlock Classes="white" TextAlignment="Center" VerticalAlignment="Center" FontSize="1"  Text="OFF" />
-                                            </Viewbox>
-                                        </Border>
+                                        <Grid Grid.Row="1">
+                                            <Border Classes="buttonFrame" Width="180" Height="64" PointerPressed="OnCode2Pressed" IsVisible="{Binding !IsCode2Selected}">
+                                                <Viewbox Stretch="Fill">
+                                                    <TextBlock Classes="white" TextAlignment="Center" VerticalAlignment="Center" FontSize="1" Text="{Binding Code2StateText}" />
+                                                </Viewbox>
+                                            </Border>
+                                            <Border Classes="buttonFrame code2Active" Width="180" Height="64" PointerPressed="OnCode2Pressed" IsVisible="{Binding IsCode2Selected}">
+                                                <Viewbox Stretch="Fill">
+                                                    <TextBlock Classes="white" TextAlignment="Center" VerticalAlignment="Center" FontSize="1" Text="{Binding Code2StateText}" />
+                                                </Viewbox>
+                                            </Border>
+                                        </Grid>
                                     </Grid>
                                     <Grid Grid.Column="2" Width="182" Height="92" RowDefinitions="28,64">
                                         <TextBlock Classes="white" Width="182" Height="28" FontSize="18" TextAlignment="Center" Text="CODE 3" />
-                                        <Border Grid.Row="1" Classes="buttonFrame" Width="182" Height="64" PointerPressed="OnCode3Pressed">
-                                            <!-- Lights and Siren Code 3 Mode -->
-                                            <Viewbox Stretch="Fill">
-                                                <TextBlock Classes="white" TextAlignment="Center" VerticalAlignment="Center" FontSize="1"  Text="OFF" />
-                                            </Viewbox>
-                                        </Border>
+                                        <Grid Grid.Row="1">
+                                            <Border Classes="buttonFrame" Width="182" Height="64" PointerPressed="OnCode3Pressed" IsVisible="{Binding !IsCode3Selected}">
+                                                <Viewbox Stretch="Fill">
+                                                    <TextBlock Classes="white" TextAlignment="Center" VerticalAlignment="Center" FontSize="1" Text="{Binding Code3StateText}" />
+                                                </Viewbox>
+                                            </Border>
+                                            <Border Classes="buttonFrame code3Active" Width="182" Height="64" PointerPressed="OnCode3Pressed" IsVisible="{Binding IsCode3Selected}">
+                                                <Viewbox Stretch="Fill">
+                                                    <TextBlock Classes="white" TextAlignment="Center" VerticalAlignment="Center" FontSize="1" Text="{Binding Code3StateText}" />
+                                                </Viewbox>
+                                            </Border>
+                                        </Grid>
                                     </Grid>
                                 </Grid>
                             </Border>
@@ -600,23 +663,44 @@
                                           ColumnDefinitions="180,180,182"
                                           ColumnSpacing="6">
                                         <!-- Directional Left -->
-                                        <Border Grid.Column="0" Classes="buttonFrame" Width="180" Height="58" PointerPressed="OnDirectionalLeftPressed">
-                                            <Viewbox Stretch="Uniform">
-                                                <TextBlock Classes="white" TextAlignment="Center" VerticalAlignment="Center" Text="◀" />
-                                            </Viewbox>
-                                        </Border>
+                                        <Grid Grid.Column="0">
+                                            <Border Classes="buttonFrame" Width="180" Height="58" PointerPressed="OnDirectionalLeftPressed" IsVisible="{Binding !IsDirectionalLeftSelected}">
+                                                <Viewbox Stretch="Uniform">
+                                                    <TextBlock Classes="white" TextAlignment="Center" VerticalAlignment="Center" Text="◀" />
+                                                </Viewbox>
+                                            </Border>
+                                            <Border Classes="buttonFrame directionalActive" Width="180" Height="58" PointerPressed="OnDirectionalLeftPressed" IsVisible="{Binding IsDirectionalLeftSelected}">
+                                                <Viewbox Stretch="Uniform">
+                                                    <TextBlock Classes="white" TextAlignment="Center" VerticalAlignment="Center" Text="◀" />
+                                                </Viewbox>
+                                            </Border>
+                                        </Grid>
                                         <!-- Directional CenterOut -->
-                                        <Border Grid.Column="1" Classes="buttonFrame" Width="180" Height="58" PointerPressed="OnDirectionalCenterOutPressed">
-                                            <Viewbox Stretch="Uniform">
-                                                <TextBlock Classes="white" TextAlignment="Center" VerticalAlignment="Center" Text="◀▶" />
-                                            </Viewbox>
-                                        </Border>
+                                        <Grid Grid.Column="1">
+                                            <Border Classes="buttonFrame" Width="180" Height="58" PointerPressed="OnDirectionalCenterOutPressed" IsVisible="{Binding !IsDirectionalCenterOutSelected}">
+                                                <Viewbox Stretch="Uniform">
+                                                    <TextBlock Classes="white" TextAlignment="Center" VerticalAlignment="Center" Text="◀▶" />
+                                                </Viewbox>
+                                            </Border>
+                                            <Border Classes="buttonFrame directionalActive" Width="180" Height="58" PointerPressed="OnDirectionalCenterOutPressed" IsVisible="{Binding IsDirectionalCenterOutSelected}">
+                                                <Viewbox Stretch="Uniform">
+                                                    <TextBlock Classes="white" TextAlignment="Center" VerticalAlignment="Center" Text="◀▶" />
+                                                </Viewbox>
+                                            </Border>
+                                        </Grid>
                                         <!-- Directional Right -->
-                                        <Border Grid.Column="2" Classes="buttonFrame" Width="182" Height="58" PointerPressed="OnDirectionalRightPressed">
-                                            <Viewbox Stretch="Uniform">
-                                                <TextBlock Classes="white" TextAlignment="Center" VerticalAlignment="Center" Text="▶" />
-                                            </Viewbox>
-                                        </Border>
+                                        <Grid Grid.Column="2">
+                                            <Border Classes="buttonFrame" Width="182" Height="58" PointerPressed="OnDirectionalRightPressed" IsVisible="{Binding !IsDirectionalRightSelected}">
+                                                <Viewbox Stretch="Uniform">
+                                                    <TextBlock Classes="white" TextAlignment="Center" VerticalAlignment="Center" Text="▶" />
+                                                </Viewbox>
+                                            </Border>
+                                            <Border Classes="buttonFrame directionalActive" Width="182" Height="58" PointerPressed="OnDirectionalRightPressed" IsVisible="{Binding IsDirectionalRightSelected}">
+                                                <Viewbox Stretch="Uniform">
+                                                    <TextBlock Classes="white" TextAlignment="Center" VerticalAlignment="Center" Text="▶" />
+                                                </Viewbox>
+                                            </Border>
+                                        </Grid>
                                     </Grid>
                                 </Grid>
                             </Border>
