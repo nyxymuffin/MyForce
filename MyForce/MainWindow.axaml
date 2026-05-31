@@ -88,6 +88,7 @@
                                        FontSize="18"
                                        TextAlignment="Center"
                                        Text="{Binding SpeedLabel}" />
+                            <!-- Speed Information -->
                             <TextBlock Width="89"
                                        Height="42"
                                        Foreground="{StaticResource SignalBrush}"
@@ -107,6 +108,7 @@
                                        FontSize="18"
                                        TextAlignment="Center"
                                        Text="{Binding LocationLabel}" />
+                            <!-- Location Information -->
                             <TextBlock Width="176"
                                        Height="42"
                                        Foreground="{StaticResource SignalBrush}"
@@ -123,11 +125,13 @@
 
                 <Border Grid.Row="1" Classes="panel" Width="304" Height="180" Padding="12">
                     <Grid RowDefinitions="35,29,87" RowSpacing="0">
+                        <!-- Current Radio -->
                         <TextBlock Classes="white"
                                    Height="35"
                                    FontSize="18"
                                    VerticalAlignment="Center"
                                    Text="{Binding CurrentTalkRadio, StringFormat='TALK RADIO: {0}'}" />
+                        <!-- Current Channel Channel -->
                         <TextBlock Grid.Row="1"
                                    Classes="white"
                                    Height="29"
@@ -141,24 +145,27 @@
                               ColumnSpacing="6"
                               HorizontalAlignment="Left"
                               VerticalAlignment="Bottom">
-                            <Border Grid.Column="0" Classes="buttonFrame" Width="86" Height="81">
+                            <Border Grid.Column="0" Classes="buttonFrame" Width="86" Height="81" PointerPressed="OnChannelUpPressed">
                                 <Viewbox Stretch="Uniform">
+                                    <!-- Current Channel Channel Up -->
                                     <TextBlock Classes="white"
                                                TextAlignment="Center"
                                                VerticalAlignment="Center"
                                                Text="CH UP" />
                                 </Viewbox>
                             </Border>
-                            <Border Grid.Column="1" Classes="buttonFrame" Width="86" Height="81">
+                            <Border Grid.Column="1" Classes="buttonFrame" Width="86" Height="81" PointerPressed="OnChannelDownPressed">
                                 <Viewbox Stretch="Uniform">
+                                    <!-- Current Channel Channel Down -->
                                     <TextBlock Classes="white"
                                                TextAlignment="Center"
                                                VerticalAlignment="Center"
                                                Text="CH DN" />
                                 </Viewbox>
                             </Border>
-                            <Border Grid.Column="2" Classes="buttonFrame" Width="88" Height="81">
+                            <Border Grid.Column="2" Classes="buttonFrame" Width="88" Height="81" PointerPressed="OnScanPressed">
                                 <Viewbox Stretch="Uniform">
+                                    <!-- Current Selected Channel Scan Button -->
                                     <TextBlock Classes="white"
                                                TextAlignment="Center"
                                                VerticalAlignment="Center"
@@ -196,19 +203,22 @@
                           RowDefinitions="24,18,18,18"
                           RowSpacing="0"
                           VerticalAlignment="Center">
+                        <!-- Selected Radio Extra Info 1 -->
                         <TextBlock Classes="white"
                                    Width="278"
                                    Height="24"
                                    FontSize="13"
                                    TextAlignment="Center"
-                                   Text="{Binding CadMessage}" />
+                                   Text="{Binding CurSelChExt1}" />
+                        <!-- Selected Radio Extra Info 2 -->
                         <TextBlock Grid.Row="1"
                                    Classes="white"
                                    Width="278"
                                    Height="18"
                                    FontSize="12"
                                    TextAlignment="Center"
-                                   Text="{Binding MqttStatus, StringFormat='MQTT: {0}'}" />
+                                   Text="{Binding CurSelChExt2}" />
+                        <!-- Selected Radio Extra Info 3 -->
                         <TextBlock Grid.Row="2"
                                    Width="278"
                                    Height="18"
@@ -217,14 +227,15 @@
                                    FontWeight="Bold"
                                    FontSize="12"
                                    TextAlignment="Center"
-                                   Text="{Binding MqttEndpoint}" />
+                                   Text="{Binding CurSelChExt3}" />
+                        <!-- Selected Radio Extra Info 4 -->
                         <TextBlock Grid.Row="3"
                                    Classes="white"
                                    Width="278"
                                    Height="18"
                                    FontSize="11"
                                    TextAlignment="Center"
-                                   Text="{Binding MqttDetail}" />
+                                   Text="{Binding CurSelChExt4}" />
                     </Grid>
                 </Border>
 
@@ -234,7 +245,8 @@
                           ColumnDefinitions="86,86,88"
                           ColumnSpacing="6"
                           VerticalAlignment="Bottom">
-                        <Border Grid.Column="0" Classes="buttonFrame" Width="86" Height="93">
+                        <!-- Camera Start Rec Button -->
+                        <Border Grid.Column="0" Classes="buttonFrame" Width="86" Height="93" PointerPressed="OnCameraRecordPressed">
                             <Viewbox Stretch="Uniform">
                                 <TextBlock Classes="white"
                                            TextAlignment="Center"
@@ -242,7 +254,8 @@
                                            Text="REC" />
                             </Viewbox>
                         </Border>
-                        <Border Grid.Column="1" Classes="buttonFrame" Width="86" Height="93">
+                        <!-- Camera Stop Rec Button -->
+                        <Border Grid.Column="1" Classes="buttonFrame" Width="86" Height="93" PointerPressed="OnCameraStopPressed">
                             <Viewbox Stretch="Uniform">
                                 <TextBlock Classes="white"
                                            TextAlignment="Center"
@@ -250,7 +263,8 @@
                                            Text="STOP" />
                             </Viewbox>
                         </Border>
-                        <Border Grid.Column="2" Classes="buttonFrame" Width="88" Height="93">
+                        <!-- Front Camera Auto Zoom -->
+                        <Border Grid.Column="2" Classes="buttonFrame" Width="88" Height="93" PointerPressed="OnCameraAutoZoomPressed">
                             <Viewbox Stretch="Uniform">
                                 <TextBlock Classes="white"
                                            TextAlignment="Center"
@@ -261,11 +275,13 @@
                     </Grid>
                 </Border>
 
+
                 <Border Grid.Row="5" Classes="panel" Width="298" Height="88" Padding="8">
                     <Grid Width="280"
                           Height="70"
                           ColumnDefinitions="128,65,69"
                           ColumnSpacing="6">
+                        <!-- Clock and Date -->
                         <StackPanel Width="128" Height="64" Spacing="0">
                             <TextBlock Classes="white"
                                        Width="128"
@@ -284,6 +300,7 @@
                                        Text="{Binding Date}" />
                         </StackPanel>
 
+                        <!-- Current Channel Volume -->
                         <StackPanel Grid.Column="1" Width="65" Height="64" Spacing="0">
                             <TextBlock Classes="white"
                                        Width="65"
@@ -308,7 +325,7 @@
                                 BorderBrush="{StaticResource ActiveButtonBorderBrush}"
                                 BorderThickness="2"
                                 CornerRadius="3"
-                                PointerPressed="OnEmergencyExitPressed">
+                                 PointerPressed="OnEmergencyPressed">
                             <Viewbox Stretch="Uniform">
                                 <TextBlock Classes="white"
                                            TextAlignment="Center"
@@ -336,37 +353,44 @@
                           Height="66"
                           ColumnDefinitions="125,125,125,125,125,125,131"
                           ColumnSpacing="6">
-                        <Border Grid.Column="0" Classes="buttonFrame active" Width="125" Height="58" VerticalAlignment="Top">
+                        <Border Grid.Column="0" Classes="buttonFrame active" Width="125" Height="58" VerticalAlignment="Top" PointerPressed="OnPatrolTabPressed">
+                            <!-- Dashboard Tab Button -->
                             <Viewbox Stretch="Uniform">
                                 <TextBlock Classes="white" TextAlignment="Center" VerticalAlignment="Center" Text="PATROL" />
                             </Viewbox>
                         </Border>
-                        <Border Grid.Column="1" Classes="buttonFrame" Width="125" Height="58" VerticalAlignment="Top">
+                        <Border Grid.Column="1" Classes="buttonFrame" Width="125" Height="58" VerticalAlignment="Top" PointerPressed="OnLightsAndSirensTabPressed">
+                            <!-- Lights and Sirens Tab Button -->
                             <Viewbox Stretch="Uniform">
                                 <TextBlock Classes="white" TextAlignment="Center" VerticalAlignment="Center" Text="L / S" />
                             </Viewbox>
                         </Border>
-                        <Border Grid.Column="2" Classes="buttonFrame" Width="125" Height="58" VerticalAlignment="Top">
+                        <Border Grid.Column="2" Classes="buttonFrame" Width="125" Height="58" VerticalAlignment="Top" PointerPressed="OnRadioTabPressed">
+                            <!-- RADIO Tab Button -->
                             <Viewbox Stretch="Uniform">
                                 <TextBlock Classes="white" TextAlignment="Center" VerticalAlignment="Center" Text="RADIO" />
                             </Viewbox>
                         </Border>
-                        <Border Grid.Column="3" Classes="buttonFrame" Width="125" Height="58" VerticalAlignment="Top">
+                        <Border Grid.Column="3" Classes="buttonFrame" Width="125" Height="58" VerticalAlignment="Top" PointerPressed="OnRadarTabPressed">
+                            <!-- RADAR Tab Button -->
                             <Viewbox Stretch="Uniform">
                                 <TextBlock Classes="white" TextAlignment="Center" VerticalAlignment="Center" Text="RADAR" />
                             </Viewbox>
                         </Border>
-                        <Border Grid.Column="4" Classes="buttonFrame" Width="125" Height="58" VerticalAlignment="Top">
+                        <Border Grid.Column="4" Classes="buttonFrame" Width="125" Height="58" VerticalAlignment="Top" PointerPressed="OnAmFmTabPressed">
+                            <!-- AM/FM Tab Button -->
                             <Viewbox Stretch="Uniform">
                                 <TextBlock Classes="white" TextAlignment="Center" VerticalAlignment="Center" Text="AM/FM" />
                             </Viewbox>
                         </Border>
-                        <Border Grid.Column="5" Classes="buttonFrame" Width="125" VerticalAlignment="Top">
+                        <Border Grid.Column="5" Classes="buttonFrame" Width="125" VerticalAlignment="Top" PointerPressed="OnCadTabPressed">
+                            <!-- CAD Tab Button -->
                             <Viewbox Width="125" Height="53" Stretch="Uniform">
                                 <TextBlock Classes="white" TextAlignment="Center" VerticalAlignment="Center" Text="CAD" />
                             </Viewbox>
                         </Border>
-                        <Border Grid.Column="6" Classes="buttonFrame" Width="131" Height="58" VerticalAlignment="Top">
+                        <Border Grid.Column="6" Classes="buttonFrame" Width="131" Height="58" VerticalAlignment="Top" PointerPressed="OnCameraTabPressed">
+                            <!-- Camera Tab Button -->
                             <Viewbox Stretch="Uniform">
                                 <TextBlock Classes="white" TextAlignment="Center" VerticalAlignment="Center" Text="CAMERA" />
                             </Viewbox>
@@ -385,6 +409,7 @@
                                   RowSpacing="10">
                                 <Border Grid.Row="0" Classes="panel" Width="304" Height="223" Padding="10">
                                     <StackPanel Width="282" Height="204" Spacing="0">
+                                        <!-- Radio Current Channel List -->
                                         <TextBlock Classes="white" Width="282" Height="34" FontSize="18" Text="{Binding Radio1ChannelName, StringFormat='RADIO 1: {0}'}" />
                                         <TextBlock Classes="white" Width="282" Height="34" FontSize="18" Text="{Binding Radio2ChannelName, StringFormat='RADIO 2: {0}'}" />
                                         <TextBlock Classes="white" Width="282" Height="34" FontSize="18" Text="{Binding Radio3ChannelName, StringFormat='RADIO 3: {0}'}" />
@@ -409,22 +434,26 @@
                                               RowDefinitions="86,86"
                                               ColumnSpacing="6"
                                               RowSpacing="6">
-                                            <Border Grid.Row="0" Grid.Column="0" Classes="buttonFrame" Width="135" Height="86">
+                                            <!-- Prox Channel Button 1 -->
+                                            <Border Grid.Row="0" Grid.Column="0" Classes="buttonFrame" Width="135" Height="86" PointerPressed="OnProximityChannel1Pressed">
                                                 <Viewbox Stretch="Uniform">
                                                     <TextBlock Classes="white" TextAlignment="Center" VerticalAlignment="Center" FontSize="1" Text="{Binding ProximityChannel1}" />
                                                 </Viewbox>
                                             </Border>
-                                            <Border Grid.Row="0" Grid.Column="1" Classes="buttonFrame" Width="135" Height="86">
+                                            <!-- Prox Channel Button 2 -->
+                                            <Border Grid.Row="0" Grid.Column="1" Classes="buttonFrame" Width="135" Height="86" PointerPressed="OnProximityChannel2Pressed">
                                                 <Viewbox Stretch="Uniform">
                                                     <TextBlock Classes="white" TextAlignment="Center" VerticalAlignment="Center" FontSize="1" Text="{Binding ProximityChannel2}" />
                                                 </Viewbox>
                                             </Border>
-                                            <Border Grid.Row="1" Grid.Column="0" Classes="buttonFrame" Width="135" Height="86">
+                                            <!-- Prox Channel Button 3 -->
+                                            <Border Grid.Row="1" Grid.Column="0" Classes="buttonFrame" Width="135" Height="86" PointerPressed="OnProximityChannel3Pressed">
                                                 <Viewbox Stretch="Uniform">
                                                     <TextBlock Classes="white" TextAlignment="Center" VerticalAlignment="Center" FontSize="1" Text="{Binding ProximityChannel3}" />
                                                 </Viewbox>
                                             </Border>
-                                            <Border Grid.Row="1" Grid.Column="1" Classes="buttonFrame" Width="135" Height="86">
+                                            <!-- Prox Channel Button 4 -->
+                                            <Border Grid.Row="1" Grid.Column="1" Classes="buttonFrame" Width="135" Height="86" PointerPressed="OnProximityChannel4Pressed">
                                                 <Viewbox Stretch="Uniform">
                                                     <TextBlock Classes="white" TextAlignment="Center" VerticalAlignment="Center" FontSize="1" Text="{Binding ProximityChannel4}" />
                                                 </Viewbox>
@@ -446,12 +475,14 @@
                                               Height="78"
                                               ColumnDefinitions="132,132"
                                               ColumnSpacing="6">
-                                            <Border Grid.Column="0" Classes="buttonFrame" Width="132" Height="72">
+                                            <!-- Current Channel Volume Up -->
+                                            <Border Grid.Column="0" Classes="buttonFrame" Width="132" Height="72" PointerPressed="OnVolumeUpPressed">
                                                 <Viewbox Stretch="Uniform">
                                                     <TextBlock Classes="white" TextAlignment="Center" VerticalAlignment="Center" Text="▲" />
                                                 </Viewbox>
                                             </Border>
-                                            <Border Grid.Column="1" Classes="buttonFrame" Width="132" Height="72">
+                                            <!-- Current Channel Volume Down -->
+                                            <Border Grid.Column="1" Classes="buttonFrame" Width="132" Height="72" PointerPressed="OnVolumeDownPressed">
                                                 <Viewbox Stretch="Uniform">
                                                     <TextBlock Classes="white" TextAlignment="Center" VerticalAlignment="Center" Text="▼" />
                                                 </Viewbox>
@@ -474,7 +505,8 @@
                                       ColumnSpacing="6">
                                     <Grid Grid.Column="0" Width="180" Height="92" RowDefinitions="28,64">
                                         <TextBlock Classes="white" Width="180" Height="28" FontSize="18" TextAlignment="Center" Text="CODE 1" />
-                                        <Border Grid.Row="1" Classes="buttonFrame active" Width="180" Height="64">
+                                        <Border Grid.Row="1" Classes="buttonFrame active" Width="180" Height="64" PointerPressed="OnCode1Pressed">
+                                            <!-- Lights and Siren Code 1 Mode -->
                                             <Viewbox Stretch="Fill">
                                                 <TextBlock Classes="white" TextAlignment="Center" VerticalAlignment="Center" FontSize="1" Text="ON" />
                                             </Viewbox>
@@ -482,7 +514,8 @@
                                     </Grid>
                                     <Grid Grid.Column="1" Width="180" Height="92" RowDefinitions="28,64">
                                         <TextBlock Classes="white" Width="180" Height="28" FontSize="18" TextAlignment="Center" Text="CODE 2" />
-                                        <Border Grid.Row="1" Classes="buttonFrame" Width="180" Height="64">
+                                        <Border Grid.Row="1" Classes="buttonFrame" Width="180" Height="64" PointerPressed="OnCode2Pressed">
+                                            <!-- Lights and Siren Code 2 Mode -->
                                             <Viewbox Stretch="Fill">
                                                 <TextBlock Classes="white" TextAlignment="Center" VerticalAlignment="Center" FontSize="1"  Text="OFF" />
                                             </Viewbox>
@@ -490,7 +523,8 @@
                                     </Grid>
                                     <Grid Grid.Column="2" Width="182" Height="92" RowDefinitions="28,64">
                                         <TextBlock Classes="white" Width="182" Height="28" FontSize="18" TextAlignment="Center" Text="CODE 3" />
-                                        <Border Grid.Row="1" Classes="buttonFrame" Width="182" Height="64">
+                                        <Border Grid.Row="1" Classes="buttonFrame" Width="182" Height="64" PointerPressed="OnCode3Pressed">
+                                            <!-- Lights and Siren Code 3 Mode -->
                                             <Viewbox Stretch="Fill">
                                                 <TextBlock Classes="white" TextAlignment="Center" VerticalAlignment="Center" FontSize="1"  Text="OFF" />
                                             </Viewbox>
@@ -512,17 +546,20 @@
                                           Height="64"
                                           ColumnDefinitions="180,180,182"
                                           ColumnSpacing="6">
-                                        <Border Grid.Column="0" Classes="buttonFrame" Width="180" Height="58">
+                                        <!-- Directional Left -->
+                                        <Border Grid.Column="0" Classes="buttonFrame" Width="180" Height="58" PointerPressed="OnDirectionalLeftPressed">
                                             <Viewbox Stretch="Uniform">
                                                 <TextBlock Classes="white" TextAlignment="Center" VerticalAlignment="Center" Text="◀" />
                                             </Viewbox>
                                         </Border>
-                                        <Border Grid.Column="1" Classes="buttonFrame" Width="180" Height="58">
+                                        <!-- Directional CenterOut -->
+                                        <Border Grid.Column="1" Classes="buttonFrame" Width="180" Height="58" PointerPressed="OnDirectionalCenterOutPressed">
                                             <Viewbox Stretch="Uniform">
                                                 <TextBlock Classes="white" TextAlignment="Center" VerticalAlignment="Center" Text="◀▶" />
                                             </Viewbox>
                                         </Border>
-                                        <Border Grid.Column="2" Classes="buttonFrame active" Width="182" Height="58">
+                                        <!-- Directional Right -->
+                                        <Border Grid.Column="2" Classes="buttonFrame active" Width="182" Height="58" PointerPressed="OnDirectionalRightPressed">
                                             <Viewbox Stretch="Uniform">
                                                 <TextBlock Classes="white" TextAlignment="Center" VerticalAlignment="Center" Text="▶" />
                                             </Viewbox>
@@ -545,13 +582,14 @@
                                                        FontSize="20"
                                                        TextAlignment="Center"
                                                        Text="L / S" />
-                                            <Border Grid.Row="1" Classes="buttonFrame" Width="157" Height="130">
+                                            <Border Grid.Row="1" Classes="buttonFrame" Width="157" Height="130" PointerPressed="OnLightsAndSirensOffPressed">
                                                 <Grid>
                                                     <Viewbox Stretch="Uniform"
                                                              HorizontalAlignment="Center"
                                                              VerticalAlignment="Center"
                                                              MaxWidth="130"
                                                              MaxHeight="104">
+                                                        <!-- Lights And Sirens off -->
                                                         <TextBlock Classes="white"
                                                                    TextAlignment="Center"
                                                                    VerticalAlignment="Center"
@@ -562,6 +600,7 @@
                                         </Grid>
                                     </Border>
 
+                                    <!-- Siren Radio External Audio -->
                                     <Border Grid.Row="1" Classes="panel" Width="175" Height="185" Padding="8">
                                         <Grid Width="157" Height="167" RowDefinitions="28,139">
                                             <TextBlock Classes="white"
@@ -570,7 +609,7 @@
                                                        FontSize="13.333"
                                                        TextAlignment="Center"
                                                        Text="EXT AUDIO" />
-                                            <Border Grid.Row="1" Classes="buttonFrame" Width="157" Height="139">
+                                            <Border Grid.Row="1" Classes="buttonFrame" Width="157" Height="139" PointerPressed="OnExternalAudioPressed">
                                                 <Grid>
                                                     <Viewbox Stretch="Uniform"
                                                              HorizontalAlignment="Center"
@@ -588,6 +627,7 @@
                                     </Border>
                                 </Grid>
 
+                                <!-- Voice Memo -->
                                 <Border Grid.Column="1" Classes="panel" Width="183" Height="179" Padding="8" VerticalAlignment="Top">
                                     <Grid Width="165" Height="161" RowDefinitions="28,133">
                                         <TextBlock Classes="white"
@@ -596,7 +636,7 @@
                                                    FontSize="18"
                                                    TextAlignment="Center"
                                                    Text="MEMO" />
-                                        <Border Grid.Row="1" Classes="buttonFrame" Width="165" Height="133">
+                                        <Border Grid.Row="1" Classes="buttonFrame" Width="165" Height="133" PointerPressed="OnMemoRecordPressed">
                                             <Grid>
                                                 <Viewbox Stretch="Uniform"
                                                          HorizontalAlignment="Center"
@@ -613,6 +653,7 @@
                                     </Grid>
                                 </Border>
 
+                                <!-- Vehicle Radio Mute -->
                                 <Border Grid.Column="2" Classes="panel" Width="186" Height="176" Padding="8" VerticalAlignment="Top">
                                     <Grid Width="168" Height="158" RowDefinitions="28,130">
                                         <TextBlock Classes="white"
@@ -621,7 +662,7 @@
                                                    FontSize="18"
                                                    TextAlignment="Center"
                                                    Text="AM / FM" />
-                                        <Border Grid.Row="1" Classes="buttonFrame" Width="168" Height="130">
+                                        <Border Grid.Row="1" Classes="buttonFrame" Width="168" Height="130" PointerPressed="OnAmFmMutePressed">
                                             <Grid>
                                                 <Viewbox Stretch="Uniform"
                                                          HorizontalAlignment="Center"

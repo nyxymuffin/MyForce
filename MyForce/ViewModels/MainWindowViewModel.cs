@@ -29,32 +29,62 @@ namespace MyForce.ViewModels;
 public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 {
 	private readonly DispatcherTimer _clockTimer;
-   private readonly MqttConnectionService _mqttConnectionService;
+
+	private readonly MqttConnectionService _mqttConnectionService;
+
 	private string _clock = string.Empty;
+
 	private string _date = string.Empty;
+
 	private string _currentTalkRadio = "APX7500 V/8";
+
 	private string _currentRadioChannel = "CT OPS 800";
+
 	private string _alertLightSiren = "CODE 1";
+
 	private string _directionalStatus = "RIGHT";
+
 	private string _sirenStatus = "DISABLED";
+
 	private string _currentTalkRadioVolume = "13";
+
 	private string _radio1ChannelName = "CT OPS 800";
+
 	private string _radio2ChannelName = "CT OPS V";
+
 	private string _radio3ChannelName = "TXT MAIN";
+
 	private string _radio4ChannelName = "CT ALE M";
+
 	private string _radio5ChannelName = "$CMD_1";
+
 	private string _radio6ChannelName = "ABIA TWR";
+
 	private string _proximityChannel1 = "CT OPS 800";
+
 	private string _proximityChannel2 = "DFW TAC1";
+
 	private string _proximityChannel3 = "$CMD_1";
+
 	private string _proximityChannel4 = "DFW_TWR_E";
+
 	private string _mqttStatus = "OFFLINE";
+
 	private string _mqttEndpoint = "127.0.0.1:1883";
+
 	private string _mqttDetail = "Broker not connected.";
+
+	public string _CurSelChExt1;
+
+	public string _CurSelChExt2;
+
+	public string _CurSelChExt3;
+
+	public string _CurSelChExt4;
 
 	public MainWindowViewModel()
 	{
-       _mqttConnectionService = new MqttConnectionService();
+		_mqttConnectionService = new MqttConnectionService();
 		_mqttConnectionService.StateChanged += OnMqttStateChanged;
 		_clockTimer = new DispatcherTimer
 		{
@@ -63,9 +93,9 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 
 		_clockTimer.Tick += OnClockTimerTick;
 		UpdateClock();
-        ApplyMqttState(_mqttConnectionService.CurrentState);
+		ApplyMqttState(_mqttConnectionService.CurrentState);
 		_clockTimer.Start();
-       _ = InitializeMqttAsync();
+		_ = InitializeMqttAsync();
 	}
 
 	public event PropertyChangedEventHandler? PropertyChanged;
@@ -80,7 +110,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 
 	public string LocationValue => "30.5422, -97.6384";
 
-   public string CurrentTalkRadio
+	public string CurrentTalkRadio
 	{
 		get => _currentTalkRadio;
 		set => SetProperty(ref _currentTalkRadio, value);
@@ -110,7 +140,14 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 		set => SetProperty(ref _sirenStatus, value);
 	}
 
-	public string CadMessage => "DISPATCH LINK READY";
+	//Extra Info Provided by the Currently Selected channel. could be currently talking rid or somehting
+	public string CurSelChExt1 { get => _CurSelChExt1; set => SetProperty(ref _CurSelChExt1, value); }
+
+	public string CurSelChExt2 { get => _CurSelChExt2; set => SetProperty(ref _CurSelChExt2, value); }
+
+	public string CurSelChExt3 { get => _CurSelChExt3; set => SetProperty(ref _CurSelChExt3, value); }
+
+	public string CurSelChExt4 { get => _CurSelChExt4; set => SetProperty(ref _CurSelChExt4, value); }
 
 	public string MqttStatus
 	{
@@ -142,7 +179,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 		private set => SetProperty(ref _date, value);
 	}
 
-   public string CurrentTalkRadioVolume
+	public string CurrentTalkRadioVolume
 	{
 		get => _currentTalkRadioVolume;
 		set => SetProperty(ref _currentTalkRadioVolume, value);
@@ -212,7 +249,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 	{
 		_clockTimer.Stop();
 		_clockTimer.Tick -= OnClockTimerTick;
-       _mqttConnectionService.StateChanged -= OnMqttStateChanged;
+		_mqttConnectionService.StateChanged -= OnMqttStateChanged;
 		_mqttConnectionService.Dispose();
 	}
 
