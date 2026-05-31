@@ -558,10 +558,10 @@
                                       ColumnSpacing="6">
                                     <Grid Grid.Column="0" Width="180" Height="92" RowDefinitions="28,64">
                                         <TextBlock Classes="white" Width="180" Height="28" FontSize="18" TextAlignment="Center" Text="CODE 1" />
-                                        <Border Grid.Row="1" Classes="buttonFrame active" Width="180" Height="64" PointerPressed="OnCode1Pressed">
+                                        <Border Grid.Row="1" Classes="buttonFrame" Width="180" Height="64" PointerPressed="OnCode1Pressed">
                                             <!-- Lights and Siren Code 1 Mode -->
                                             <Viewbox Stretch="Fill">
-                                                <TextBlock Classes="white" TextAlignment="Center" VerticalAlignment="Center" FontSize="1" Text="ON" />
+                                                <TextBlock Classes="white" TextAlignment="Center" VerticalAlignment="Center" FontSize="1" Text="OFF" />
                                             </Viewbox>
                                         </Border>
                                     </Grid>
@@ -612,7 +612,7 @@
                                             </Viewbox>
                                         </Border>
                                         <!-- Directional Right -->
-                                        <Border Grid.Column="2" Classes="buttonFrame active" Width="182" Height="58" PointerPressed="OnDirectionalRightPressed">
+                                        <Border Grid.Column="2" Classes="buttonFrame" Width="182" Height="58" PointerPressed="OnDirectionalRightPressed">
                                             <Viewbox Stretch="Uniform">
                                                 <TextBlock Classes="white" TextAlignment="Center" VerticalAlignment="Center" Text="▶" />
                                             </Viewbox>
