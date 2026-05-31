@@ -1361,36 +1361,39 @@
                 Background="#E6101010"
                 BorderBrush="{StaticResource PanelBorderBrush}"
                 BorderThickness="2"
-                Padding="18"
-                Margin="240,110,240,110"
+                Padding="12"
+                HorizontalAlignment="Center"
+                VerticalAlignment="Center"
+                MaxWidth="620"
+                Width="620"
                 ZIndex="90">
             <Grid RowDefinitions="Auto,Auto,*,Auto"
-                  RowSpacing="14">
+                  RowSpacing="10">
                 <TextBlock Classes="white"
-                           FontSize="26"
+                           FontSize="20"
                            Text="INT CHANNEL LIST" />
 
                 <Grid Grid.Row="1"
                       ColumnDefinitions="*,*,Auto"
-                      ColumnSpacing="12">
+                      ColumnSpacing="8">
                     <Border Grid.Column="0"
                             Classes="buttonFrame"
                             PointerPressed="OnInternetGenreFilterPressed"
-                            Padding="10">
+                            Padding="8">
                         <TextBlock Classes="white"
                                    Text="{Binding InternetGenreFilter, StringFormat='GENRE: {0}'}" />
                     </Border>
                     <Border Grid.Column="1"
                             Classes="buttonFrame"
                             PointerPressed="OnInternetLanguageFilterPressed"
-                            Padding="10">
+                            Padding="8">
                         <TextBlock Classes="white"
                                    Text="{Binding InternetLanguageFilter, StringFormat='LANG: {0}'}" />
                     </Border>
                     <Border Grid.Column="2"
                             Classes="buttonFrame"
                             PointerPressed="OnCloseInternetChannelListPressed"
-                            Padding="10,10,14,10">
+                            Padding="8,8,12,8">
                         <TextBlock Classes="white"
                                    Text="CLOSE" />
                     </Border>
@@ -1398,12 +1401,12 @@
 
                 <Grid Grid.Row="2"
                       RowDefinitions="Auto,*,Auto"
-                      RowSpacing="12">
+                      RowSpacing="8">
                     <Grid ColumnDefinitions="Auto,*"
-                          ColumnSpacing="12">
+                          ColumnSpacing="8">
                         <Border Classes="buttonFrame"
-                                Width="96"
-                                Height="70"
+                                Width="72"
+                                Height="52"
                                 PointerPressed="OnInternetStationsUpPressed"
                                 IsEnabled="{Binding CanScrollInternetStationsUp}">
                             <Viewbox Stretch="Uniform">
@@ -1424,16 +1427,18 @@
                         <ItemsControl.ItemTemplate>
                             <DataTemplate x:DataType="models:InternetRadioStation">
                                 <Border Classes="buttonFrame"
-                                        Margin="0,0,0,10"
-                                        Padding="12"
+                                        Margin="0,0,0,8"
+                                        Padding="10"
                                         PointerPressed="OnInternetStationPressed"
                                         Tag="{Binding StreamUrl}">
                                     <Grid ColumnDefinitions="2*,*,Auto"
-                                          ColumnSpacing="12">
+                                          ColumnSpacing="10">
                                         <TextBlock Classes="white"
+                                                   TextWrapping="Wrap"
                                                    Text="{Binding DisplayName}" />
                                         <TextBlock Grid.Column="1"
                                                    Classes="white"
+                                                   TextWrapping="Wrap"
                                                    Text="{Binding Genre}" />
                                         <TextBlock Grid.Column="2"
                                                    Classes="white"
@@ -1446,8 +1451,8 @@
 
                     <Border Grid.Row="2"
                             Classes="buttonFrame"
-                            Width="96"
-                            Height="70"
+                            Width="72"
+                            Height="52"
                             HorizontalAlignment="Left"
                             PointerPressed="OnInternetStationsDownPressed"
                             IsEnabled="{Binding CanScrollInternetStationsDown}">

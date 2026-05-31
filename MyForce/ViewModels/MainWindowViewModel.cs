@@ -746,6 +746,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 	{
 		_isAmFmMuted = !_isAmFmMuted;
 		SaveAmFmUiState();
+		SyncInternetRadioPlaybackAsync();
 		RaiseAmFmStateChanged();
 	}
 
@@ -801,12 +802,14 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 		_selectedInternetStation = stations[nextIndex];
 		EnsureInternetStationVisible(nextIndex);
 		SaveAmFmUiState();
+		SyncInternetRadioPlaybackAsync();
 		RaiseInternetChannelListStateChanged();
 		RaiseAmFmStateChanged();
 	}
 
 	public void SelectAuxiliarySource(AuxiliaryAudioSourceMode sourceMode)
 	{
+		var previousMode = _selectedAuxiliarySourceMode;
 		_selectedAuxiliarySourceMode = sourceMode;
 		if (sourceMode != AuxiliaryAudioSourceMode.InternetRadio)
 		{
@@ -823,6 +826,11 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 		}
 
 		SaveAmFmUiState();
+		if (previousMode != sourceMode)
+		{
+			SyncInternetRadioPlaybackAsync();
+		}
+
 		RaiseAmFmStateChanged();
 	}
 
@@ -921,7 +929,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 		EnsureInternetStationVisible(stationIndex);
 		IsInternetChannelListVisible = false;
 		SaveAmFmUiState();
-		_ = PublishInternetRadioPlayCommandAsync(station);
+		SyncInternetRadioPlaybackAsync();
 		RaiseInternetChannelListStateChanged();
 		RaiseAmFmStateChanged();
 	}
@@ -1108,6 +1116,33 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 
 		var payload = JsonSerializer.Serialize(command, MqttJsonSerializerOptions);
 		await _mqttConnectionService.PublishAsync(InternetRadioMqttTopics.PlayCommandTopic, payload).ConfigureAwait(false);
+	}
+
+	/// <summary>
+	/// Publishes a stop command to the AP so internet radio playback halts immediately.
+	/// </summary>
+	private async Task PublishInternetRadioStopCommandAsync()
+	{
+		await _mqttConnectionService.PublishAsync(InternetRadioMqttTopics.StopCommandTopic, "{}" ).ConfigureAwait(false);
+	}
+
+	/// <summary>
+	/// Keeps AP internet radio playback synchronized with the current UI source, mute state, and station selection.
+	/// </summary>
+	private void SyncInternetRadioPlaybackAsync()
+	{
+		if (!IsInternetSourceSelected || _isAmFmMuted)
+		{
+			_ = PublishInternetRadioStopCommandAsync();
+			return;
+		}
+
+		if (_selectedInternetStation is null)
+		{
+			return;
+		}
+
+		_ = PublishInternetRadioPlayCommandAsync(_selectedInternetStation);
 	}
 
 	private void UpdateClock()
