@@ -824,6 +824,7 @@ internal sealed class InternetRadioPlaybackController : IAsyncDisposable
 {
     private readonly HttpClient _httpClient;
     private Process? _externalPlayerProcess;
+    private bool _isStoppingExternalPlayer;
     private IWavePlayer? _waveOut;
     private MediaFoundationReader? _reader;
     private InternetRadioPlayCommand? _activeCommand;
@@ -972,7 +973,10 @@ internal sealed class InternetRadioPlaybackController : IAsyncDisposable
         }
 
         _externalPlayerProcess = launchedPlayer.Process;
+        _externalPlayerProcess.EnableRaisingEvents = true;
+        _externalPlayerProcess.Exited += OnExternalPlayerExited;
         _activeBackend = launchedPlayer.BackendLabel;
+        Console.WriteLine($"[audio-processor] Started Linux internet radio playback via {_activeBackend} (pid {_externalPlayerProcess.Id}).");
     }
 
     private LinuxPlayerLaunch? TryStartLinuxPlayer(string streamUrl)
@@ -1050,6 +1054,9 @@ internal sealed class InternetRadioPlaybackController : IAsyncDisposable
         {
             try
             {
+                _isStoppingExternalPlayer = true;
+                _externalPlayerProcess.Exited -= OnExternalPlayerExited;
+
                 if (!_externalPlayerProcess.HasExited)
                 {
                     _externalPlayerProcess.Kill(entireProcessTree: true);
@@ -1063,6 +1070,7 @@ internal sealed class InternetRadioPlaybackController : IAsyncDisposable
             {
                 _externalPlayerProcess.Dispose();
                 _externalPlayerProcess = null;
+                _isStoppingExternalPlayer = false;
             }
         }
 
@@ -1077,6 +1085,37 @@ internal sealed class InternetRadioPlaybackController : IAsyncDisposable
     private int GetLinuxPlayerVolumePercent()
     {
         return (int)Math.Round(decimal.Clamp(_outputGain / 2.0m, 0m, 1.0m) * 100m, MidpointRounding.AwayFromZero);
+    }
+
+    private void OnExternalPlayerExited(object? sender, EventArgs e)
+    {
+        var process = sender as Process;
+        if (process is null)
+        {
+            return;
+        }
+
+        if (_isStoppingExternalPlayer)
+        {
+            return;
+        }
+
+        var exitCode = process.ExitCode;
+        Console.WriteLine($"[audio-processor] Linux internet radio player exited unexpectedly with code {exitCode}.");
+
+        if (_externalPlayerProcess == process)
+        {
+            _externalPlayerProcess.Exited -= OnExternalPlayerExited;
+            _externalPlayerProcess.Dispose();
+            _externalPlayerProcess = null;
+            _activeBackend = null;
+            CurrentState = CurrentState with
+            {
+                IsPlaying = false,
+                Status = "ERROR",
+                Detail = $"Linux internet radio playback stopped unexpectedly (ffplay exit code {exitCode})."
+            };
+        }
     }
 
     public ValueTask DisposeAsync()
@@ -1105,6 +1144,9 @@ internal sealed class LinuxPlayerCandidate
     {
         var startInfo = CreateStartInfo("ffplay");
         startInfo.ArgumentList.Add("-nodisp");
+        startInfo.ArgumentList.Add("-vn");
+        startInfo.ArgumentList.Add("-nostdin");
+        startInfo.ArgumentList.Add("-hide_banner");
         startInfo.ArgumentList.Add("-loglevel");
         startInfo.ArgumentList.Add("error");
         startInfo.ArgumentList.Add("-volume");
@@ -1120,8 +1162,8 @@ internal sealed class LinuxPlayerCandidate
             FileName = fileName,
             UseShellExecute = false,
             CreateNoWindow = true,
-            RedirectStandardError = true,
-            RedirectStandardOutput = true
+            RedirectStandardError = false,
+            RedirectStandardOutput = false
         };
     }
 }
