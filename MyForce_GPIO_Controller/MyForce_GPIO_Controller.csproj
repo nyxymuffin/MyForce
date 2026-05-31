@@ -8,7 +8,8 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="MQTTnet" Version="5.0.1.1416" />
+    <PackageReference Include="Config.Net" Version="5.2.1" />
+    <PackageReference Include="MQTTnet" Version="5.1.0.1559" />
     <PackageReference Include="SerialPortLib" Version="1.4.0" />
   </ItemGroup>
 

@@ -1,164 +1,185 @@
-﻿using MQTTnet;
+﻿// %%%%%%    @%%%%%@
+//%%%%%%%%   %%%%%%%@
+//@%%%%%%%@  %%%%%%%%%        @@      @@  @@@      @@@ @@@     @@@ @@@@@@@@@@   @@@@@@@@@
+//%%%%%%%%@ @%%%%%%%%       @@@@@   @@@@ @@@@@   @@@@ @@@@   @@@@ @@@@@@@@@@@@@@@@@@@@@@@ @@@@
+// @%%%%%%%%  %%%%%%%%%      @@@@@@  @@@@  @@@@  @@@@   @@@@@@@@@     @@@@    @@@@         @@@@
+//  %%%%%%%%%  %%%%%%%%@     @@@@@@@ @@@@   @@@@@@@@     @@@@@@       @@@@    @@@@@@@@@@@  @@@@
+//   %%%%%%%%@  %%%%%%%%%    @@@@@@@@@@@@     @@@@        @@@@@       @@@@    @@@@@@@@@@@  @@@@
+//    %%%%%%%%@ @%%%%%%%%    @@@@ @@@@@@@     @@@@      @@@@@@@@      @@@@    @@@@         @@@@
+//    @%%%%%%%%% @%%%%%%%%   @@@@   @@@@@     @@@@     @@@@@ @@@@@    @@@@    @@@@@@@@@@@@ @@@@@@@@@@
+//     @%%%%%%%%  %%%%%%%%@  @@@@    @@@@     @@@@    @@@@     @@@@   @@@@    @@@@@@@@@@@@ @@@@@@@@@@@
+//      %%%%%%%%@ @%%%%%%%%
+//      @%%%%%%%%  @%%%%%%%%
+//       %%%%%%%%   %%%%%%%@
+//         %%%%%      %%%%
+//
+// Copyright (C) 2025-2026 NyxTel Wireless / Nyx Gallini
+//
+using MQTTnet;
 using MQTTnet.Formatter;
+using SerialPortLib;
+using Config.Net;
 
 var controller = new GpioControllerMqttApp();
 await controller.RunAsync();
 
 internal sealed class GpioControllerMqttApp
 {
-    private readonly MqttServiceRuntime _mqttRuntime;
+	private readonly MqttServiceRuntime _mqttRuntime;
 
-    public GpioControllerMqttApp()
-    {
-        _mqttRuntime = new MqttServiceRuntime("gpio-controller");
-    }
+	public GpioControllerMqttApp()
+	{
+		_mqttRuntime = new MqttServiceRuntime("gpio-controller");
+	}
 
-    public async Task RunAsync()
-    {
-        using var cts = new CancellationTokenSource();
-        Console.CancelKeyPress += (_, e) =>
-        {
-            e.Cancel = true;
-            cts.Cancel();
-        };
+	public async Task RunAsync()
+	{
+		using var cts = new CancellationTokenSource();
+		Console.CancelKeyPress += (_, e) =>
+		{
+			e.Cancel = true;
+			cts.Cancel();
+		};
 
-        await _mqttRuntime.ConnectAsync(cts.Token);
-        Console.WriteLine("GPIO Controller MQTT framework ready.");
-        await _mqttRuntime.RunUntilStoppedAsync(cts.Token);
-    }
+		await _mqttRuntime.ConnectAsync(cts.Token);
+		Console.WriteLine("GPIO Controller MQTT ready.");
+		await _mqttRuntime.RunUntilStoppedAsync(cts.Token);
+	}
 }
 
 internal sealed class MqttServiceRuntime : IAsyncDisposable
 {
-    private readonly IMqttClient _client;
-    private readonly MqttServiceOptions _options;
-    private readonly string _serviceName;
+	private readonly IMqttClient _client;
 
-    public MqttServiceRuntime(string serviceName)
-    {
-        _serviceName = serviceName;
-        _options = MqttServiceOptions.FromEnvironment(serviceName);
-        _client = new MqttClientFactory().CreateMqttClient();
-        _client.ConnectedAsync += OnConnectedAsync;
-        _client.DisconnectedAsync += OnDisconnectedAsync;
-        _client.ApplicationMessageReceivedAsync += OnMessageReceivedAsync;
-    }
+	private readonly MqttServiceOptions _options;
 
-    public async Task ConnectAsync(CancellationToken cancellationToken)
-    {
-        var optionsBuilder = new MqttClientOptionsBuilder()
-            .WithProtocolVersion(MqttProtocolVersion.V500)
-            .WithClientId(_options.ClientId)
-            .WithTcpServer(_options.Host, _options.Port)
-            .WithCleanSession();
+	private readonly string _serviceName;
 
-        if (!string.IsNullOrWhiteSpace(_options.Username))
-        {
-            optionsBuilder = optionsBuilder.WithCredentials(_options.Username, _options.Password);
-        }
+	public MqttServiceRuntime(string serviceName)
+	{
+		_serviceName = serviceName;
+		_options = MqttServiceOptions.FromEnvironment(serviceName);
+		_client = new MqttClientFactory().CreateMqttClient();
+		_client.ConnectedAsync += OnConnectedAsync;
+		_client.DisconnectedAsync += OnDisconnectedAsync;
+		_client.ApplicationMessageReceivedAsync += OnMessageReceivedAsync;
+	}
 
-        if (_options.UseTls)
-        {
-            optionsBuilder = optionsBuilder.WithTlsOptions(static builder => builder.UseTls());
-        }
+	public async Task ConnectAsync(CancellationToken cancellationToken)
+	{
+		var optionsBuilder = new MqttClientOptionsBuilder()
+			.WithProtocolVersion(MqttProtocolVersion.V500)
+			.WithClientId(_options.ClientId)
+			.WithTcpServer(_options.Host, _options.Port)
+			.WithCleanSession();
 
-        await _client.ConnectAsync(optionsBuilder.Build(), cancellationToken);
-    }
+		if (!string.IsNullOrWhiteSpace(_options.Username))
+		{
+			optionsBuilder = optionsBuilder.WithCredentials(_options.Username, _options.Password);
+		}
 
-    public async Task SubscribeAsync(string topicFilter, CancellationToken cancellationToken = default)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(topicFilter);
+		if (_options.UseTls)
+		{
+			optionsBuilder = optionsBuilder.WithTlsOptions(static builder => builder.UseTls());
+		}
 
-        var subscribeOptions = new MqttClientSubscribeOptionsBuilder()
-            .WithTopicFilter(topicFilter)
-            .Build();
+		await _client.ConnectAsync(optionsBuilder.Build(), cancellationToken);
+	}
 
-        await _client.SubscribeAsync(subscribeOptions, cancellationToken);
-        Console.WriteLine($"[{_serviceName}] Subscribed: {topicFilter}");
-    }
+	public async Task SubscribeAsync(string topicFilter, CancellationToken cancellationToken = default)
+	{
+		ArgumentException.ThrowIfNullOrWhiteSpace(topicFilter);
 
-    public async Task PublishAsync(string topic, string payload, bool retain = false, CancellationToken cancellationToken = default)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(topic);
+		var subscribeOptions = new MqttClientSubscribeOptionsBuilder()
+			.WithTopicFilter(topicFilter)
+			.Build();
 
-        var message = new MqttApplicationMessageBuilder()
-            .WithTopic(topic)
-            .WithPayload(payload)
-            .WithRetainFlag(retain)
-            .Build();
+		await _client.SubscribeAsync(subscribeOptions, cancellationToken);
+		Console.WriteLine($"[{_serviceName}] Subscribed: {topicFilter}");
+	}
 
-        await _client.PublishAsync(message, cancellationToken);
-        Console.WriteLine($"[{_serviceName}] Published: {topic}");
-    }
+	public async Task PublishAsync(string topic, string payload, bool retain = false, CancellationToken cancellationToken = default)
+	{
+		ArgumentException.ThrowIfNullOrWhiteSpace(topic);
 
-    public async Task RunUntilStoppedAsync(CancellationToken cancellationToken)
-    {
-        try
-        {
-            await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
-        }
-        catch (OperationCanceledException)
-        {
-        }
-        finally
-        {
-            await DisposeAsync();
-        }
-    }
+		var message = new MqttApplicationMessageBuilder()
+			.WithTopic(topic)
+			.WithPayload(payload)
+			.WithRetainFlag(retain)
+			.Build();
 
-    public async ValueTask DisposeAsync()
-    {
-        _client.ConnectedAsync -= OnConnectedAsync;
-        _client.DisconnectedAsync -= OnDisconnectedAsync;
-        _client.ApplicationMessageReceivedAsync -= OnMessageReceivedAsync;
+		await _client.PublishAsync(message, cancellationToken);
+		Console.WriteLine($"[{_serviceName}] Published: {topic}");
+	}
 
-        if (_client.IsConnected)
-        {
-            await _client.DisconnectAsync();
-        }
+	public async Task RunUntilStoppedAsync(CancellationToken cancellationToken)
+	{
+		try
+		{
+			await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+		}
+		catch (OperationCanceledException)
+		{
+		}
+		finally
+		{
+			await DisposeAsync();
+		}
+	}
 
-        _client.Dispose();
-    }
+	public async ValueTask DisposeAsync()
+	{
+		_client.ConnectedAsync -= OnConnectedAsync;
+		_client.DisconnectedAsync -= OnDisconnectedAsync;
+		_client.ApplicationMessageReceivedAsync -= OnMessageReceivedAsync;
 
-    private Task OnConnectedAsync(MqttClientConnectedEventArgs arg)
-    {
-        Console.WriteLine($"[{_serviceName}] Connected to MQTT broker at {_options.Host}:{_options.Port}.");
-        return Task.CompletedTask;
-    }
+		if (_client.IsConnected)
+		{
+			await _client.DisconnectAsync();
+		}
 
-    private Task OnDisconnectedAsync(MqttClientDisconnectedEventArgs arg)
-    {
-        var detail = arg.Exception?.Message ?? arg.ReasonString ?? "Disconnected.";
-        Console.WriteLine($"[{_serviceName}] MQTT disconnected: {detail}");
-        return Task.CompletedTask;
-    }
+		_client.Dispose();
+	}
 
-    private Task OnMessageReceivedAsync(MqttApplicationMessageReceivedEventArgs arg)
-    {
-        Console.WriteLine($"[{_serviceName}] Received message on topic: {arg.ApplicationMessage.Topic}");
-        return Task.CompletedTask;
-    }
+	private Task OnConnectedAsync(MqttClientConnectedEventArgs arg)
+	{
+		Console.WriteLine($"[{_serviceName}] Connected to MQTT broker at {_options.Host}:{_options.Port}.");
+		return Task.CompletedTask;
+	}
+
+	private Task OnDisconnectedAsync(MqttClientDisconnectedEventArgs arg)
+	{
+		var detail = arg.Exception?.Message ?? arg.ReasonString ?? "Disconnected.";
+		Console.WriteLine($"[{_serviceName}] MQTT disconnected: {detail}");
+		return Task.CompletedTask;
+	}
+
+	private Task OnMessageReceivedAsync(MqttApplicationMessageReceivedEventArgs arg)
+	{
+		Console.WriteLine($"[{_serviceName}] Received message on topic: {arg.ApplicationMessage.Topic}");
+		return Task.CompletedTask;
+	}
 }
 
 internal sealed record MqttServiceOptions(
-    string Host,
-    int Port,
-    string ClientId,
-    bool UseTls,
-    string? Username,
-    string? Password)
+	string Host,
+	int Port,
+	string ClientId,
+	bool UseTls,
+	string? Username,
+	string? Password)
 {
-    public static MqttServiceOptions FromEnvironment(string serviceName)
-    {
-        var normalizedServiceName = serviceName.Replace(' ', '-').ToLowerInvariant();
-        var clientId = Environment.GetEnvironmentVariable("MYFORCE_MQTT_CLIENT_ID");
+	public static MqttServiceOptions FromEnvironment(string serviceName)
+	{
+		var normalizedServiceName = serviceName.Replace(' ', '-').ToLowerInvariant();
+		var clientId = Environment.GetEnvironmentVariable("MYFORCE_MQTT_CLIENT_ID");
 
-        return new MqttServiceOptions(
-            Host: Environment.GetEnvironmentVariable("MYFORCE_MQTT_HOST") ?? "127.0.0.1",
-            Port: int.TryParse(Environment.GetEnvironmentVariable("MYFORCE_MQTT_PORT"), out var port) ? port : 1883,
-            ClientId: string.IsNullOrWhiteSpace(clientId) ? $"myforce-{normalizedServiceName}-{Environment.MachineName}" : clientId,
-            UseTls: bool.TryParse(Environment.GetEnvironmentVariable("MYFORCE_MQTT_TLS"), out var useTls) && useTls,
-            Username: Environment.GetEnvironmentVariable("MYFORCE_MQTT_USERNAME"),
-            Password: Environment.GetEnvironmentVariable("MYFORCE_MQTT_PASSWORD"));
-    }
+		return new MqttServiceOptions(
+			Host: Environment.GetEnvironmentVariable("MYFORCE_MQTT_HOST") ?? "127.0.0.1",
+			Port: int.TryParse(Environment.GetEnvironmentVariable("MYFORCE_MQTT_PORT"), out var port) ? port : 1883,
+			ClientId: string.IsNullOrWhiteSpace(clientId) ? $"myforce-{normalizedServiceName}-{Environment.MachineName}" : clientId,
+			UseTls: bool.TryParse(Environment.GetEnvironmentVariable("MYFORCE_MQTT_TLS"), out var useTls) && useTls,
+			Username: Environment.GetEnvironmentVariable("MYFORCE_MQTT_USERNAME"),
+			Password: Environment.GetEnvironmentVariable("MYFORCE_MQTT_PASSWORD"));
+	}
 }
