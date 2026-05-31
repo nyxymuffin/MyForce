@@ -6,6 +6,8 @@ using MQTTnet;
 internal sealed class AudioProcessorCoordinator : IAsyncDisposable
 {
     private readonly AudioProcessorRegistry _registry;
+    private readonly AudioFrameworkCatalog _audioFramework;
+    private readonly AudioMixerState _mixerState;
     private readonly AudioProcessorRoutingState _routingState;
     private readonly MqttServiceRuntime _mqttRuntime;
     private readonly AudioProcessorTopicFactory _topics;
@@ -19,6 +21,8 @@ internal sealed class AudioProcessorCoordinator : IAsyncDisposable
         _mqttRuntime = mqttRuntime;
         _topics = topics;
         _registry = AudioProcessorRegistry.CreateDefault();
+        _audioFramework = AudioFrameworkCatalog.CreateDefault(_registry.RadioIds);
+        _mixerState = AudioMixerState.CreateDefault(_audioFramework.ChannelStrips);
         _routingState = AudioProcessorRoutingState.CreateDefault(_registry.RadioIds);
         _txController = new TxController(_registry.RadioIds);
     }
@@ -48,7 +52,34 @@ internal sealed class AudioProcessorCoordinator : IAsyncDisposable
             }
 
             ApplyManualPtt(request);
+            await PublishMixerStateAsync(CancellationToken.None).ConfigureAwait(false);
             await PublishStatusAsync(CancellationToken.None).ConfigureAwait(false);
+            return;
+        }
+
+        if (string.Equals(topic, _topics.ChannelGainCommandTopic, StringComparison.OrdinalIgnoreCase))
+        {
+            var command = AudioProcessorJson.Deserialize<AudioChannelGainCommand>(args.ApplicationMessage.Payload);
+            if (command is null)
+            {
+                return;
+            }
+
+            _mixerState.SetGain(command.ChannelId, command.Gain);
+            await PublishMixerStateAsync(CancellationToken.None).ConfigureAwait(false);
+            return;
+        }
+
+        if (string.Equals(topic, _topics.ChannelMuteCommandTopic, StringComparison.OrdinalIgnoreCase))
+        {
+            var command = AudioProcessorJson.Deserialize<AudioChannelMuteCommand>(args.ApplicationMessage.Payload);
+            if (command is null)
+            {
+                return;
+            }
+
+            _mixerState.SetMuted(command.ChannelId, command.IsMuted);
+            await PublishMixerStateAsync(CancellationToken.None).ConfigureAwait(false);
         }
     }
 
@@ -63,11 +94,19 @@ internal sealed class AudioProcessorCoordinator : IAsyncDisposable
         {
             _txController.BeginManualTransmit(request.RadioId);
             _routingState.SetOperatorMicTarget(request.RadioId);
+            _mixerState.SetChannelActive(AudioChannelId.OperatorMic, true);
+            _mixerState.SetTransmitTarget(request.RadioId, true);
             return;
         }
 
         _txController.EndManualTransmit(request.RadioId);
         _routingState.ClearOperatorMicTarget(request.RadioId);
+        _mixerState.SetTransmitTarget(request.RadioId, false);
+
+        if (_txController.ActiveManualTransmitRadioId is null)
+        {
+            _mixerState.SetChannelActive(AudioChannelId.OperatorMic, false);
+        }
     }
 
     private async Task PublishBirthSnapshotAsync(CancellationToken cancellationToken)
@@ -84,7 +123,24 @@ internal sealed class AudioProcessorCoordinator : IAsyncDisposable
             retain: true,
             cancellationToken: cancellationToken).ConfigureAwait(false);
 
+        await _mqttRuntime.PublishAsync(
+            _topics.AudioFrameworkTopic,
+            AudioProcessorJson.Serialize(AudioFrameworkPayload.Create(_audioFramework)),
+            retain: true,
+            cancellationToken: cancellationToken).ConfigureAwait(false);
+
+        await PublishMixerStateAsync(cancellationToken).ConfigureAwait(false);
+
         await PublishStatusAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task PublishMixerStateAsync(CancellationToken cancellationToken)
+    {
+        await _mqttRuntime.PublishAsync(
+            _topics.AudioMixerStateTopic,
+            AudioProcessorJson.Serialize(AudioMixerStatePayload.Create(_mixerState.CurrentSnapshot)),
+            retain: true,
+            cancellationToken: cancellationToken).ConfigureAwait(false);
     }
 
     private async Task PublishStatusAsync(CancellationToken cancellationToken)
@@ -216,6 +272,14 @@ internal sealed class AudioProcessorTopicFactory
 
     public string ManualPttRequestTopic => $"{RootTopic}/cmd/manual-ptt";
 
+    public string ChannelGainCommandTopic => $"{RootTopic}/cmd/channel-gain";
+
+    public string ChannelMuteCommandTopic => $"{RootTopic}/cmd/channel-mute";
+
+    public string AudioFrameworkTopic => $"{RootTopic}/state/audio-framework";
+
+    public string AudioMixerStateTopic => $"{RootTopic}/state/audio-mixer";
+
     public string RoutingStateTopic => $"{RootTopic}/state/routing";
 
     public string ServiceRegistryTopic => $"{RootTopic}/registry/service";
@@ -233,7 +297,220 @@ internal sealed record BridgeId(string Value)
     public override string ToString() => Value;
 }
 
+internal sealed record AudioDeviceId(string Value)
+{
+    public override string ToString() => Value;
+}
+
+internal sealed record AudioBusId(string Value)
+{
+    public override string ToString() => Value;
+}
+
+internal sealed record AudioChannelId(string Value)
+{
+    public static AudioChannelId OperatorMic { get; } = new("operator-mic");
+
+    public static AudioChannelId SpeakerMonitor { get; } = new("speaker-monitor");
+
+    public static AudioChannelId RecorderFeed { get; } = new("recorder-feed");
+
+    public static AudioChannelId ForRadioRx(RadioId radioId)
+    {
+        ArgumentNullException.ThrowIfNull(radioId);
+        return new AudioChannelId($"radio-{radioId.Value}-rx");
+    }
+
+    public static AudioChannelId ForRadioTx(RadioId radioId)
+    {
+        ArgumentNullException.ThrowIfNull(radioId);
+        return new AudioChannelId($"radio-{radioId.Value}-tx");
+    }
+
+    public override string ToString() => Value;
+}
+
 internal sealed record BridgeDefinition(BridgeId Id, ReadOnlyCollection<RadioId> Members);
+
+internal sealed record AudioDevice(AudioDeviceId Id, string DisplayName, string Role, bool InputEnabled, bool OutputEnabled);
+
+internal sealed record AudioBus(AudioBusId Id, string DisplayName, string Direction, ReadOnlyCollection<string> ChannelIds);
+
+internal sealed record AudioChannelStrip(AudioChannelId Id, string DisplayName, string SignalPath, string DeviceRole, decimal DefaultGain, bool DefaultMuted, bool CanTransmit);
+
+internal sealed record AudioMixerChannelState(AudioChannelId Id, decimal Gain, bool Muted, bool Active);
+
+internal sealed record AudioMixerSnapshot(ReadOnlyCollection<AudioMixerChannelState> Channels);
+
+internal sealed class AudioFrameworkCatalog
+{
+    public AudioFrameworkCatalog(
+        IReadOnlyList<AudioDevice> devices,
+        IReadOnlyList<AudioBus> buses,
+        IReadOnlyList<AudioChannelStrip> channelStrips)
+    {
+        ArgumentNullException.ThrowIfNull(devices);
+        ArgumentNullException.ThrowIfNull(buses);
+        ArgumentNullException.ThrowIfNull(channelStrips);
+
+        Devices = devices;
+        Buses = buses;
+        ChannelStrips = channelStrips;
+    }
+
+    public IReadOnlyList<AudioDevice> Devices { get; }
+
+    public IReadOnlyList<AudioBus> Buses { get; }
+
+    public IReadOnlyList<AudioChannelStrip> ChannelStrips { get; }
+
+    public static AudioFrameworkCatalog CreateDefault(IEnumerable<RadioId> radioIds)
+    {
+        ArgumentNullException.ThrowIfNull(radioIds);
+
+        var radioIdList = radioIds.ToArray();
+        var devices = new List<AudioDevice>
+        {
+            new(new AudioDeviceId("operator-console"), "Operator Console", "operator", true, true),
+            new(new AudioDeviceId("cabin-speaker"), "Cabin Speaker", "speaker", false, true),
+            new(new AudioDeviceId("voice-recorder"), "Voice Recorder", "recorder", false, true)
+        };
+
+        devices.AddRange(radioIdList.Select(static radioId =>
+            new AudioDevice(new AudioDeviceId($"radio-{radioId.Value}"), $"Radio {radioId.Value}", "radio", true, true)));
+
+        var channels = new List<AudioChannelStrip>
+        {
+            new(AudioChannelId.OperatorMic, "Operator Mic", "operator-mic -> tx-bus", "operator", 1.0m, false, true),
+            new(AudioChannelId.SpeakerMonitor, "Speaker Monitor", "monitor-bus -> speaker", "speaker", 1.0m, false, false),
+            new(AudioChannelId.RecorderFeed, "Recorder Feed", "mix-bus -> recorder", "recorder", 1.0m, false, false)
+        };
+
+        channels.AddRange(radioIdList.Select(static radioId =>
+            new AudioChannelStrip(
+                AudioChannelId.ForRadioRx(radioId),
+                $"{radioId.Value.ToUpperInvariant()} RX",
+                $"radio-{radioId.Value} -> monitor-bus",
+                "radio",
+                1.0m,
+                false,
+                false)));
+
+        channels.AddRange(radioIdList.Select(static radioId =>
+            new AudioChannelStrip(
+                AudioChannelId.ForRadioTx(radioId),
+                $"{radioId.Value.ToUpperInvariant()} TX",
+                $"tx-bus -> radio-{radioId.Value}",
+                "radio",
+                1.0m,
+                false,
+                true)));
+
+        var monitorBusChannels = channels
+            .Where(static channel => channel.Id == AudioChannelId.SpeakerMonitor || channel.Id.Value.EndsWith("-rx", StringComparison.Ordinal))
+            .Select(static channel => channel.Id.Value)
+            .ToArray();
+
+        var transmitBusChannels = channels
+            .Where(static channel => channel.Id == AudioChannelId.OperatorMic || channel.Id.Value.EndsWith("-tx", StringComparison.Ordinal))
+            .Select(static channel => channel.Id.Value)
+            .ToArray();
+
+        var buses = new List<AudioBus>
+        {
+            new(new AudioBusId("monitor-bus"), "Monitor Bus", "output", new ReadOnlyCollection<string>(monitorBusChannels)),
+            new(new AudioBusId("tx-bus"), "Transmit Bus", "duplex", new ReadOnlyCollection<string>(transmitBusChannels)),
+            new(new AudioBusId("record-bus"), "Record Bus", "output", new ReadOnlyCollection<string>([AudioChannelId.RecorderFeed.Value]))
+        };
+
+        return new AudioFrameworkCatalog(
+            new ReadOnlyCollection<AudioDevice>(devices),
+            new ReadOnlyCollection<AudioBus>(buses),
+            new ReadOnlyCollection<AudioChannelStrip>(channels));
+    }
+}
+
+internal sealed class AudioMixerState
+{
+    private readonly Dictionary<string, AudioMixerChannelState> _channels;
+
+    private AudioMixerState(Dictionary<string, AudioMixerChannelState> channels)
+    {
+        _channels = channels;
+    }
+
+    public AudioMixerSnapshot CurrentSnapshot => new(new ReadOnlyCollection<AudioMixerChannelState>(_channels.Values.OrderBy(static channel => channel.Id.Value, StringComparer.Ordinal).ToArray()));
+
+    public static AudioMixerState CreateDefault(IEnumerable<AudioChannelStrip> channelStrips)
+    {
+        ArgumentNullException.ThrowIfNull(channelStrips);
+
+        var channels = channelStrips.ToDictionary(
+            static channel => channel.Id.Value,
+            static channel => new AudioMixerChannelState(channel.Id, NormalizeGain(channel.DefaultGain), channel.DefaultMuted, false),
+            StringComparer.OrdinalIgnoreCase);
+
+        return new AudioMixerState(channels);
+    }
+
+    public void SetGain(string channelId, decimal gain)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(channelId);
+
+        var state = GetChannelState(channelId);
+        _channels[channelId] = state with { Gain = NormalizeGain(gain) };
+    }
+
+    public void SetMuted(string channelId, bool isMuted)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(channelId);
+
+        var state = GetChannelState(channelId);
+        _channels[channelId] = state with { Muted = isMuted };
+    }
+
+    public void SetChannelActive(AudioChannelId channelId, bool isActive)
+    {
+        ArgumentNullException.ThrowIfNull(channelId);
+
+        var state = GetChannelState(channelId.Value);
+        _channels[channelId.Value] = state with { Active = isActive };
+    }
+
+    public void SetTransmitTarget(RadioId radioId, bool isActive)
+    {
+        ArgumentNullException.ThrowIfNull(radioId);
+
+        foreach (var channel in _channels.Values.Where(static channel => channel.Id.Value.EndsWith("-tx", StringComparison.Ordinal)).ToArray())
+        {
+            _channels[channel.Id.Value] = channel with { Active = false };
+        }
+
+        if (!isActive)
+        {
+            return;
+        }
+
+        var channelId = AudioChannelId.ForRadioTx(radioId);
+        var state = GetChannelState(channelId.Value);
+        _channels[channelId.Value] = state with { Active = true };
+    }
+
+    private AudioMixerChannelState GetChannelState(string channelId)
+    {
+        if (_channels.TryGetValue(channelId, out var state))
+        {
+            return state;
+        }
+
+        throw new InvalidOperationException($"Unknown audio channel '{channelId}'.");
+    }
+
+    private static decimal NormalizeGain(decimal gain)
+    {
+        return decimal.Clamp(gain, 0m, 2m);
+    }
+}
 
 internal sealed record RoutingSnapshot(
     ReadOnlyCollection<RoutingCrosspoint> Crosspoints,
@@ -269,6 +546,10 @@ internal sealed record SinkEndpoint(string Kind, string? RadioId = null)
 }
 
 internal sealed record ManualPttRequest(RadioId RadioId, bool IsPressed);
+
+internal sealed record AudioChannelGainCommand(string ChannelId, decimal Gain);
+
+internal sealed record AudioChannelMuteCommand(string ChannelId, bool IsMuted);
 
 internal sealed record ServiceRegistryPayload(
     string ServiceId,
@@ -331,6 +612,58 @@ internal sealed record RoutingStatePayload(
                 .ToArray());
     }
 }
+
+internal sealed record AudioFrameworkPayload(
+    string ServiceId,
+    IReadOnlyList<AudioDevicePayload> Devices,
+    IReadOnlyList<AudioBusPayload> Buses,
+    IReadOnlyList<AudioChannelStripPayload> Channels)
+{
+    public static AudioFrameworkPayload Create(AudioFrameworkCatalog framework)
+    {
+        ArgumentNullException.ThrowIfNull(framework);
+
+        return new AudioFrameworkPayload(
+            ServiceId: "audio-processor",
+            Devices: framework.Devices
+                .Select(static device => new AudioDevicePayload(device.Id.Value, device.DisplayName, device.Role, device.InputEnabled, device.OutputEnabled))
+                .ToArray(),
+            Buses: framework.Buses
+                .Select(static bus => new AudioBusPayload(bus.Id.Value, bus.DisplayName, bus.Direction, bus.ChannelIds))
+                .ToArray(),
+            Channels: framework.ChannelStrips
+                .Select(static channel => new AudioChannelStripPayload(
+                    channel.Id.Value,
+                    channel.DisplayName,
+                    channel.SignalPath,
+                    channel.DeviceRole,
+                    channel.DefaultGain,
+                    channel.DefaultMuted,
+                    channel.CanTransmit))
+                .ToArray());
+    }
+}
+
+internal sealed record AudioMixerStatePayload(IReadOnlyList<AudioMixerChannelPayload> Channels)
+{
+    public static AudioMixerStatePayload Create(AudioMixerSnapshot snapshot)
+    {
+        ArgumentNullException.ThrowIfNull(snapshot);
+
+        return new AudioMixerStatePayload(
+            snapshot.Channels
+                .Select(static channel => new AudioMixerChannelPayload(channel.Id.Value, channel.Gain, channel.Muted, channel.Active))
+                .ToArray());
+    }
+}
+
+internal sealed record AudioDevicePayload(string DeviceId, string DisplayName, string Role, bool InputEnabled, bool OutputEnabled);
+
+internal sealed record AudioBusPayload(string BusId, string DisplayName, string Direction, IReadOnlyList<string> ChannelIds);
+
+internal sealed record AudioChannelStripPayload(string ChannelId, string DisplayName, string SignalPath, string DeviceRole, decimal DefaultGain, bool DefaultMuted, bool CanTransmit);
+
+internal sealed record AudioMixerChannelPayload(string ChannelId, decimal Gain, bool Muted, bool Active);
 
 internal sealed record RoutingCrosspointPayload(
     string SourceKind,
