@@ -23,6 +23,7 @@ using System.IO;
 using System.Linq;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
+using System.Threading;
 using System.Threading.Tasks;
 using Avalonia.Threading;
 using MQTTnet;
@@ -90,6 +91,8 @@ public enum AdminSection
 	Security,
 
 	Integrations,
+
+	IntegrationsWhat3Words,
 
 	Diagnostics,
 }
@@ -165,6 +168,8 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 
 	private readonly MqttConnectionService _mqttConnectionService;
 
+	private readonly What3WordsService _what3WordsService;
+
 	private double _locationLatitude = 30.5422d;
 
 	private double _locationLongitude = -97.6384d;
@@ -172,6 +177,16 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 	private double _vehicleHeadingDegrees = 22d;
 
 	private bool _isRadarFollowEnabled = true;
+
+	private string _what3WordsDisplay = "CONFIG API KEY";
+
+	private string _adminWhat3WordsApiKey = string.Empty;
+
+	private string _adminWhat3WordsStatus = "Enter the what3words API key and save it to enable dashboard lookups.";
+
+	private double _lastWhat3WordsLatitude = double.NaN;
+
+	private double _lastWhat3WordsLongitude = double.NaN;
 
 	private string _clock = string.Empty;
 
@@ -306,6 +321,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 		_amFmUiStateStore = new AmFmUiStateStore();
 		_internetRadioCatalogService = new InternetRadioCatalogService();
 		_mqttConnectionService = new MqttConnectionService();
+		_what3WordsService = new What3WordsService();
 		_mqttConnectionService.StateChanged += OnMqttStateChanged;
 		_mqttConnectionService.MessageReceived += OnMqttMessageReceived;
 		_clockTimer = new DispatcherTimer
@@ -318,6 +334,8 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 		LoadInternetRadioCatalog();
 		RestoreAmFmUiState();
 		ApplyMqttState(_mqttConnectionService.CurrentState);
+		_adminWhat3WordsApiKey = _what3WordsService.GetConfiguredApiKey() ?? string.Empty;
+		_ = RefreshWhat3WordsAsync();
 		_clockTimer.Start();
 		_ = InitializeMqttAsync();
 	}
@@ -343,6 +361,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 			}
 
 			PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(LocationValue)));
+			_ = RefreshWhat3WordsAsync();
 		}
 	}
 
@@ -357,12 +376,19 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 			}
 
 			PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(LocationValue)));
+			_ = RefreshWhat3WordsAsync();
 		}
 	}
 
 	public string LocationValue => string.Create(
 		CultureInfo.InvariantCulture,
 		$"{LocationLatitude:0.0000}, {LocationLongitude:0.0000}");
+
+	public string What3WordsDisplay
+	{
+		get => _what3WordsDisplay;
+		private set => SetProperty(ref _what3WordsDisplay, value);
+	}
 
 	public double VehicleHeadingDegrees
 	{
@@ -808,6 +834,12 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 
 	public bool IsAdminAudioSectionSelected => SelectedAdminSection == AdminSection.Audio;
 
+	public bool IsAdminNetworkSectionSelected => SelectedAdminSection == AdminSection.Network;
+
+	public bool IsAdminIntegrationsSectionSelected => SelectedAdminSection == AdminSection.Integrations;
+
+	public bool IsAdminIntegrationsWhat3WordsSectionSelected => SelectedAdminSection == AdminSection.IntegrationsWhat3Words;
+
 	public string ApConfiguredOutputSpeakerId
 	{
 		get => _apConfiguredOutputSpeakerId;
@@ -838,6 +870,18 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 
 	public string AdminAudioDeviceSummary => $"MASTER: {AppliedAudioOutputSpeakerLabel}  CHANNELS: {Math.Max(AudioOutputDevices.Count - 1, 0)}";
 
+	public string AdminWhat3WordsApiKey
+	{
+		get => _adminWhat3WordsApiKey;
+		set => SetProperty(ref _adminWhat3WordsApiKey, value);
+	}
+
+	public string AdminWhat3WordsStatus
+	{
+		get => _adminWhat3WordsStatus;
+		private set => SetProperty(ref _adminWhat3WordsStatus, value);
+	}
+
 	/// <summary>
 	/// Gets the summary line shown in the System status page.
 	/// </summary>
@@ -856,7 +900,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 
 	public bool IsAdminSystemStatusSectionSelected => SelectedAdminSection == AdminSection.SystemStatus;
 
-	public bool IsAdminNonSystemSectionSelected => SelectedAdminSection is not (AdminSection.System or AdminSection.SystemStatus or AdminSection.Audio);
+	public bool IsAdminNonSystemSectionSelected => SelectedAdminSection is not (AdminSection.System or AdminSection.SystemStatus or AdminSection.Audio or AdminSection.Integrations or AdminSection.IntegrationsWhat3Words);
 
 	// Indicates whether the left directional button is active.
 	public bool IsDirectionalLeftSelected => SelectedDirectional == DirectionalMode.Left;
@@ -984,7 +1028,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 
 			case AdminSection.Network:
 				AdminSectionTitle = "NETWORK";
-				AdminSectionDescription = "MQTT, LAN, broker, and remote endpoint configuration will live here.";
+				AdminSectionDescription = "MQTT, LAN, broker, and remote endpoint settings are configured here.";
 				break;
 
 			case AdminSection.Security:
@@ -994,7 +1038,12 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 
 			case AdminSection.Integrations:
 				AdminSectionTitle = "INTEGRATIONS";
-				AdminSectionDescription = "CAD, siren, SCADA, and other external integration settings will live here.";
+				AdminSectionDescription = "Select an external integration category to configure its settings.";
+				break;
+
+			case AdminSection.IntegrationsWhat3Words:
+				AdminSectionTitle = "INTEGRATIONS / WHAT3WORDS";
+				AdminSectionDescription = "Configure the what3words API key used for dashboard location lookups.";
 				break;
 
 			case AdminSection.Diagnostics:
@@ -1008,6 +1057,29 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 
 		RaiseAdminSystemStatusChanged();
 		RaiseAdminAudioStateChanged();
+		RaiseAdminNetworkStateChanged();
+	}
+
+	public async Task SaveAdminWhat3WordsApiKeyAsync()
+	{
+		try
+		{
+			_what3WordsService.SaveApiKey(AdminWhat3WordsApiKey);
+			AdminWhat3WordsApiKey = _what3WordsService.GetConfiguredApiKey() ?? string.Empty;
+			AdminWhat3WordsStatus = string.IsNullOrWhiteSpace(AdminWhat3WordsApiKey)
+				? "what3words API key cleared. Dashboard lookup is disabled."
+				: "what3words API key saved. Refreshing dashboard location words.";
+
+			_lastWhat3WordsLatitude = double.NaN;
+			_lastWhat3WordsLongitude = double.NaN;
+			await RefreshWhat3WordsAsync().ConfigureAwait(false);
+			RaiseAdminNetworkStateChanged();
+		}
+		catch (IOException)
+		{
+			AdminWhat3WordsStatus = "Unable to save the what3words API key to the UI config file.";
+			RaiseAdminNetworkStateChanged();
+		}
 	}
 
 	public void SelectAdminOutputSpeaker(string deviceId)
@@ -1809,6 +1881,9 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 		PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IsAdminSystemGeneralSectionSelected)));
 		PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IsAdminSystemStatusSectionSelected)));
 		PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IsAdminAudioSectionSelected)));
+		PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IsAdminNetworkSectionSelected)));
+		PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IsAdminIntegrationsSectionSelected)));
+		PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IsAdminIntegrationsWhat3WordsSectionSelected)));
 		PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IsAdminNonSystemSectionSelected)));
 	}
 
@@ -1824,6 +1899,16 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 		PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(SelectedAudioOutputSpeakerLabel)));
 		PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(ApConfiguredOutputSpeakerLabel)));
 		PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(AppliedAudioOutputSpeakerLabel)));
+	}
+
+	private void RaiseAdminNetworkStateChanged()
+	{
+		PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IsAdminNetworkSectionSelected)));
+		PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IsAdminIntegrationsSectionSelected)));
+		PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IsAdminIntegrationsWhat3WordsSectionSelected)));
+		PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IsAdminNonSystemSectionSelected)));
+		PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(AdminWhat3WordsApiKey)));
+		PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(AdminWhat3WordsStatus)));
 	}
 
 	private void RaiseDirectionalStateChanged()
@@ -2045,6 +2130,28 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 			AuxiliaryAudioSourceMode.InternetRadio => _internetPresetStationNames[presetIndex] ?? string.Empty,
 			_ => throw new ArgumentOutOfRangeException(),
 		};
+	}
+
+	/// <summary>
+	/// Refreshes the what3words display when the location changes enough to warrant a new lookup.
+	/// </summary>
+	private async Task RefreshWhat3WordsAsync()
+	{
+		if (Math.Abs(LocationLatitude - _lastWhat3WordsLatitude) < 0.0001d
+			&& Math.Abs(LocationLongitude - _lastWhat3WordsLongitude) < 0.0001d)
+		{
+			return;
+		}
+
+		_lastWhat3WordsLatitude = LocationLatitude;
+		_lastWhat3WordsLongitude = LocationLongitude;
+
+		string? words = await _what3WordsService.GetWordsAsync(LocationLatitude, LocationLongitude, CancellationToken.None).ConfigureAwait(false);
+		string resolvedText = string.IsNullOrWhiteSpace(words)
+			? "CONFIG API KEY"
+			: words.ToUpperInvariant();
+
+		await Dispatcher.UIThread.InvokeAsync(() => What3WordsDisplay = resolvedText);
 	}
 
 	private void SaveCurrentPreset(int presetIndex)

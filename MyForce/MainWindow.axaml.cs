@@ -585,6 +585,11 @@ public partial class MainWindow : Window
 		SelectAdminSection(AdminSection.Integrations);
 	}
 
+	private void OnAdminIntegrationsWhat3WordsPressed(object? sender, PointerPressedEventArgs e)
+	{
+		SelectAdminSection(AdminSection.IntegrationsWhat3Words);
+	}
+
 	private void OnAdminDiagnosticsPressed(object? sender, PointerPressedEventArgs e)
 	{
 		SelectAdminSection(AdminSection.Diagnostics);
@@ -623,6 +628,11 @@ public partial class MainWindow : Window
 	private void OnAdminPushAudioConfigPressed(object? sender, PointerPressedEventArgs e)
 	{
 		_viewModel.PushAdminAudioConfig();
+	}
+
+	private async void OnAdminSaveWhat3WordsApiKeyPressed(object? sender, PointerPressedEventArgs e)
+	{
+		await _viewModel.SaveAdminWhat3WordsApiKeyAsync();
 	}
 
 	private void SelectTab(MainConsoleTab tab)

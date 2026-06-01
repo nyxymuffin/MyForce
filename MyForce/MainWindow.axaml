@@ -159,26 +159,41 @@
                         <StackPanel Grid.Column="1" Width="182" Height="63" Spacing="0" HorizontalAlignment="Center">
                             <TextBlock Classes="white"
                                        Width="182"
-                                       Height="24"
-                                       FontSize="18"
+                                       Height="20"
+                                       FontSize="16"
                                        TextAlignment="Center"
                                        Text="{Binding LocationLabel}" />
                             <!-- Location Information -->
                             <Viewbox Width="182"
-                                     Height="42"
+                                     Height="26"
                                      Stretch="Uniform"
                                      StretchDirection="DownOnly"
                                      HorizontalAlignment="Center"
                                      VerticalAlignment="Center">
                                 <TextBlock Width="182"
-                                       Height="42"
+                                        Height="26"
                                        Foreground="{StaticResource SignalBrush}"
                                        FontFamily="Segoe UI"
                                        FontWeight="Bold"
-                                       FontSize="19"
+                                        FontSize="16"
                                        TextAlignment="Center"
                                        VerticalAlignment="Center"
                                        Text="{Binding LocationValue}" />
+                            </Viewbox>
+                            <Viewbox Width="182"
+                                     Height="20"
+                                     Stretch="Uniform"
+                                     StretchDirection="DownOnly"
+                                     HorizontalAlignment="Center"
+                                     VerticalAlignment="Center">
+                                <TextBlock Classes="white"
+                                           Width="182"
+                                            Height="20"
+                                            FontSize="12"
+                                           TextAlignment="Center"
+                                           VerticalAlignment="Center"
+                                            TextWrapping="NoWrap"
+                                           Text="{Binding What3WordsDisplay}" />
                             </Viewbox>
 
                         </StackPanel>
@@ -1370,7 +1385,10 @@
                                 <Expander Classes="adminMenu" Header="INTEGRATIONS">
                                     <StackPanel Spacing="8">
                                         <Border Classes="buttonFrame" PointerPressed="OnAdminIntegrationsPressed" Padding="10">
-                                            <TextBlock Classes="white" Text="CAD / Siren / SCADA" />
+                                            <TextBlock Classes="white" Text="Categories" />
+                                        </Border>
+                                        <Border Classes="buttonFrame" PointerPressed="OnAdminIntegrationsWhat3WordsPressed" Padding="10">
+                                            <TextBlock Classes="white" Text="what3words" />
                                         </Border>
                                     </StackPanel>
                                 </Expander>
@@ -1650,6 +1668,107 @@
                                                            FontSize="15"
                                                            TextAlignment="Center"
                                                            Text="PUSH CONFIG TO AP" />
+                                            </Border>
+                                        </StackPanel>
+                                    </ScrollViewer>
+
+                                    <ScrollViewer Grid.Row="1"
+                                                  IsVisible="{Binding IsAdminNetworkSectionSelected}"
+                                                  HorizontalScrollBarVisibility="Disabled"
+                                                  VerticalScrollBarVisibility="Auto">
+                                        <StackPanel Spacing="8"
+                                                    MaxWidth="620"
+                                                    HorizontalAlignment="Stretch">
+                                            <Border Classes="panel"
+                                                    Padding="10">
+                                                <StackPanel Spacing="6">
+                                                    <TextBlock Classes="white"
+                                                               FontSize="18"
+                                                               Text="NETWORK" />
+                                                    <TextBlock Classes="white"
+                                                               FontSize="12"
+                                                               TextWrapping="Wrap"
+                                                               Text="MQTT broker, LAN addressing, and remote endpoint settings will render here." />
+                                                </StackPanel>
+                                            </Border>
+                                        </StackPanel>
+                                    </ScrollViewer>
+
+                                    <ScrollViewer Grid.Row="1"
+                                                  IsVisible="{Binding IsAdminIntegrationsSectionSelected}"
+                                                  HorizontalScrollBarVisibility="Disabled"
+                                                  VerticalScrollBarVisibility="Auto">
+                                        <StackPanel Spacing="8"
+                                                    MaxWidth="620"
+                                                    HorizontalAlignment="Stretch">
+                                            <Border Classes="panel"
+                                                    Padding="10">
+                                                <StackPanel Spacing="6">
+                                                    <TextBlock Classes="white"
+                                                               FontSize="18"
+                                                               Text="INTEGRATION CATEGORIES" />
+                                                    <TextBlock Classes="white"
+                                                               FontSize="12"
+                                                               TextWrapping="Wrap"
+                                                               Text="Select an external integration category from the admin menu to configure its settings." />
+                                                </StackPanel>
+                                            </Border>
+
+                                            <Border Classes="buttonFrame"
+                                                    PointerPressed="OnAdminIntegrationsWhat3WordsPressed"
+                                                    Padding="10">
+                                                <TextBlock Classes="white"
+                                                           FontSize="15"
+                                                           TextAlignment="Center"
+                                                           Text="OPEN WHAT3WORDS SETTINGS" />
+                                            </Border>
+                                        </StackPanel>
+                                    </ScrollViewer>
+
+                                    <ScrollViewer Grid.Row="1"
+                                                  IsVisible="{Binding IsAdminIntegrationsWhat3WordsSectionSelected}"
+                                                  HorizontalScrollBarVisibility="Disabled"
+                                                  VerticalScrollBarVisibility="Auto">
+                                        <StackPanel Spacing="8"
+                                                    MaxWidth="620"
+                                                    HorizontalAlignment="Stretch">
+                                            <Border Classes="panel"
+                                                    Padding="10">
+                                                <StackPanel Spacing="6">
+                                                    <TextBlock Classes="white"
+                                                               FontSize="18"
+                                                               Text="WHAT3WORDS API" />
+                                                    <TextBlock Classes="white"
+                                                               FontSize="12"
+                                                               TextWrapping="Wrap"
+                                                               Text="Save the what3words API key used to convert the current GPS location into a three-word dashboard label." />
+                                                </StackPanel>
+                                            </Border>
+
+                                            <Border Classes="buttonFrame"
+                                                    Padding="10">
+                                                <StackPanel Spacing="8">
+                                                    <TextBlock Classes="white"
+                                                               FontSize="12"
+                                                               Text="API KEY" />
+                                                    <TextBox Text="{Binding AdminWhat3WordsApiKey}"
+                                                             Watermark="Enter what3words API key"
+                                                             FontSize="14"
+                                                             MinWidth="320" />
+                                                    <TextBlock Classes="white"
+                                                               FontSize="12"
+                                                               TextWrapping="Wrap"
+                                                               Text="{Binding AdminWhat3WordsStatus}" />
+                                                </StackPanel>
+                                            </Border>
+
+                                            <Border Classes="buttonFrame"
+                                                    PointerPressed="OnAdminSaveWhat3WordsApiKeyPressed"
+                                                    Padding="10">
+                                                <TextBlock Classes="white"
+                                                           FontSize="15"
+                                                           TextAlignment="Center"
+                                                           Text="SAVE WHAT3WORDS KEY" />
                                             </Border>
                                         </StackPanel>
                                     </ScrollViewer>
