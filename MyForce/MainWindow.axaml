@@ -1530,14 +1530,14 @@
                                        Text="{Binding AdminSectionDescription}" />
                             <Border Grid.Row="2"
                                     Classes="panel"
-                                    Padding="10">
-                                <Grid RowDefinitions="Auto,*"
-                                      RowSpacing="8">
+                                    Padding="10"
+                                    ClipToBounds="True">
+                                <Grid RowDefinitions="*">
                                     <!-- Sections 3.9 and 6: this Axaml stays read-only and renders retained/admin reference data without becoming a source of truth. -->
-                                    <ScrollViewer Grid.Row="1"
+                                    <ScrollViewer Grid.Row="0"
                                                   IsVisible="{Binding IsAdminSystemGeneralSectionSelected}"
                                                   HorizontalScrollBarVisibility="Disabled"
-                                                  VerticalScrollBarVisibility="Visible">
+                                                  VerticalScrollBarVisibility="Auto">
                                         <StackPanel Spacing="10">
                                             <!-- Section 6: framework component reference cards generated from the shared view-model projection. -->
                                             <Border Classes="panel"
@@ -1601,10 +1601,10 @@
                                         </StackPanel>
                                     </ScrollViewer>
 
-                                    <ScrollViewer Grid.Row="1"
+                                    <ScrollViewer Grid.Row="0"
                                                   IsVisible="{Binding IsAdminSystemStatusSectionSelected}"
                                                   HorizontalScrollBarVisibility="Disabled"
-                                                  VerticalScrollBarVisibility="Visible">
+                                                  VerticalScrollBarVisibility="Auto">
                                         <StackPanel Spacing="10">
                                             <Border Classes="panel"
                                                     Padding="10">
@@ -1665,7 +1665,7 @@
                                         </StackPanel>
                                     </ScrollViewer>
 
-                                    <ScrollViewer Grid.Row="1"
+                                    <ScrollViewer Grid.Row="0"
                                                   IsVisible="{Binding IsAdminAudioSectionSelected}"
                                                   HorizontalScrollBarVisibility="Disabled"
                                                   VerticalScrollBarVisibility="Auto">
@@ -1756,7 +1756,7 @@
                                         </StackPanel>
                                     </ScrollViewer>
 
-                                    <ScrollViewer Grid.Row="1"
+                                    <ScrollViewer Grid.Row="0"
                                                   IsVisible="{Binding IsAdminRadioSectionSelected}"
                                                   HorizontalScrollBarVisibility="Disabled"
                                                   VerticalScrollBarVisibility="Auto">
@@ -2058,7 +2058,7 @@
                                         </StackPanel>
                                     </ScrollViewer>
 
-                                    <ScrollViewer Grid.Row="1"
+                                    <ScrollViewer Grid.Row="0"
                                                   IsVisible="{Binding IsAdminNetworkSectionSelected}"
                                                   HorizontalScrollBarVisibility="Disabled"
                                                   VerticalScrollBarVisibility="Auto">
@@ -2080,7 +2080,7 @@
                                         </StackPanel>
                                     </ScrollViewer>
 
-                                    <ScrollViewer Grid.Row="1"
+                                    <ScrollViewer Grid.Row="0"
                                                   IsVisible="{Binding IsAdminIntegrationsSectionSelected}"
                                                   HorizontalScrollBarVisibility="Disabled"
                                                   VerticalScrollBarVisibility="Auto">
@@ -2111,7 +2111,7 @@
                                         </StackPanel>
                                     </ScrollViewer>
 
-                                    <ScrollViewer Grid.Row="1"
+                                    <ScrollViewer Grid.Row="0"
                                                   IsVisible="{Binding IsAdminIntegrationsWhat3WordsSectionSelected}"
                                                   HorizontalScrollBarVisibility="Disabled"
                                                   VerticalScrollBarVisibility="Auto">

@@ -72,7 +72,7 @@ internal sealed class AudioProcessorCoordinator : IAsyncDisposable
 		_configStore = new AudioProcessorConfigStore();
 		_pluginCatalog = RadioPluginCatalog.Load(AudioProcessorPluginDirectory.Resolve(_configStore.StoredConfig), AudioProcessorLog.Write);
 		_persistedTopology = AudioProcessorPersistedTopology.Load(_configStore.StoredConfig);
-		_registry = AudioProcessorRegistry.CreateDefault();
+		_registry = AudioProcessorRegistry.Create(_persistedTopology, _pluginCatalog.Modules, AudioProcessorLog.Write);
 		_audioFramework = AudioFrameworkCatalog.CreateDefault(_registry.RadioIds, AudioFrameworkCatalog.DiscoverPlaybackDevices());
 		_internetRadioController = new InternetRadioPlaybackController(_configStore);
 		_mixerState = AudioMixerState.CreateDefault(_audioFramework.ChannelStrips);
@@ -510,6 +510,7 @@ internal sealed record RelaySetDefinition(
 			ApplyManualPtt(request);
 			await PublishMixerStateAsync(CancellationToken.None).ConfigureAwait(false);
 			await PublishStatusAsync(CancellationToken.None).ConfigureAwait(false);
+			await PublishConsoleTxStateAsync(CancellationToken.None).ConfigureAwait(false);
 			await PublishCommandAckAsync(topic, request.MsgId, "ok", null, null, null).ConfigureAwait(false);
 			return;
 		}
@@ -655,19 +656,56 @@ internal sealed record RelaySetDefinition(
 
 	private static string? GetMessageId(ReadOnlySequence<byte> payload)
 	{
-		return AudioProcessorJson.Deserialize<MqttCommandEnvelope>(payload)?.MsgId;
+		return TryReadCommandEnvelope(payload, out var envelope) ? envelope.MsgId : null;
 	}
 
 	private bool ValidateAdminCommand(ReadOnlySequence<byte> payload, string topic)
 	{
-		var envelope = AudioProcessorJson.Deserialize<MqttCommandEnvelope>(payload);
-		if (string.Equals(envelope?.Auth, AdminCredential, StringComparison.Ordinal))
+		if (TryReadCommandEnvelope(payload, out var envelope)
+			&& string.Equals(envelope.Auth, AdminCredential, StringComparison.Ordinal))
 		{
 			return true;
 		}
 
 		AudioProcessorLog.Write("auth", $"Rejected admin command on '{topic}' because the auth credential was missing or invalid.");
 		return false;
+	}
+
+	private static bool TryReadCommandEnvelope(ReadOnlySequence<byte> payload, out MqttCommandEnvelope envelope)
+	{
+		envelope = new MqttCommandEnvelope(null, null);
+		if (payload.IsEmpty)
+		{
+			return false;
+		}
+
+		try
+		{
+			using var document = JsonDocument.Parse(payload.ToArray());
+			if (document.RootElement.ValueKind != JsonValueKind.Object)
+			{
+				return false;
+			}
+
+			var msgId = TryGetStringProperty(document.RootElement, "msg_id") ?? TryGetStringProperty(document.RootElement, "msgId");
+			var auth = TryGetStringProperty(document.RootElement, "auth");
+			envelope = new MqttCommandEnvelope(msgId, auth);
+			return true;
+		}
+		catch (JsonException)
+		{
+			return false;
+		}
+	}
+
+	private static string? TryGetStringProperty(JsonElement element, string propertyName)
+	{
+		if (!element.TryGetProperty(propertyName, out var property))
+		{
+			return null;
+		}
+
+		return property.ValueKind == JsonValueKind.String ? property.GetString() : property.ToString();
 	}
 
 	private static bool IsConsolePttTopic(string topic)
@@ -899,15 +937,13 @@ internal sealed record RelaySetDefinition(
 					activeManualTransmitRadioId: _txController.ActiveManualTransmitRadioId?.Value)),
 			retain: true,
 			cancellationToken: cancellationToken).ConfigureAwait(false);
-
-		await PublishRadioRuntimeAsync(cancellationToken).ConfigureAwait(false);
 	}
 
 	private async Task PublishSpecSystemTopicsAsync(CancellationToken cancellationToken)
 	{
 		await _mqttRuntime.PublishAsync(
 			_topics.SystemPluginsTopic,
-			AudioProcessorJson.Serialize(SystemPluginsPayload.Create(_registry)),
+			AudioProcessorJson.Serialize(SystemPluginsPayload.Create(_pluginCatalog.Modules)),
 			retain: true,
 			cancellationToken: cancellationToken).ConfigureAwait(false);
 
@@ -956,6 +992,12 @@ internal sealed record RelaySetDefinition(
 				cancellationToken: cancellationToken).ConfigureAwait(false);
 		}
 
+
+		await PublishConsoleTxStateAsync(cancellationToken).ConfigureAwait(false);
+	}
+
+	private async Task PublishConsoleTxStateAsync(CancellationToken cancellationToken)
+	{
 		await _mqttRuntime.PublishAsync(
 			_topics.ConsoleTxTopic,
 			AudioProcessorJson.Serialize(ConsoleTxStatePayload.Create(_txController)),
@@ -999,6 +1041,36 @@ internal sealed class AudioProcessorRegistry
 
 	public IReadOnlyList<BridgeDefinition> Bridges { get; }
 
+	public static AudioProcessorRegistry Create(AudioProcessorCoordinator.AudioProcessorPersistedTopology topology, IReadOnlyList<AudioProcessorCoordinator.DiscoveredRadioModule> discoveredModules, Action<string, string> log)
+	{
+		ArgumentNullException.ThrowIfNull(topology);
+		ArgumentNullException.ThrowIfNull(discoveredModules);
+		ArgumentNullException.ThrowIfNull(log);
+
+		if (topology.RadioDefinitions.Count == 0)
+		{
+			log("config", "No persisted radio definitions found; using built-in starter topology.");
+			return CreateDefault();
+		}
+
+		var radios = new List<RadioRuntimeDefinition>();
+		foreach (var definition in topology.RadioDefinitions)
+		{
+			var radio = CreatePersistedRadio(definition, discoveredModules, log);
+			if (radio is not null)
+			{
+				radios.Add(radio);
+			}
+		}
+
+		if (radios.Count == 0)
+		{
+			log("config", "Persisted radio definitions did not contain any usable modules; AP will publish an empty declared radio topology.");
+		}
+
+		return new AudioProcessorRegistry(radios.AsReadOnly(), Array.Empty<BridgeDefinition>());
+	}
+
 	public static AudioProcessorRegistry CreateDefault()
 	{
 		var radios = new List<RadioRuntimeDefinition>
@@ -1035,6 +1107,86 @@ internal sealed class AudioProcessorRegistry
 		};
 
 		return new AudioProcessorRegistry(radios.AsReadOnly(), Array.Empty<BridgeDefinition>());
+	}
+
+	private static RadioRuntimeDefinition? CreatePersistedRadio(AudioProcessorCoordinator.PersistedRadioDefinition definition, IReadOnlyList<AudioProcessorCoordinator.DiscoveredRadioModule> discoveredModules, Action<string, string> log)
+	{
+		ArgumentNullException.ThrowIfNull(definition);
+		ArgumentNullException.ThrowIfNull(discoveredModules);
+		ArgumentNullException.ThrowIfNull(log);
+
+		if (string.IsNullOrWhiteSpace(definition.RadioId) || string.IsNullOrWhiteSpace(definition.TypeId))
+		{
+			log("config", "Skipped persisted radio definition because radio id or type id was missing.");
+			return null;
+		}
+
+		var displayName = string.IsNullOrWhiteSpace(definition.DisplayName) ? definition.RadioId : definition.DisplayName;
+		if (string.Equals(definition.Kind, RadioRuntimeKind.Resource.ToString(), StringComparison.OrdinalIgnoreCase)
+			|| string.Equals(definition.TypeId, "4w_resource", StringComparison.OrdinalIgnoreCase))
+		{
+			return CreateResourceRadio(definition.RadioId, definition.TypeId, displayName);
+		}
+
+		var discoveredModule = discoveredModules.FirstOrDefault(module => string.Equals(module.TypeId, definition.TypeId, StringComparison.OrdinalIgnoreCase));
+		if (discoveredModule is null)
+		{
+			log("config", $"Persisted radio '{definition.RadioId}' type '{definition.TypeId}' has no loaded plugin; publishing declaration with unavailable module metadata.");
+			return CreateModuleRadio(definition.RadioId, definition.TypeId, displayName, []);
+		}
+
+		return CreateRadioDefinition(
+			new RadioId(definition.RadioId),
+			discoveredModule.TypeId,
+			displayName,
+			RadioRuntimeKind.Module,
+			discoveredModule.Capabilities,
+			discoveredModule.ConfigSchema,
+			CreateInstanceConfig(definition, discoveredModule.Capabilities));
+	}
+
+	private static RadioModuleInstanceConfig CreateInstanceConfig(AudioProcessorCoordinator.PersistedRadioDefinition definition, RadioCapabilities capabilities)
+	{
+		ArgumentNullException.ThrowIfNull(definition);
+		ArgumentNullException.ThrowIfNull(capabilities);
+
+		var settings = DeserializeSettings(definition.InstanceConfigJson);
+		return new RadioModuleInstanceConfig(
+			new KeyingConfig(SelectPreferredKeying(capabilities), null, 120, 60, true),
+			new DetectConfig(SelectPreferredDetect(capabilities), null),
+			new DeviceBindingConfig($"radio-{definition.RadioId}"),
+			settings);
+	}
+
+	private static JsonObject DeserializeSettings(string? json)
+	{
+		if (string.IsNullOrWhiteSpace(json))
+		{
+			return [];
+		}
+
+		try
+		{
+			return JsonNode.Parse(json) as JsonObject ?? [];
+		}
+		catch (JsonException)
+		{
+			return [];
+		}
+	}
+
+	private static KeyingMethod SelectPreferredKeying(RadioCapabilities capabilities)
+	{
+		return capabilities.Keying.Contains(KeyingMethod.Rm)
+			? KeyingMethod.Rm
+			: capabilities.Keying.FirstOrDefault(KeyingMethod.Relay);
+	}
+
+	private static DetectMethod SelectPreferredDetect(RadioCapabilities capabilities)
+	{
+		return capabilities.Detect.Contains(DetectMethod.Rm)
+			? DetectMethod.Rm
+			: capabilities.Detect.FirstOrDefault(DetectMethod.Vox);
 	}
 
 	/// <summary>
@@ -2051,7 +2203,7 @@ internal sealed class ConsolePttRequest
 	public bool? Override { get; init; }
 }
 
-internal sealed record MqttCommandEnvelope(string? V, DateTimeOffset? Ts, string? MsgId, string? Auth);
+internal sealed record MqttCommandEnvelope(string? MsgId, string? Auth);
 
 internal sealed record AudioChannelGainCommand(string ChannelId, decimal Gain);
 
@@ -2117,18 +2269,19 @@ internal sealed record CommandAckErrorPayload(string? Field, string Code, string
 
 internal sealed record SystemPluginsPayload(int V, DateTimeOffset Ts, IReadOnlyList<SystemPluginTypePayload> Types)
 {
-	public static SystemPluginsPayload Create(AudioProcessorRegistry registry)
+	public static SystemPluginsPayload Create(IReadOnlyList<AudioProcessorCoordinator.DiscoveredRadioModule> discoveredModules)
 	{
-		ArgumentNullException.ThrowIfNull(registry);
+		ArgumentNullException.ThrowIfNull(discoveredModules);
 
-		var builtInTypes = registry.Radios
-			.Select(static radio => new SystemPluginTypePayload(
-				TypeId: radio.TypeId,
-				DisplayName: radio.DisplayName,
-				Kind: radio.Kind == RadioRuntimeKind.Resource ? "radio_resource" : "radio_module",
-				Version: radio.Kind == RadioRuntimeKind.Resource ? "core" : "built-in"));
+		var types = discoveredModules
+			.Select(static module => new SystemPluginTypePayload(
+				TypeId: module.TypeId,
+				DisplayName: module.DisplayName,
+				Kind: "radio_module",
+				Version: module.Version))
+			.Append(new SystemPluginTypePayload("4w_resource", "4-Wire Resource", "radio_resource", "core"));
 
-		return new SystemPluginsPayload(1, DateTimeOffset.UtcNow, builtInTypes.ToArray());
+		return new SystemPluginsPayload(1, DateTimeOffset.UtcNow, types.ToArray());
 	}
 }
 
