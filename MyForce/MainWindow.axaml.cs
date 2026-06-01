@@ -45,15 +45,22 @@ public partial class MainWindow : Window
 {
 	private const int AdminTapThreshold = 5;
 
+	private const int RadarFollowResolutionIndex = 16;
+
 	private static readonly TimeSpan AdminTapWindow = TimeSpan.FromSeconds(20);
 
 	private readonly MainWindowViewModel _viewModel;
+
 	private readonly MemoryLayer _vehicleLayer = new() { Name = "Vehicle" };
+
 	private readonly MemoryLayer _alertLayer = new() { Name = "Alerts" };
+
 	private readonly WeatherAlertService _weatherAlertService = new();
 
 	private readonly Queue<DateTime> _speedTapTimes = new();
+
 	private MapControl? _radarMapControl;
+
 	private CancellationTokenSource? _alertRefreshCts;
 
 	public MainWindow()
@@ -152,7 +159,10 @@ public partial class MainWindow : Window
 		_vehicleLayer.Features = [vehicleFeature];
 		if (_viewModel.IsRadarFollowEnabled)
 		{
-			_radarMapControl.Map.Navigator.CenterOnAndZoomTo(sphericalMercator, _radarMapControl.Map.Navigator.Resolutions[9]);
+			// Start follow mode at a closer default zoom so the vehicle area is easier to read.
+			IReadOnlyList<double> resolutions = _radarMapControl.Map.Navigator.Resolutions;
+			int resolutionIndex = Math.Min(RadarFollowResolutionIndex, resolutions.Count - 1);
+			_radarMapControl.Map.Navigator.CenterOnAndZoomTo(sphericalMercator, resolutions[resolutionIndex]);
 		}
 
 		_radarMapControl.Refresh();
