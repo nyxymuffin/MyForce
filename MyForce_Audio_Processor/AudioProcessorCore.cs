@@ -84,6 +84,7 @@ internal sealed class AudioProcessorCoordinator : IAsyncDisposable
 internal static class AudioProcessorPluginDirectory
 {
 	private const string PluginDirectoryName = "plugins";
+	private const string PluginRootDirectoryName = "myforce";
 
 	public static string Resolve()
 	{
@@ -91,6 +92,12 @@ internal static class AudioProcessorPluginDirectory
 		if (!string.IsNullOrWhiteSpace(configuredPath))
 		{
 			return Path.GetFullPath(configuredPath);
+		}
+
+		var appDataDirectory = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+		if (!string.IsNullOrWhiteSpace(appDataDirectory))
+		{
+			return Path.Combine(appDataDirectory, PluginRootDirectoryName, PluginDirectoryName);
 		}
 
 		return Path.Combine(AppContext.BaseDirectory, PluginDirectoryName);
@@ -114,7 +121,16 @@ internal sealed class RadioPluginCatalog
 		ArgumentException.ThrowIfNullOrWhiteSpace(pluginDirectoryPath);
 		ArgumentNullException.ThrowIfNull(log);
 
-		Directory.CreateDirectory(pluginDirectoryPath);
+		try
+		{
+			Directory.CreateDirectory(pluginDirectoryPath);
+		}
+		catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+		{
+			log("discovery", $"Radio plugin directory '{pluginDirectoryPath}' is unavailable: {ex.Message}. Continuing without external radio plugins.");
+			return new RadioPluginCatalog(pluginDirectoryPath, Array.Empty<DiscoveredRadioModule>());
+		}
+
 		var modules = new List<DiscoveredRadioModule>();
 		foreach (var assemblyPath in Directory.EnumerateFiles(pluginDirectoryPath, "*.dll", SearchOption.TopDirectoryOnly))
 		{
