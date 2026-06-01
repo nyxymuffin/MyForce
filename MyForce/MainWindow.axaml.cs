@@ -393,6 +393,21 @@ public partial class MainWindow : Window
 		_viewModel.ClearAdminPin();
 	}
 
+	private void OnAdminAudioOutputSpeakerPressed(object? sender, PointerPressedEventArgs e)
+	{
+		if (sender is not Border { Tag: string deviceId } || string.IsNullOrWhiteSpace(deviceId))
+		{
+			return;
+		}
+
+		_viewModel.SelectAdminOutputSpeaker(deviceId);
+	}
+
+	private void OnAdminPushAudioConfigPressed(object? sender, PointerPressedEventArgs e)
+	{
+		_viewModel.PushAdminAudioConfig();
+	}
+
 	private void SelectTab(MainConsoleTab tab)
 	{
 		_viewModel.SelectTab(tab);

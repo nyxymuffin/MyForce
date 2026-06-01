@@ -10,6 +10,7 @@ internal sealed class AudioProcessorCoordinator : IAsyncDisposable
 {
     private readonly AudioProcessorRegistry _registry;
     private readonly AudioFrameworkCatalog _audioFramework;
+    private readonly AudioProcessorConfigStore _configStore;
     private readonly InternetRadioPlaybackController _internetRadioController;
     private readonly AudioMixerState _mixerState;
     private readonly AudioProcessorRoutingState _routingState;
@@ -24,12 +25,14 @@ internal sealed class AudioProcessorCoordinator : IAsyncDisposable
 
         _mqttRuntime = mqttRuntime;
         _topics = topics;
+        _configStore = new AudioProcessorConfigStore();
         _registry = AudioProcessorRegistry.CreateDefault();
-        _audioFramework = AudioFrameworkCatalog.CreateDefault(_registry.RadioIds);
-        _internetRadioController = new InternetRadioPlaybackController();
+        _audioFramework = AudioFrameworkCatalog.CreateDefault(_registry.RadioIds, AudioFrameworkCatalog.DiscoverPlaybackDevices());
+        _internetRadioController = new InternetRadioPlaybackController(_configStore);
         _mixerState = AudioMixerState.CreateDefault(_audioFramework.ChannelStrips);
-        _routingState = AudioProcessorRoutingState.CreateDefault(_registry.RadioIds);
+        _routingState = AudioProcessorRoutingState.CreateDefault(_registry.RadioIds, ResolveInitialSpeakerDeviceId());
         _txController = new TxController(_registry.RadioIds);
+        _internetRadioController.SetOutputSpeaker(_routingState.CurrentSnapshot.SpeakerSink.DeviceId);
     }
 
     public async Task StartAsync(CancellationToken cancellationToken)
@@ -54,6 +57,34 @@ internal sealed class AudioProcessorCoordinator : IAsyncDisposable
         var topic = args.ApplicationMessage.Topic;
         if (string.IsNullOrWhiteSpace(topic))
         {
+            return;
+        }
+
+        if (string.Equals(topic, _topics.OutputSpeakerCommandTopic, StringComparison.OrdinalIgnoreCase))
+        {
+            var command = AudioProcessorJson.Deserialize<OutputSpeakerCommand>(args.ApplicationMessage.Payload);
+            if (command is null)
+            {
+                return;
+            }
+
+            ApplyOutputSpeaker(command.DeviceId);
+            await PublishRoutingStateAsync(CancellationToken.None).ConfigureAwait(false);
+            await PublishInternetRadioStateAsync(CancellationToken.None).ConfigureAwait(false);
+            return;
+        }
+
+        if (string.Equals(topic, _topics.AudioOutputConfigCommandTopic, StringComparison.OrdinalIgnoreCase))
+        {
+            var command = AudioProcessorJson.Deserialize<AudioOutputConfigCommand>(args.ApplicationMessage.Payload);
+            if (command is null)
+            {
+                return;
+            }
+
+            ApplyAudioOutputConfig(command);
+            await PublishRoutingStateAsync(CancellationToken.None).ConfigureAwait(false);
+            await PublishInternetRadioStateAsync(CancellationToken.None).ConfigureAwait(false);
             return;
         }
 
@@ -118,6 +149,42 @@ internal sealed class AudioProcessorCoordinator : IAsyncDisposable
         }
     }
 
+    private void ApplyOutputSpeaker(string deviceId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(deviceId);
+
+        if (!_audioFramework.Devices.Any(device =>
+                device.OutputEnabled
+                && string.Equals(device.Id.Value, deviceId, StringComparison.OrdinalIgnoreCase)))
+        {
+            throw new InvalidOperationException($"Unknown output speaker device '{deviceId}'.");
+        }
+
+        _routingState.SetSpeakerSink(deviceId);
+        _configStore.StoredConfig.OutputSpeakerDeviceId = deviceId;
+        _internetRadioController.SetOutputSpeaker(deviceId);
+    }
+
+    private void ApplyAudioOutputConfig(AudioOutputConfigCommand command)
+    {
+        ArgumentNullException.ThrowIfNull(command);
+        ApplyOutputSpeaker(command.DeviceId);
+    }
+
+    private string ResolveInitialSpeakerDeviceId()
+    {
+        var configuredDeviceId = _configStore.StoredConfig.OutputSpeakerDeviceId;
+        if (!string.IsNullOrWhiteSpace(configuredDeviceId)
+            && _audioFramework.Devices.Any(device =>
+                device.OutputEnabled
+                && string.Equals(device.Id.Value, configuredDeviceId, StringComparison.OrdinalIgnoreCase)))
+        {
+            return configuredDeviceId;
+        }
+
+        return AudioFrameworkCatalog.DefaultSpeakerDeviceId;
+    }
+
     public async ValueTask DisposeAsync()
     {
         await _internetRadioController.DisposeAsync().ConfigureAwait(false);
@@ -162,7 +229,7 @@ internal sealed class AudioProcessorCoordinator : IAsyncDisposable
 
         await _mqttRuntime.PublishAsync(
             _topics.RoutingStateTopic,
-            AudioProcessorJson.Serialize(RoutingStatePayload.Create(_routingState.CurrentSnapshot)),
+            AudioProcessorJson.Serialize(RoutingStatePayload.Create(_routingState.CurrentSnapshot, _configStore.StoredConfig)),
             retain: true,
             cancellationToken: cancellationToken).ConfigureAwait(false);
 
@@ -183,6 +250,15 @@ internal sealed class AudioProcessorCoordinator : IAsyncDisposable
         await _mqttRuntime.PublishAsync(
             _topics.AudioMixerStateTopic,
             AudioProcessorJson.Serialize(AudioMixerStatePayload.Create(_mixerState.CurrentSnapshot)),
+            retain: true,
+            cancellationToken: cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task PublishRoutingStateAsync(CancellationToken cancellationToken)
+    {
+        await _mqttRuntime.PublishAsync(
+            _topics.RoutingStateTopic,
+            AudioProcessorJson.Serialize(RoutingStatePayload.Create(_routingState.CurrentSnapshot, _configStore.StoredConfig)),
             retain: true,
             cancellationToken: cancellationToken).ConfigureAwait(false);
     }
@@ -256,15 +332,23 @@ internal sealed class AudioProcessorRoutingState
 
     public RoutingSnapshot CurrentSnapshot => _currentSnapshot;
 
-    public static AudioProcessorRoutingState CreateDefault(IEnumerable<RadioId> radioIds)
+    public static AudioProcessorRoutingState CreateDefault(IEnumerable<RadioId> radioIds, string speakerDeviceId)
     {
         ArgumentNullException.ThrowIfNull(radioIds);
+        ArgumentException.ThrowIfNullOrWhiteSpace(speakerDeviceId);
 
         var crosspoints = radioIds
             .Select(static radioId => new RoutingCrosspoint(SourceEndpoint.OperatorMic, SinkEndpoint.ForRadioTx(radioId), 1.0m, false))
             .ToArray();
 
-        return new AudioProcessorRoutingState(new RoutingSnapshot(new ReadOnlyCollection<RoutingCrosspoint>(crosspoints), SinkEndpoint.Speaker, null));
+        return new AudioProcessorRoutingState(new RoutingSnapshot(new ReadOnlyCollection<RoutingCrosspoint>(crosspoints), SinkEndpoint.ForSpeaker(speakerDeviceId), null));
+    }
+
+    public void SetSpeakerSink(string deviceId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(deviceId);
+
+        _currentSnapshot = _currentSnapshot with { SpeakerSink = SinkEndpoint.ForSpeaker(deviceId) };
     }
 
     public void SetOperatorMicTarget(RadioId radioId)
@@ -331,6 +415,10 @@ internal sealed class AudioProcessorTopicFactory
     public string ChannelGainCommandTopic => $"{RootTopic}/cmd/channel-gain";
 
     public string ChannelMuteCommandTopic => $"{RootTopic}/cmd/channel-mute";
+
+    public string AudioOutputConfigCommandTopic => $"{RootTopic}/cmd/audio-output-config";
+
+    public string OutputSpeakerCommandTopic => $"{RootTopic}/cmd/output-speaker";
 
     public string InternetRadioPlayCommandTopic => $"{RootTopic}/cmd/internet-radio/play";
 
@@ -408,6 +496,8 @@ internal sealed record AudioMixerSnapshot(ReadOnlyCollection<AudioMixerChannelSt
 
 internal sealed class AudioFrameworkCatalog
 {
+    public const string DefaultSpeakerDeviceId = "default-speaker";
+
     public AudioFrameworkCatalog(
         IReadOnlyList<AudioDevice> devices,
         IReadOnlyList<AudioBus> buses,
@@ -428,7 +518,7 @@ internal sealed class AudioFrameworkCatalog
 
     public IReadOnlyList<AudioChannelStrip> ChannelStrips { get; }
 
-    public static AudioFrameworkCatalog CreateDefault(IEnumerable<RadioId> radioIds)
+    public static AudioFrameworkCatalog CreateDefault(IEnumerable<RadioId> radioIds, IReadOnlyList<AudioDevice>? playbackDevices)
     {
         ArgumentNullException.ThrowIfNull(radioIds);
 
@@ -436,9 +526,17 @@ internal sealed class AudioFrameworkCatalog
         var devices = new List<AudioDevice>
         {
             new(new AudioDeviceId("operator-console"), "Operator Console", "operator", true, true),
-            new(new AudioDeviceId("cabin-speaker"), "Cabin Speaker", "speaker", false, true),
             new(new AudioDeviceId("voice-recorder"), "Voice Recorder", "recorder", false, true)
         };
+
+        if (playbackDevices is not null && playbackDevices.Count > 0)
+        {
+            devices.AddRange(playbackDevices);
+        }
+        else
+        {
+            devices.Add(new AudioDevice(new AudioDeviceId(DefaultSpeakerDeviceId), "Default Speaker", "speaker", false, true));
+        }
 
         devices.AddRange(radioIdList.Select(static radioId =>
             new AudioDevice(new AudioDeviceId($"radio-{radioId.Value}"), $"Radio {radioId.Value}", "radio", true, true)));
@@ -492,6 +590,102 @@ internal sealed class AudioFrameworkCatalog
             new ReadOnlyCollection<AudioDevice>(devices),
             new ReadOnlyCollection<AudioBus>(buses),
             new ReadOnlyCollection<AudioChannelStrip>(channels));
+    }
+
+    /// <summary>
+    /// Discovers Linux playback sinks from PipeWire or PulseAudio so the AP can expose real output devices to the UI.
+    /// </summary>
+    public static IReadOnlyList<AudioDevice> DiscoverPlaybackDevices()
+    {
+        if (!OperatingSystem.IsLinux())
+        {
+            return Array.Empty<AudioDevice>();
+        }
+
+        try
+        {
+            using var process = new Process
+            {
+                StartInfo = new ProcessStartInfo
+                {
+                    FileName = "pactl",
+                    Arguments = "-f json list sinks",
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    UseShellExecute = false,
+                    CreateNoWindow = true
+                }
+            };
+
+            if (!process.Start())
+            {
+                return Array.Empty<AudioDevice>();
+            }
+
+            var output = process.StandardOutput.ReadToEnd();
+            process.WaitForExit(3000);
+            if (process.ExitCode != 0 || string.IsNullOrWhiteSpace(output))
+            {
+                return Array.Empty<AudioDevice>();
+            }
+
+            using var json = JsonDocument.Parse(output);
+            if (json.RootElement.ValueKind != JsonValueKind.Array)
+            {
+                return Array.Empty<AudioDevice>();
+            }
+
+            var devices = new List<AudioDevice>();
+            foreach (var sink in json.RootElement.EnumerateArray())
+            {
+                if (!sink.TryGetProperty("name", out var nameElement))
+                {
+                    continue;
+                }
+
+                var deviceId = nameElement.GetString();
+                if (string.IsNullOrWhiteSpace(deviceId))
+                {
+                    continue;
+                }
+
+                var displayName = deviceId;
+                if (sink.TryGetProperty("description", out var descriptionElement)
+                    && descriptionElement.ValueKind == JsonValueKind.String
+                    && !string.IsNullOrWhiteSpace(descriptionElement.GetString()))
+                {
+                    displayName = descriptionElement.GetString()!;
+                }
+                else if (sink.TryGetProperty("properties", out var propertiesElement)
+                    && propertiesElement.ValueKind == JsonValueKind.Object
+                    && propertiesElement.TryGetProperty("device.description", out var deviceDescriptionElement)
+                    && deviceDescriptionElement.ValueKind == JsonValueKind.String
+                    && !string.IsNullOrWhiteSpace(deviceDescriptionElement.GetString()))
+                {
+                    displayName = deviceDescriptionElement.GetString()!;
+                }
+
+                devices.Add(new AudioDevice(new AudioDeviceId(deviceId), displayName, "speaker", false, true));
+            }
+
+            return new ReadOnlyCollection<AudioDevice>(devices
+                .GroupBy(device => device.Id.Value, StringComparer.OrdinalIgnoreCase)
+                .Select(group => group.First())
+                .OrderBy(device => device.DisplayName, StringComparer.OrdinalIgnoreCase)
+                .ToArray());
+        }
+        catch (JsonException)
+        {
+            return Array.Empty<AudioDevice>();
+        }
+        catch (InvalidOperationException)
+        {
+            return Array.Empty<AudioDevice>();
+        }
+        catch (System.ComponentModel.Win32Exception)
+        {
+            return Array.Empty<AudioDevice>();
+        }
     }
 }
 
@@ -603,6 +797,14 @@ internal sealed record SinkEndpoint(string Kind, string? RadioId = null)
 {
     public static SinkEndpoint Speaker { get; } = new("speaker");
 
+    public string? DeviceId => Kind == "speaker" ? RadioId : null;
+
+    public static SinkEndpoint ForSpeaker(string deviceId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(deviceId);
+        return new SinkEndpoint("speaker", deviceId);
+    }
+
     public static SinkEndpoint ForRadioTx(RadioId radioId)
     {
         ArgumentNullException.ThrowIfNull(radioId);
@@ -615,6 +817,10 @@ internal sealed record ManualPttRequest(RadioId RadioId, bool IsPressed);
 internal sealed record AudioChannelGainCommand(string ChannelId, decimal Gain);
 
 internal sealed record AudioChannelMuteCommand(string ChannelId, bool IsMuted);
+
+internal sealed record AudioOutputConfigCommand(string DeviceId, string? CabinSpeakerPipeWireSinkName, string? HeadrestSpeakerPipeWireSinkName);
+
+internal sealed record OutputSpeakerCommand(string DeviceId);
 
 internal sealed record InternetRadioPlayCommand(string StreamUrl, string DisplayName, string Genre, string Language);
 
@@ -636,6 +842,7 @@ internal sealed record ServiceRegistryPayload(
             RadioIds: registry.RadioIds.Select(static radioId => radioId.Value).ToArray(),
             BridgeIds: registry.Bridges.Select(static bridge => bridge.Id.Value).ToArray());
     }
+}
 
 internal sealed record InternetRadioStatePayload(
     bool IsPlaying,
@@ -659,7 +866,6 @@ internal sealed record InternetRadioStatePayload(
             state.Status,
             state.Detail);
     }
-}
 }
 
 internal sealed record ServiceStatusPayload(
@@ -686,14 +892,17 @@ internal sealed record ServiceStatusPayload(
 
 internal sealed record RoutingStatePayload(
     string? ActiveOperatorTarget,
+    string SpeakerDeviceId,
     IReadOnlyList<RoutingCrosspointPayload> Crosspoints)
 {
-    public static RoutingStatePayload Create(RoutingSnapshot snapshot)
+    public static RoutingStatePayload Create(RoutingSnapshot snapshot, IAudioProcessorStoredConfig config)
     {
         ArgumentNullException.ThrowIfNull(snapshot);
+        ArgumentNullException.ThrowIfNull(config);
 
         return new RoutingStatePayload(
             ActiveOperatorTarget: snapshot.ActiveOperatorTarget?.Value,
+            SpeakerDeviceId: snapshot.SpeakerSink.DeviceId ?? AudioFrameworkCatalog.DefaultSpeakerDeviceId,
             Crosspoints: snapshot.Crosspoints
                 .Select(static crosspoint => new RoutingCrosspointPayload(
                     crosspoint.Source.Kind,
@@ -750,30 +959,6 @@ internal sealed record AudioMixerStatePayload(IReadOnlyList<AudioMixerChannelPay
     }
 }
 
-internal sealed record InternetRadioStatePayload(
-    bool IsPlaying,
-    string? StreamUrl,
-    string? DisplayName,
-    string? Genre,
-    string? Language,
-    string Status,
-    string Detail)
-{
-    public static InternetRadioStatePayload Create(InternetRadioPlaybackState state)
-    {
-        ArgumentNullException.ThrowIfNull(state);
-
-        return new InternetRadioStatePayload(
-            state.IsPlaying,
-            state.StreamUrl,
-            state.DisplayName,
-            state.Genre,
-            state.Language,
-            state.Status,
-            state.Detail);
-    }
-}
-
 internal sealed record AudioDevicePayload(string DeviceId, string DisplayName, string Role, bool InputEnabled, bool OutputEnabled);
 
 internal sealed record AudioBusPayload(string BusId, string DisplayName, string Direction, IReadOnlyList<string> ChannelIds);
@@ -822,6 +1007,7 @@ internal static class AudioProcessorJson
 
 internal sealed class InternetRadioPlaybackController : IAsyncDisposable
 {
+    private readonly AudioProcessorConfigStore _configStore;
     private readonly HttpClient _httpClient;
     private Process? _externalPlayerProcess;
     private bool _isStoppingExternalPlayer;
@@ -829,16 +1015,40 @@ internal sealed class InternetRadioPlaybackController : IAsyncDisposable
     private MediaFoundationReader? _reader;
     private InternetRadioPlayCommand? _activeCommand;
     private string? _activeBackend;
+    private string _outputSpeakerDeviceId = AudioFrameworkCatalog.DefaultSpeakerDeviceId;
     private decimal _outputGain = 1.0m;
 
-    public InternetRadioPlaybackController()
+    public InternetRadioPlaybackController(AudioProcessorConfigStore configStore)
     {
+        ArgumentNullException.ThrowIfNull(configStore);
+
+        _configStore = configStore;
         _httpClient = new HttpClient();
         _httpClient.DefaultRequestHeaders.UserAgent.ParseAdd("MyForce-AudioProcessor/1.0");
         CurrentState = new InternetRadioPlaybackState(false, null, null, null, null, "IDLE", "No internet radio stream selected.");
     }
 
     public InternetRadioPlaybackState CurrentState { get; private set; }
+
+    public void SetOutputSpeaker(string? deviceId)
+    {
+        if (string.IsNullOrWhiteSpace(deviceId))
+        {
+            _outputSpeakerDeviceId = AudioFrameworkCatalog.DefaultSpeakerDeviceId;
+        }
+        else
+        {
+            _outputSpeakerDeviceId = deviceId;
+        }
+
+        if (CurrentState.IsPlaying)
+        {
+            CurrentState = CurrentState with
+            {
+                Detail = $"Internet radio stream playing on {GetPlaybackBackendDescription()}."
+            };
+        }
+    }
 
     /// <summary>
     /// Starts internet radio playback on the default output device using the provided stream metadata.
@@ -848,6 +1058,23 @@ internal sealed class InternetRadioPlaybackController : IAsyncDisposable
         ArgumentNullException.ThrowIfNull(command);
         ArgumentException.ThrowIfNullOrWhiteSpace(command.StreamUrl);
         ArgumentException.ThrowIfNullOrWhiteSpace(command.DisplayName);
+
+        if (CanReuseActivePlayback(command))
+        {
+            _activeCommand = command;
+            CurrentState = CurrentState with
+            {
+                IsPlaying = true,
+                StreamUrl = command.StreamUrl,
+                DisplayName = command.DisplayName,
+                Genre = command.Genre,
+                Language = command.Language,
+                Status = "PLAYING",
+                Detail = $"Internet radio stream playing on {GetPlaybackBackendDescription()}."
+            };
+
+            return;
+        }
 
         await EnsureStreamReachableAsync(command.StreamUrl, cancellationToken).ConfigureAwait(false);
 
@@ -920,8 +1147,35 @@ internal sealed class InternetRadioPlaybackController : IAsyncDisposable
 
         if (OperatingSystem.IsLinux() && _externalPlayerProcess is not null && _activeCommand is not null)
         {
-            RestartLinuxPlaybackForVolumeChange();
+            CurrentState = CurrentState with
+            {
+                Detail = $"Internet radio stream playing on {GetPlaybackBackendDescription()}. Entertainment gain is controlled by the AP mixer state."
+            };
         }
+    }
+
+    private bool CanReuseActivePlayback(InternetRadioPlayCommand command)
+    {
+        ArgumentNullException.ThrowIfNull(command);
+
+        if (_activeCommand is null)
+        {
+            return false;
+        }
+
+        if (!string.Equals(_activeCommand.StreamUrl, command.StreamUrl, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        if (OperatingSystem.IsWindows())
+        {
+            return _waveOut is not null;
+        }
+
+        return OperatingSystem.IsLinux()
+            && _externalPlayerProcess is not null
+            && !_externalPlayerProcess.HasExited;
     }
 
     private async Task EnsureStreamReachableAsync(string streamUrl, CancellationToken cancellationToken)
@@ -969,7 +1223,7 @@ internal sealed class InternetRadioPlaybackController : IAsyncDisposable
         var launchedPlayer = TryStartLinuxPlayer(command.StreamUrl);
         if (launchedPlayer is null)
         {
-            throw new PlatformNotSupportedException("Linux internet radio playback requires ffplay to be installed and available on PATH.");
+            throw new PlatformNotSupportedException(BuildLinuxPlaybackUnavailableMessage());
         }
 
         _externalPlayerProcess = launchedPlayer.Process;
@@ -981,7 +1235,14 @@ internal sealed class InternetRadioPlaybackController : IAsyncDisposable
 
     private LinuxPlayerLaunch? TryStartLinuxPlayer(string streamUrl)
     {
-        var candidate = LinuxPlayerCandidate.CreateFfplay(GetLinuxPlayerVolumePercent(), streamUrl);
+        var sinkName = _outputSpeakerDeviceId;
+        if (string.IsNullOrWhiteSpace(sinkName))
+        {
+            Console.WriteLine("[audio-processor] No PipeWire sink is selected for the AP master output.");
+            return null;
+        }
+
+        var candidate = LinuxPlayerCandidate.CreateFfplay(GetLinuxPlayerVolumePercent(), streamUrl, sinkName);
         Console.WriteLine($"[audio-processor] Launching Linux internet radio player: {candidate.StartInfo.FileName} {string.Join(' ', candidate.StartInfo.ArgumentList)}");
         var process = new Process
         {
@@ -1013,33 +1274,6 @@ internal sealed class InternetRadioPlaybackController : IAsyncDisposable
         {
             process.Dispose();
             return null;
-        }
-    }
-
-    private void RestartLinuxPlaybackForVolumeChange()
-    {
-        var activeCommand = _activeCommand;
-        if (activeCommand is null)
-        {
-            return;
-        }
-
-        try
-        {
-            ReleasePlaybackResources();
-            StartLinuxPlayback(activeCommand);
-            CurrentState = CurrentState with
-            {
-                Detail = $"Internet radio stream playing on {GetPlaybackBackendDescription()}."
-            };
-        }
-        catch (Exception ex)
-        {
-            CurrentState = CurrentState with
-            {
-                Status = "ERROR",
-                Detail = $"Internet radio volume update failed on Linux: {ex.Message}"
-            };
         }
     }
 
@@ -1080,12 +1314,24 @@ internal sealed class InternetRadioPlaybackController : IAsyncDisposable
 
     private string GetPlaybackBackendDescription()
     {
-        return _activeBackend ?? "the default output";
+        var backendLabel = _activeBackend ?? "the configured PipeWire output";
+        return $"{backendLabel} routed to {_outputSpeakerDeviceId}";
+    }
+
+    private string BuildLinuxPlaybackUnavailableMessage()
+    {
+        var sinkName = _outputSpeakerDeviceId;
+        if (string.IsNullOrWhiteSpace(sinkName))
+        {
+            return "Linux internet radio playback requires ffplay and a selected PipeWire output device for the AP master output.";
+        }
+
+        return $"Linux internet radio playback requires ffplay and access to the PipeWire sink '{sinkName}'.";
     }
 
     private int GetLinuxPlayerVolumePercent()
     {
-        return (int)Math.Round(decimal.Clamp(_outputGain / 2.0m, 0m, 1.0m) * 100m, MidpointRounding.AwayFromZero);
+        return 100;
     }
 
     private void OnExternalPlayerExited(object? sender, EventArgs e)
@@ -1114,7 +1360,7 @@ internal sealed class InternetRadioPlaybackController : IAsyncDisposable
             {
                 IsPlaying = false,
                 Status = "ERROR",
-                Detail = $"Linux internet radio playback stopped unexpectedly (ffplay exit code {exitCode})."
+                Detail = $"Linux internet radio playback stopped unexpectedly on {GetPlaybackBackendDescription()} (ffplay exit code {exitCode})."
             };
         }
     }
@@ -1141,9 +1387,13 @@ internal sealed class LinuxPlayerCandidate
 
     public ProcessStartInfo StartInfo { get; }
 
-    public static LinuxPlayerCandidate CreateFfplay(int volumePercent, string streamUrl)
+    public static LinuxPlayerCandidate CreateFfplay(int volumePercent, string streamUrl, string sinkName)
     {
+        ArgumentException.ThrowIfNullOrWhiteSpace(streamUrl);
+        ArgumentException.ThrowIfNullOrWhiteSpace(sinkName);
+
         var startInfo = CreateStartInfo("ffplay");
+        startInfo.Environment["PULSE_SINK"] = sinkName;
         startInfo.ArgumentList.Add("-nodisp");
         startInfo.ArgumentList.Add("-vn");
         startInfo.ArgumentList.Add("-hide_banner");
@@ -1152,7 +1402,7 @@ internal sealed class LinuxPlayerCandidate
         startInfo.ArgumentList.Add("-volume");
         startInfo.ArgumentList.Add(volumePercent.ToString(System.Globalization.CultureInfo.InvariantCulture));
         startInfo.ArgumentList.Add(streamUrl);
-        return new LinuxPlayerCandidate("ffplay on the Linux default output", startInfo);
+        return new LinuxPlayerCandidate($"ffplay on PipeWire sink '{sinkName}'", startInfo);
     }
 
     private static ProcessStartInfo CreateStartInfo(string fileName)

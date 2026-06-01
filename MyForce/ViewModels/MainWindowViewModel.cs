@@ -124,6 +124,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 	private const string AudioProcessorStatusTopic = "myforce/ap/status/service";
 	private const string AudioProcessorChannelGainCommandTopic = "myforce/ap/cmd/channel-gain";
 	private const string AudioProcessorEntertainmentChannelId = "entertainment";
+	private const string DefaultAudioOutputSpeakerId = "cabin-speaker";
 	private const string GpioControllerStatusTopic = "myforce/gpio/status/service";
 	private const string SirenInterfaceStatusTopic = "myforce/siren/status/service";
 	private static readonly TimeSpan ComponentHeartbeatTimeout = TimeSpan.FromSeconds(15);
@@ -228,6 +229,14 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 	private string _adminPinEntry = string.Empty;
 
 	private string _adminPinStatus = "Enter PIN to unlock admin controls.";
+
+	private IReadOnlyList<AudioDeviceStateMessage> _audioOutputDevices = Array.Empty<AudioDeviceStateMessage>();
+
+	private string _apConfiguredOutputSpeakerId = DefaultAudioOutputSpeakerId;
+
+	private string _selectedAdminOutputSpeakerId = DefaultAudioOutputSpeakerId;
+
+	private string _adminAudioStatus = "Waiting for AP audio routing state.";
 
 	private IReadOnlyList<AdminSystemComponentStatus> _systemComponentStatuses =
 	[
@@ -682,6 +691,44 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 		private set => SetProperty(ref _adminPinStatus, value);
 	}
 
+	public IReadOnlyList<AudioDeviceStateMessage> AudioOutputDevices
+	{
+		get => _audioOutputDevices;
+		private set => SetProperty(ref _audioOutputDevices, value);
+	}
+
+	public bool IsAdminAudioSectionSelected => SelectedAdminSection == AdminSection.Audio;
+
+	public string ApConfiguredOutputSpeakerId
+	{
+		get => _apConfiguredOutputSpeakerId;
+		private set => SetProperty(ref _apConfiguredOutputSpeakerId, value);
+	}
+
+	public string SelectedAdminOutputSpeakerId
+	{
+		get => _selectedAdminOutputSpeakerId;
+		private set => SetProperty(ref _selectedAdminOutputSpeakerId, value);
+	}
+
+	public string AdminAudioStatus
+	{
+		get => _adminAudioStatus;
+		private set => SetProperty(ref _adminAudioStatus, value);
+	}
+
+	public bool HasAudioOutputDevices => AudioOutputDevices.Count > 0;
+
+	public bool IsSelectedSpeakerInSync => string.Equals(SelectedAdminOutputSpeakerId, ApConfiguredOutputSpeakerId, StringComparison.OrdinalIgnoreCase);
+
+	public string SelectedAudioOutputSpeakerLabel => ResolveAudioOutputSpeakerLabel(SelectedAdminOutputSpeakerId);
+
+	public string ApConfiguredOutputSpeakerLabel => ResolveAudioOutputSpeakerLabel(ApConfiguredOutputSpeakerId);
+
+	public string AppliedAudioOutputSpeakerLabel => ResolveAudioOutputSpeakerLabel(ApConfiguredOutputSpeakerId);
+
+	public string AdminAudioDeviceSummary => $"MASTER OUTPUT: {AppliedAudioOutputSpeakerLabel}  CHANNEL DEVICES: {Math.Max(AudioOutputDevices.Count - 1, 0)}";
+
 	/// <summary>
 	/// Gets the summary line shown in the System status page.
 	/// </summary>
@@ -843,6 +890,37 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 		}
 
 		RaiseAdminSystemStatusChanged();
+		RaiseAdminAudioStateChanged();
+	}
+
+	public void SelectAdminOutputSpeaker(string deviceId)
+	{
+		ArgumentException.ThrowIfNullOrWhiteSpace(deviceId);
+
+		if (!AudioOutputDevices.Any(device => string.Equals(device.DeviceId, deviceId, StringComparison.OrdinalIgnoreCase)))
+		{
+			throw new InvalidOperationException($"Unknown AP output speaker '{deviceId}'.");
+		}
+
+		SelectedAdminOutputSpeakerId = deviceId;
+		AdminAudioStatus = IsSelectedSpeakerInSync
+			? $"AP master speaker already routed to {SelectedAudioOutputSpeakerLabel}."
+			: $"Selected {SelectedAudioOutputSpeakerLabel}. Push config to apply on the AP.";
+		RaiseAdminAudioStateChanged();
+	}
+
+	public void PushAdminAudioConfig()
+	{
+		if (string.IsNullOrWhiteSpace(SelectedAdminOutputSpeakerId))
+		{
+			AdminAudioStatus = "Select an output speaker before pushing config.";
+			RaiseAdminAudioStateChanged();
+			return;
+		}
+
+		AdminAudioStatus = $"Pushing AP speaker output selection: {SelectedAudioOutputSpeakerLabel}.";
+		RaiseAdminAudioStateChanged();
+		_ = PublishOutputSpeakerCommandAsync(SelectedAdminOutputSpeakerId);
 	}
 
 	/// <summary>
@@ -1217,6 +1295,8 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 
 		await _mqttConnectionService.ConnectAsync(settings).ConfigureAwait(false);
 		await _mqttConnectionService.SubscribeAsync(InternetRadioMqttTopics.StateTopic).ConfigureAwait(false);
+		await _mqttConnectionService.SubscribeAsync(InternetRadioMqttTopics.AudioFrameworkStateTopic).ConfigureAwait(false);
+		await _mqttConnectionService.SubscribeAsync(InternetRadioMqttTopics.RoutingStateTopic).ConfigureAwait(false);
 		await _mqttConnectionService.SubscribeAsync(AudioProcessorStatusTopic).ConfigureAwait(false);
 		await _mqttConnectionService.SubscribeAsync(GpioControllerStatusTopic).ConfigureAwait(false);
 		await _mqttConnectionService.SubscribeAsync(SirenInterfaceStatusTopic).ConfigureAwait(false);
@@ -1236,6 +1316,42 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 
 	private void OnMqttMessageReceived(object? sender, MqttApplicationMessage message)
 	{
+		if (string.Equals(message.Topic, InternetRadioMqttTopics.AudioFrameworkStateTopic, StringComparison.OrdinalIgnoreCase))
+		{
+			var frameworkPayload = message.ConvertPayloadToString();
+			if (string.IsNullOrWhiteSpace(frameworkPayload))
+			{
+				return;
+			}
+
+			var framework = JsonSerializer.Deserialize<AudioFrameworkStateMessage>(frameworkPayload, MqttJsonSerializerOptions);
+			if (framework is null)
+			{
+				return;
+			}
+
+			Dispatcher.UIThread.Post(() => ApplyAudioFrameworkState(framework));
+			return;
+		}
+
+		if (string.Equals(message.Topic, InternetRadioMqttTopics.RoutingStateTopic, StringComparison.OrdinalIgnoreCase))
+		{
+			var routingPayload = message.ConvertPayloadToString();
+			if (string.IsNullOrWhiteSpace(routingPayload))
+			{
+				return;
+			}
+
+			var routing = JsonSerializer.Deserialize<RoutingStateMessage>(routingPayload, MqttJsonSerializerOptions);
+			if (routing is null)
+			{
+				return;
+			}
+
+			Dispatcher.UIThread.Post(() => ApplyRoutingState(routing));
+			return;
+		}
+
 		if (string.Equals(message.Topic, AudioProcessorStatusTopic, StringComparison.OrdinalIgnoreCase)
 			|| string.Equals(message.Topic, GpioControllerStatusTopic, StringComparison.OrdinalIgnoreCase)
 			|| string.Equals(message.Topic, SirenInterfaceStatusTopic, StringComparison.OrdinalIgnoreCase))
@@ -1250,13 +1366,13 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 			return;
 		}
 
-		var payload = message.ConvertPayloadToString();
-		if (string.IsNullOrWhiteSpace(payload))
+		var internetRadioPayload = message.ConvertPayloadToString();
+		if (string.IsNullOrWhiteSpace(internetRadioPayload))
 		{
 			return;
 		}
 
-		var state = JsonSerializer.Deserialize<InternetRadioPlaybackStateMessage>(payload, MqttJsonSerializerOptions);
+		var state = JsonSerializer.Deserialize<InternetRadioPlaybackStateMessage>(internetRadioPayload, MqttJsonSerializerOptions);
 		if (state is null)
 		{
 			return;
@@ -1356,6 +1472,54 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 		RaiseAmFmStateChanged();
 	}
 
+	private void ApplyAudioFrameworkState(AudioFrameworkStateMessage framework)
+	{
+		ArgumentNullException.ThrowIfNull(framework);
+
+		AudioOutputDevices = framework.Devices
+			.Where(device => device.OutputEnabled && string.Equals(device.Role, "speaker", StringComparison.OrdinalIgnoreCase))
+			.OrderBy(device => device.DisplayName, StringComparer.OrdinalIgnoreCase)
+			.ToArray();
+
+		if (AudioOutputDevices.Count == 0)
+		{
+			AdminAudioStatus = "AP did not report any speaker outputs.";
+			RaiseAdminAudioStateChanged();
+			return;
+		}
+
+		if (!AudioOutputDevices.Any(device => string.Equals(device.DeviceId, SelectedAdminOutputSpeakerId, StringComparison.OrdinalIgnoreCase)))
+		{
+			SelectedAdminOutputSpeakerId = AudioOutputDevices[0].DeviceId;
+		}
+
+		if (!AudioOutputDevices.Any(device => string.Equals(device.DeviceId, ApConfiguredOutputSpeakerId, StringComparison.OrdinalIgnoreCase)))
+		{
+			ApConfiguredOutputSpeakerId = AudioOutputDevices[0].DeviceId;
+		}
+
+		AdminAudioStatus = $"Detected {AudioOutputDevices.Count} AP speaker output(s).";
+		RaiseAdminAudioStateChanged();
+	}
+
+	private void ApplyRoutingState(RoutingStateMessage routing)
+	{
+		ArgumentNullException.ThrowIfNull(routing);
+
+		var deviceId = string.IsNullOrWhiteSpace(routing.SpeakerDeviceId)
+			? DefaultAudioOutputSpeakerId
+			: routing.SpeakerDeviceId;
+
+		ApConfiguredOutputSpeakerId = deviceId;
+		if (!HasAudioOutputDevices || IsSelectedSpeakerInSync)
+		{
+			SelectedAdminOutputSpeakerId = deviceId;
+		}
+
+		AdminAudioStatus = $"AP master speaker routed to {AppliedAudioOutputSpeakerLabel}.";
+		RaiseAdminAudioStateChanged();
+	}
+
 	/// <summary>
 	/// Publishes the selected INT station to the AP so playback can begin on the audio processor.
 	/// </summary>
@@ -1391,6 +1555,15 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 			MapEntertainmentVolumeToGain(_amFmVolume));
 		var payload = JsonSerializer.Serialize(command, MqttJsonSerializerOptions);
 		_ = _mqttConnectionService.PublishAsync(AudioProcessorChannelGainCommandTopic, payload);
+	}
+
+	private async Task PublishOutputSpeakerCommandAsync(string deviceId)
+	{
+		ArgumentException.ThrowIfNullOrWhiteSpace(deviceId);
+
+		var command = new OutputSpeakerCommandMessage(deviceId);
+		var payload = JsonSerializer.Serialize(command, MqttJsonSerializerOptions);
+		await _mqttConnectionService.PublishAsync(InternetRadioMqttTopics.SpeakerOutputCommandTopic, payload).ConfigureAwait(false);
 	}
 
 	/// <summary>
@@ -1462,7 +1635,22 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 		PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(AdminSystemStatusSummary)));
 		PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IsAdminSystemGeneralSectionSelected)));
 		PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IsAdminSystemStatusSectionSelected)));
+		PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IsAdminAudioSectionSelected)));
 		PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IsAdminNonSystemSectionSelected)));
+	}
+
+	private void RaiseAdminAudioStateChanged()
+	{
+		PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(AudioOutputDevices)));
+		PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(ApConfiguredOutputSpeakerId)));
+		PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(SelectedAdminOutputSpeakerId)));
+		PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(AdminAudioStatus)));
+		PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(AdminAudioDeviceSummary)));
+		PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(HasAudioOutputDevices)));
+		PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IsSelectedSpeakerInSync)));
+		PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(SelectedAudioOutputSpeakerLabel)));
+		PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(ApConfiguredOutputSpeakerLabel)));
+		PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(AppliedAudioOutputSpeakerLabel)));
 	}
 
 	private void RaiseDirectionalStateChanged()
@@ -1658,6 +1846,17 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 	private static string FormatPresetLabel(decimal frequency)
 	{
 		return frequency.ToString("0.0", CultureInfo.InvariantCulture);
+	}
+
+	private string ResolveAudioOutputSpeakerLabel(string? deviceId)
+	{
+		if (string.IsNullOrWhiteSpace(deviceId))
+		{
+			return "UNKNOWN";
+		}
+
+		return AudioOutputDevices.FirstOrDefault(device => string.Equals(device.DeviceId, deviceId, StringComparison.OrdinalIgnoreCase))?.DisplayName
+			?? deviceId.ToUpperInvariant();
 	}
 
 	private static decimal MapEntertainmentVolumeToGain(int volume)

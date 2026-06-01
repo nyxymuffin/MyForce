@@ -1500,13 +1500,98 @@
                                         </StackPanel>
                                     </ScrollViewer>
 
+                                    <ScrollViewer Grid.Row="1"
+                                                  IsVisible="{Binding IsAdminAudioSectionSelected}"
+                                                  HorizontalScrollBarVisibility="Disabled"
+                                                  VerticalScrollBarVisibility="Auto">
+                                        <StackPanel Spacing="12">
+                                            <Border Classes="panel"
+                                                    Padding="10">
+                                                <StackPanel Spacing="6">
+                                                    <TextBlock Classes="white"
+                                                               FontSize="20"
+                                                               Text="MASTER MIXER OUTPUT" />
+                                                    <TextBlock Classes="white"
+                                                               FontSize="14"
+                                                               TextWrapping="Wrap"
+                                                               Text="Select which AP speaker device receives the master entertainment and monitor mix, then push the configuration to the audio processor." />
+                                                </StackPanel>
+                                            </Border>
+
+                                            <Border Classes="buttonFrame"
+                                                    Padding="10">
+                                                <StackPanel Spacing="6">
+                                                    <TextBlock Classes="white"
+                                                               FontSize="14"
+                                                               TextWrapping="Wrap"
+                                                               Text="{Binding AdminAudioStatus}" />
+                                                    <TextBlock Classes="white"
+                                                               FontSize="14"
+                                                               Text="{Binding AppliedAudioOutputSpeakerLabel, StringFormat='APPLIED: {0}'}" />
+                                                    <TextBlock Classes="white"
+                                                               FontSize="14"
+                                                               Text="{Binding SelectedAudioOutputSpeakerLabel, StringFormat='SELECTED: {0}'}" />
+                                                    <TextBlock Classes="white"
+                                                               FontSize="13"
+                                                               TextWrapping="Wrap"
+                                                               Text="{Binding AdminAudioDeviceSummary}" />
+                                                </StackPanel>
+                                            </Border>
+
+                                            <ItemsControl ItemsSource="{Binding AudioOutputDevices}">
+                                                <ItemsControl.ItemTemplate>
+                                                    <DataTemplate x:DataType="models:AudioDeviceStateMessage">
+                                                        <Border Classes="buttonFrame"
+                                                                Margin="0,0,0,8"
+                                                                Padding="10"
+                                                                Tag="{Binding DeviceId}"
+                                                                PointerPressed="OnAdminAudioOutputSpeakerPressed">
+                                                            <Grid ColumnDefinitions="*,Auto"
+                                                                  ColumnSpacing="8">
+                                                                <StackPanel Spacing="4">
+                                                                    <TextBlock Classes="white"
+                                                                               FontSize="18"
+                                                                               Text="{Binding DisplayName}" />
+                                                                    <TextBlock Classes="white"
+                                                                               FontSize="12"
+                                                                               Text="{Binding DeviceId}" />
+                                                                </StackPanel>
+                                                                <Border Grid.Column="1"
+                                                                        Background="#1E1E1E"
+                                                                        BorderBrush="{StaticResource ActiveButtonBorderBrush}"
+                                                                        BorderThickness="1"
+                                                                        CornerRadius="2"
+                                                                        Padding="6,3"
+                                                                        VerticalAlignment="Center">
+                                                                    <TextBlock Classes="white"
+                                                                               FontSize="12"
+                                                                               Text="SELECT" />
+                                                                </Border>
+                                                            </Grid>
+                                                        </Border>
+                                                    </DataTemplate>
+                                                </ItemsControl.ItemTemplate>
+                                            </ItemsControl>
+
+                                            <Border Classes="buttonFrame"
+                                                    IsVisible="{Binding HasAudioOutputDevices}"
+                                                    PointerPressed="OnAdminPushAudioConfigPressed"
+                                                    Padding="12">
+                                                <TextBlock Classes="white"
+                                                           FontSize="18"
+                                                           TextAlignment="Center"
+                                                           Text="PUSH CONFIG TO AP" />
+                                            </Border>
+                                        </StackPanel>
+                                    </ScrollViewer>
+
                                     <TextBlock Grid.Row="1"
                                                IsVisible="{Binding IsAdminNonSystemSectionSelected}"
                                                Classes="white"
                                                FontSize="18"
                                                TextWrapping="Wrap"
                                                VerticalAlignment="Center"
-                                                Text="Configuration editor placeholder. The selected admin category will render here full screen." />
+                                               Text="Configuration editor placeholder. The selected admin category will render here full screen." />
                                 </Grid>
                             </Border>
                         </Grid>

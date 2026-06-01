@@ -526,4 +526,6 @@ public interface IAudioProcessorStoredConfig
     string? MqttUsername { get; set; }
 
     string? MqttPassword { get; set; }
+
+    string? OutputSpeakerDeviceId { get; set; }
 }
