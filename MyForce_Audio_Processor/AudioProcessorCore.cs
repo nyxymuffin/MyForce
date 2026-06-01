@@ -1154,6 +1154,9 @@ internal static class AudioProcessorJson
 
 internal sealed class InternetRadioPlaybackController : IAsyncDisposable
 {
+    private const int MaxUnexpectedLinuxRestartAttempts = 3;
+    private static readonly TimeSpan UnexpectedLinuxRestartResetWindow = TimeSpan.FromSeconds(30);
+
     private readonly AudioProcessorConfigStore _configStore;
     private readonly HttpClient _httpClient;
     private Process? _externalPlayerProcess;
@@ -1164,6 +1167,8 @@ internal sealed class InternetRadioPlaybackController : IAsyncDisposable
     private string? _activeBackend;
     private string _outputSpeakerDeviceId = AudioFrameworkCatalog.DefaultSpeakerDeviceId;
     private decimal _outputGain = 1.0m;
+    private int _unexpectedLinuxRestartAttempts;
+    private DateTimeOffset? _linuxPlaybackStartedAtUtc;
 
     public InternetRadioPlaybackController(AudioProcessorConfigStore configStore)
     {
@@ -1282,6 +1287,7 @@ internal sealed class InternetRadioPlaybackController : IAsyncDisposable
         ReleasePlaybackResources();
         _activeCommand = null;
         _configStore.StoredConfig.InternetRadioPlayCommandJson = string.Empty;
+        _unexpectedLinuxRestartAttempts = 0;
 
         CurrentState = CurrentState with
         {
@@ -1408,7 +1414,51 @@ internal sealed class InternetRadioPlaybackController : IAsyncDisposable
         _externalPlayerProcess.EnableRaisingEvents = true;
         _externalPlayerProcess.Exited += OnExternalPlayerExited;
         _activeBackend = launchedPlayer.BackendLabel;
+        _linuxPlaybackStartedAtUtc = DateTimeOffset.UtcNow;
+        _unexpectedLinuxRestartAttempts = 0;
         AudioProcessorLog.Write("playback", $"Started Linux internet radio playback via {_activeBackend} (pid {_externalPlayerProcess.Id}).");
+    }
+
+    private bool TryRestartLinuxPlaybackAfterUnexpectedExit(int exitCode)
+    {
+        if (!OperatingSystem.IsLinux() || _activeCommand is null)
+        {
+            return false;
+        }
+
+        if (_unexpectedLinuxRestartAttempts >= MaxUnexpectedLinuxRestartAttempts)
+        {
+            AudioProcessorLog.Write("playback", $"Linux internet radio auto-retry limit reached after ffplay exit code {exitCode}.");
+            return false;
+        }
+
+        _unexpectedLinuxRestartAttempts++;
+        AudioProcessorLog.Write("playback", $"Retrying Linux internet radio playback immediately after ffplay exit code {exitCode} (attempt {_unexpectedLinuxRestartAttempts} of {MaxUnexpectedLinuxRestartAttempts}).");
+
+        var launchedPlayer = TryStartLinuxPlayer(_activeCommand.StreamUrl);
+        if (launchedPlayer is null)
+        {
+            AudioProcessorLog.Write("playback", $"Linux internet radio retry attempt {_unexpectedLinuxRestartAttempts} failed to start a new player process.");
+            return false;
+        }
+
+        _externalPlayerProcess = launchedPlayer.Process;
+        _externalPlayerProcess.EnableRaisingEvents = true;
+        _externalPlayerProcess.Exited += OnExternalPlayerExited;
+        _activeBackend = launchedPlayer.BackendLabel;
+        _linuxPlaybackStartedAtUtc = DateTimeOffset.UtcNow;
+        CurrentState = CurrentState with
+        {
+            IsPlaying = true,
+            StreamUrl = _activeCommand.StreamUrl,
+            DisplayName = _activeCommand.DisplayName,
+            Genre = _activeCommand.Genre,
+            Language = _activeCommand.Language,
+            Status = "PLAYING",
+            Detail = $"Internet radio stream playing on {GetPlaybackBackendDescription()} after automatic retry {_unexpectedLinuxRestartAttempts} of {MaxUnexpectedLinuxRestartAttempts}."
+        };
+        AudioProcessorLog.Write("playback", $"Linux internet radio playback retry succeeded via {_activeBackend} (pid {_externalPlayerProcess.Id}).");
+        return true;
     }
 
     private LinuxPlayerLaunch? TryStartLinuxPlayer(string streamUrl)
@@ -1495,6 +1545,24 @@ internal sealed class InternetRadioPlaybackController : IAsyncDisposable
         }
 
         _activeBackend = null;
+        _linuxPlaybackStartedAtUtc = null;
+    }
+
+    private void ResetUnexpectedLinuxRestartAttemptsIfPlaybackWasStable()
+    {
+        if (_unexpectedLinuxRestartAttempts == 0 || _linuxPlaybackStartedAtUtc is null)
+        {
+            return;
+        }
+
+        var uptime = DateTimeOffset.UtcNow - _linuxPlaybackStartedAtUtc.Value;
+        if (uptime < UnexpectedLinuxRestartResetWindow)
+        {
+            return;
+        }
+
+        AudioProcessorLog.Write("playback", $"Linux playback remained stable for {uptime.TotalSeconds:F0} seconds. Resetting the unexpected-exit retry counter.");
+        _unexpectedLinuxRestartAttempts = 0;
     }
 
     private string GetPlaybackBackendDescription()
@@ -1537,6 +1605,7 @@ internal sealed class InternetRadioPlaybackController : IAsyncDisposable
         }
 
         var exitCode = process.ExitCode;
+        ResetUnexpectedLinuxRestartAttemptsIfPlaybackWasStable();
         AudioProcessorLog.Write("playback", $"Linux internet radio player exited unexpectedly with code {exitCode}.");
 
         if (_externalPlayerProcess == process)
@@ -1545,6 +1614,12 @@ internal sealed class InternetRadioPlaybackController : IAsyncDisposable
             _externalPlayerProcess.Dispose();
             _externalPlayerProcess = null;
             _activeBackend = null;
+
+            if (TryRestartLinuxPlaybackAfterUnexpectedExit(exitCode))
+            {
+                return;
+            }
+
             CurrentState = CurrentState with
             {
                 IsPlaying = false,
@@ -1591,6 +1666,18 @@ internal sealed class LinuxPlayerCandidate
         startInfo.ArgumentList.Add("-hide_banner");
         startInfo.ArgumentList.Add("-loglevel");
         startInfo.ArgumentList.Add("error");
+        startInfo.ArgumentList.Add("-fflags");
+        startInfo.ArgumentList.Add("+discardcorrupt+nobuffer");
+        startInfo.ArgumentList.Add("-flags");
+        startInfo.ArgumentList.Add("low_delay");
+        startInfo.ArgumentList.Add("-reconnect");
+        startInfo.ArgumentList.Add("1");
+        startInfo.ArgumentList.Add("-reconnect_streamed");
+        startInfo.ArgumentList.Add("1");
+        startInfo.ArgumentList.Add("-reconnect_delay_max");
+        startInfo.ArgumentList.Add("2");
+        startInfo.ArgumentList.Add("-rw_timeout");
+        startInfo.ArgumentList.Add("15000000");
         startInfo.ArgumentList.Add("-volume");
         startInfo.ArgumentList.Add(volumePercent.ToString(System.Globalization.CultureInfo.InvariantCulture));
         startInfo.ArgumentList.Add(streamUrl);
@@ -1614,6 +1701,18 @@ internal sealed class LinuxPlayerCandidate
         startInfo.ArgumentList.Add("-hide_banner");
         startInfo.ArgumentList.Add("-loglevel");
         startInfo.ArgumentList.Add("error");
+        startInfo.ArgumentList.Add("-fflags");
+        startInfo.ArgumentList.Add("+discardcorrupt+nobuffer");
+        startInfo.ArgumentList.Add("-flags");
+        startInfo.ArgumentList.Add("low_delay");
+        startInfo.ArgumentList.Add("-reconnect");
+        startInfo.ArgumentList.Add("1");
+        startInfo.ArgumentList.Add("-reconnect_streamed");
+        startInfo.ArgumentList.Add("1");
+        startInfo.ArgumentList.Add("-reconnect_delay_max");
+        startInfo.ArgumentList.Add("2");
+        startInfo.ArgumentList.Add("-rw_timeout");
+        startInfo.ArgumentList.Add("15000000");
         startInfo.ArgumentList.Add("-volume");
         startInfo.ArgumentList.Add(volumePercent.ToString(System.Globalization.CultureInfo.InvariantCulture));
         startInfo.ArgumentList.Add(streamUrl);
