@@ -5,12 +5,23 @@ using Config.Net;
 using var instanceLock = SingleInstanceLock.TryAcquire("myforce-audio-processor");
 if (instanceLock is null)
 {
-    Console.WriteLine("[audio-processor] Another Audio Processor instance is already running. Exiting to avoid MQTT client id takeover.");
+    AudioProcessorLog.Write("startup", "Another Audio Processor instance is already running. Exiting to avoid MQTT client id takeover.");
     return;
 }
 
 await using var processor = new AudioProcessorMqttApp();
 await processor.RunAsync();
+
+internal static class AudioProcessorLog
+{
+    public static void Write(string category, string message)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(category);
+        ArgumentException.ThrowIfNullOrWhiteSpace(message);
+
+        Console.WriteLine($"[{DateTimeOffset.UtcNow:O}] [audio-processor] [{category}] {message}");
+    }
+}
 
 internal sealed class AudioProcessorMqttApp : IAsyncDisposable
 {
@@ -53,7 +64,7 @@ internal sealed class AudioProcessorMqttApp : IAsyncDisposable
             await _mqttRuntime.ConnectAsync(cts.Token);
             await _coordinator.StartAsync(cts.Token);
             _statusHeartbeatTask = RunStatusHeartbeatAsync(cts.Token);
-            Console.WriteLine("Audio Processor basics ready.");
+            AudioProcessorLog.Write("startup", "Audio Processor basics ready.");
             await _mqttRuntime.RunUntilStoppedAsync(cts.Token);
         }
         finally
@@ -126,7 +137,7 @@ internal sealed class MqttServiceRuntime : IAsyncDisposable
     {
         ObjectDisposedException.ThrowIf(_isDisposed, this);
 
-        Console.WriteLine($"[{_serviceName}] MQTT configured for {GetEndpointLabel()} using {GetTransportLabel()}.");
+        AudioProcessorLog.Write("mqtt", $"MQTT configured for {GetEndpointLabel()} using {GetTransportLabel()}.");
 
         var optionsBuilder = new MqttClientOptionsBuilder()
             .WithProtocolVersion(MqttProtocolVersion.V500)
@@ -174,7 +185,7 @@ internal sealed class MqttServiceRuntime : IAsyncDisposable
         ArgumentException.ThrowIfNullOrWhiteSpace(topicFilter);
         if (!_client.IsConnected)
         {
-            Console.WriteLine($"[{_serviceName}] Subscribe skipped while MQTT is offline: {topicFilter}");
+            AudioProcessorLog.Write("mqtt", $"Subscribe skipped while MQTT is offline: {topicFilter}");
             return;
         }
 
@@ -185,7 +196,7 @@ internal sealed class MqttServiceRuntime : IAsyncDisposable
         try
         {
             await _client.SubscribeAsync(subscribeOptions, cancellationToken).ConfigureAwait(false);
-            Console.WriteLine($"[{_serviceName}] Subscribed: {topicFilter}");
+            AudioProcessorLog.Write("mqtt", $"Subscribed: {topicFilter}");
         }
         catch (OperationCanceledException)
         {
@@ -193,7 +204,7 @@ internal sealed class MqttServiceRuntime : IAsyncDisposable
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"[{_serviceName}] Subscribe failed for {topicFilter}: {ex.Message}");
+            AudioProcessorLog.Write("mqtt", $"Subscribe failed for {topicFilter}: {ex.Message}");
         }
     }
 
@@ -202,7 +213,7 @@ internal sealed class MqttServiceRuntime : IAsyncDisposable
         ArgumentException.ThrowIfNullOrWhiteSpace(topic);
         if (!_client.IsConnected)
         {
-            Console.WriteLine($"[{_serviceName}] Publish skipped while MQTT is offline: {topic}");
+            AudioProcessorLog.Write("mqtt", $"Publish skipped while MQTT is offline: {topic}");
             return;
         }
 
@@ -215,7 +226,7 @@ internal sealed class MqttServiceRuntime : IAsyncDisposable
         try
         {
             await _client.PublishAsync(message, cancellationToken).ConfigureAwait(false);
-            Console.WriteLine($"[{_serviceName}] Published: {topic}");
+            AudioProcessorLog.Write("mqtt", $"Published: {topic}");
         }
         catch (OperationCanceledException)
         {
@@ -223,7 +234,7 @@ internal sealed class MqttServiceRuntime : IAsyncDisposable
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"[{_serviceName}] Publish failed for {topic}: {ex.Message}");
+            AudioProcessorLog.Write("mqtt", $"Publish failed for {topic}: {ex.Message}");
         }
     }
 
@@ -280,7 +291,7 @@ internal sealed class MqttServiceRuntime : IAsyncDisposable
 
     private async Task OnConnectedAsync(MqttClientConnectedEventArgs arg)
     {
-        Console.WriteLine($"[{_serviceName}] Connected to MQTT broker at {GetEndpointLabel()} using {GetTransportLabel()} with client id '{_options.ClientId}'.");
+        AudioProcessorLog.Write("mqtt", $"Connected to MQTT broker at {GetEndpointLabel()} using {GetTransportLabel()} with client id '{_options.ClientId}'.");
 
         if (_connectedHandler is null)
         {
@@ -296,21 +307,21 @@ internal sealed class MqttServiceRuntime : IAsyncDisposable
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"[{_serviceName}] MQTT connected handler failed: {ex.Message}");
+            AudioProcessorLog.Write("mqtt", $"MQTT connected handler failed: {ex.Message}");
         }
     }
 
     private Task OnDisconnectedAsync(MqttClientDisconnectedEventArgs arg)
     {
         var detail = DescribeDisconnect(arg.Exception?.Message ?? arg.ReasonString ?? "Disconnected.");
-        Console.WriteLine($"[{_serviceName}] MQTT disconnected from {GetEndpointLabel()}: {detail}");
+        AudioProcessorLog.Write("mqtt", $"MQTT disconnected from {GetEndpointLabel()}: {detail}");
         StartReconnectLoop();
         return Task.CompletedTask;
     }
 
     private async Task OnMessageReceivedAsync(MqttApplicationMessageReceivedEventArgs arg)
     {
-        Console.WriteLine($"[{_serviceName}] Received message on topic: {arg.ApplicationMessage.Topic}");
+        AudioProcessorLog.Write("mqtt", $"Received message on topic: {arg.ApplicationMessage.Topic}");
 
         if (_messageHandler is null)
         {
@@ -323,7 +334,7 @@ internal sealed class MqttServiceRuntime : IAsyncDisposable
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"[{_serviceName}] MQTT message handler failed: {ex.Message}");
+            AudioProcessorLog.Write("mqtt", $"MQTT message handler failed: {ex.Message}");
         }
     }
 
@@ -341,7 +352,7 @@ internal sealed class MqttServiceRuntime : IAsyncDisposable
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"[{_serviceName}] Initial MQTT connect failed for {GetEndpointLabel()} using {GetTransportLabel()} with client id '{_options.ClientId}': {ex.Message}");
+            AudioProcessorLog.Write("mqtt", $"Initial MQTT connect failed for {GetEndpointLabel()} using {GetTransportLabel()} with client id '{_options.ClientId}': {ex.Message}");
         }
     }
 
@@ -373,7 +384,7 @@ internal sealed class MqttServiceRuntime : IAsyncDisposable
                 try
                 {
                     ArgumentNullException.ThrowIfNull(_clientOptions);
-                    Console.WriteLine($"[{_serviceName}] Attempting MQTT reconnect to {GetEndpointLabel()} using {GetTransportLabel()} with client id '{_options.ClientId}'.");
+                    AudioProcessorLog.Write("mqtt", $"Attempting MQTT reconnect to {GetEndpointLabel()} using {GetTransportLabel()} with client id '{_options.ClientId}'.");
                     await _client.ConnectAsync(_clientOptions, _lifetimeCancellationTokenSource.Token).ConfigureAwait(false);
                     return;
                 }
@@ -383,7 +394,7 @@ internal sealed class MqttServiceRuntime : IAsyncDisposable
                 }
                 catch (Exception ex)
                 {
-                    Console.WriteLine($"[{_serviceName}] MQTT reconnect failed for {GetEndpointLabel()} using {GetTransportLabel()} with client id '{_options.ClientId}': {ex.Message}");
+                    AudioProcessorLog.Write("mqtt", $"MQTT reconnect failed for {GetEndpointLabel()} using {GetTransportLabel()} with client id '{_options.ClientId}': {ex.Message}");
                 }
 
                 await Task.Delay(TimeSpan.FromSeconds(1), _lifetimeCancellationTokenSource.Token).ConfigureAwait(false);
@@ -495,10 +506,12 @@ internal sealed record MqttServiceOptions(
 internal sealed class AudioProcessorConfigStore
 {
     private const string ConfigFileName = "audio-processor.config.json";
+    private const string ConfigDirectoryName = "myforce";
 
     public AudioProcessorConfigStore()
     {
         var configPath = ResolveConfigPath();
+        AudioProcessorLog.Write("config", $"Using config path: {configPath}");
         var configDirectory = Path.GetDirectoryName(configPath);
         if (!string.IsNullOrWhiteSpace(configDirectory))
         {
@@ -520,6 +533,12 @@ internal sealed class AudioProcessorConfigStore
             return Path.GetFullPath(configuredPath);
         }
 
+        var appConfigDirectory = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+        if (!string.IsNullOrWhiteSpace(appConfigDirectory))
+        {
+            return Path.Combine(appConfigDirectory, ConfigDirectoryName, ConfigFileName);
+        }
+
         return Path.Combine(AppContext.BaseDirectory, ConfigFileName);
     }
 }
@@ -539,4 +558,6 @@ public interface IAudioProcessorStoredConfig
     string? MqttPassword { get; set; }
 
     string? OutputSpeakerDeviceId { get; set; }
+
+    string? InternetRadioPlayCommandJson { get; set; }
 }

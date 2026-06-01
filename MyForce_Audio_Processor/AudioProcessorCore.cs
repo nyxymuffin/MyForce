@@ -34,11 +34,13 @@ internal sealed class AudioProcessorCoordinator : IAsyncDisposable
         _routingState = AudioProcessorRoutingState.CreateDefault(_registry.RadioIds, ResolveInitialSpeakerDeviceId());
         _txController = new TxController(_registry.RadioIds);
         _internetRadioController.SetOutputSpeaker(_routingState.CurrentSnapshot.SpeakerSink.DeviceId);
+        AudioProcessorLog.Write("discovery", $"Audio framework initialized with {_audioFramework.Devices.Count(device => device.OutputEnabled && string.Equals(device.Role, "speaker", StringComparison.OrdinalIgnoreCase))} output speaker device(s).");
     }
 
     public async Task StartAsync(CancellationToken cancellationToken)
     {
         await _mqttRuntime.SubscribeAsync(_topics.AllCommandsTopicFilter, cancellationToken).ConfigureAwait(false);
+        await RestoreInternetRadioPlaybackAsync(cancellationToken).ConfigureAwait(false);
         await PublishBirthSnapshotAsync(cancellationToken).ConfigureAwait(false);
     }
 
@@ -150,6 +152,27 @@ internal sealed class AudioProcessorCoordinator : IAsyncDisposable
         }
     }
 
+    private async Task RestoreInternetRadioPlaybackAsync(CancellationToken cancellationToken)
+    {
+        var storedCommand = _internetRadioController.GetStoredPlayCommand();
+        if (storedCommand is null)
+        {
+            AudioProcessorLog.Write("playback", "No persisted internet radio stream found for startup restore.");
+            return;
+        }
+
+        try
+        {
+            AudioProcessorLog.Write("playback", $"Restoring persisted internet radio stream '{storedCommand.DisplayName}' from {storedCommand.StreamUrl}.");
+            await _internetRadioController.PlayAsync(storedCommand, cancellationToken).ConfigureAwait(false);
+            AudioProcessorLog.Write("playback", "Persisted internet radio stream restored successfully.");
+        }
+        catch (Exception ex) when (ex is HttpRequestException or PlatformNotSupportedException or InvalidOperationException)
+        {
+            AudioProcessorLog.Write("playback", $"Internet radio restore skipped: {ex.Message}");
+        }
+    }
+
     private void ApplyOutputSpeaker(string deviceId)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(deviceId);
@@ -162,8 +185,10 @@ internal sealed class AudioProcessorCoordinator : IAsyncDisposable
         }
 
         _routingState.SetSpeakerSink(deviceId);
+        AudioProcessorLog.Write("config", $"Applying AP master output speaker '{deviceId}'.");
         _configStore.StoredConfig.OutputSpeakerDeviceId = deviceId;
         _internetRadioController.SetOutputSpeaker(deviceId);
+        AudioProcessorLog.Write("config", $"AP master output speaker persisted as '{deviceId}'.");
     }
 
     private void ApplyAudioOutputConfig(AudioOutputConfigCommand command)
@@ -615,6 +640,7 @@ internal sealed class AudioFrameworkCatalog
                 var devicesFromJson = ParsePlaybackDevicesFromJson(sinkJson);
                 if (devicesFromJson.Count > 0)
                 {
+                    AudioProcessorLog.Write("discovery", $"Discovered {devicesFromJson.Count} Linux playback device(s) via pactl JSON sinks.");
                     return devicesFromJson;
                 }
             }
@@ -625,6 +651,7 @@ internal sealed class AudioFrameworkCatalog
                 var devicesFromShortList = ParsePlaybackDevicesFromShortList(sinkShortList);
                 if (devicesFromShortList.Count > 0)
                 {
+                    AudioProcessorLog.Write("discovery", $"Discovered {devicesFromShortList.Count} Linux playback device(s) via pactl short sinks.");
                     return devicesFromShortList;
                 }
             }
@@ -635,22 +662,27 @@ internal sealed class AudioFrameworkCatalog
                 var devicesFromAlsa = ParsePlaybackDevicesFromAlsaHardwareList(alsaHardwareList);
                 if (devicesFromAlsa.Count > 0)
                 {
+                    AudioProcessorLog.Write("discovery", $"Discovered {devicesFromAlsa.Count} Linux playback device(s) via ALSA hardware enumeration.");
                     return devicesFromAlsa;
                 }
             }
 
+            AudioProcessorLog.Write("discovery", "No Linux playback devices were discovered. Falling back to the synthetic system default output.");
             return Array.Empty<AudioDevice>();
         }
         catch (JsonException)
         {
+            AudioProcessorLog.Write("discovery", "Linux playback discovery failed while parsing pactl JSON sink output.");
             return Array.Empty<AudioDevice>();
         }
         catch (InvalidOperationException)
         {
+            AudioProcessorLog.Write("discovery", "Linux playback discovery could not launch the enumeration process.");
             return Array.Empty<AudioDevice>();
         }
         catch (System.ComponentModel.Win32Exception)
         {
+            AudioProcessorLog.Write("discovery", "Linux playback discovery requires pactl or aplay to be installed and accessible on PATH.");
             return Array.Empty<AudioDevice>();
         }
     }
@@ -1145,6 +1177,26 @@ internal sealed class InternetRadioPlaybackController : IAsyncDisposable
 
     public InternetRadioPlaybackState CurrentState { get; private set; }
 
+    public InternetRadioPlayCommand? GetStoredPlayCommand()
+    {
+        var commandJson = _configStore.StoredConfig.InternetRadioPlayCommandJson;
+        if (string.IsNullOrWhiteSpace(commandJson))
+        {
+            return null;
+        }
+
+        try
+        {
+            return System.Text.Json.JsonSerializer.Deserialize<InternetRadioPlayCommand>(commandJson);
+        }
+        catch (JsonException)
+        {
+            AudioProcessorLog.Write("playback", "Stored internet radio restore payload was invalid JSON and has been cleared.");
+            _configStore.StoredConfig.InternetRadioPlayCommandJson = string.Empty;
+            return null;
+        }
+    }
+
     public void SetOutputSpeaker(string? deviceId)
     {
         if (string.IsNullOrWhiteSpace(deviceId))
@@ -1177,6 +1229,7 @@ internal sealed class InternetRadioPlaybackController : IAsyncDisposable
         if (CanReuseActivePlayback(command))
         {
             _activeCommand = command;
+            PersistActiveCommand(command);
             CurrentState = CurrentState with
             {
                 IsPlaying = true,
@@ -1209,6 +1262,7 @@ internal sealed class InternetRadioPlaybackController : IAsyncDisposable
         }
 
         _activeCommand = command;
+        PersistActiveCommand(command);
 
         CurrentState = new InternetRadioPlaybackState(
             IsPlaying: true,
@@ -1227,6 +1281,7 @@ internal sealed class InternetRadioPlaybackController : IAsyncDisposable
     {
         ReleasePlaybackResources();
         _activeCommand = null;
+        _configStore.StoredConfig.InternetRadioPlayCommandJson = string.Empty;
 
         CurrentState = CurrentState with
         {
@@ -1267,6 +1322,14 @@ internal sealed class InternetRadioPlaybackController : IAsyncDisposable
                 Detail = $"Internet radio stream playing on {GetPlaybackBackendDescription()}. Entertainment gain is controlled by the AP mixer state."
             };
         }
+    }
+
+    private void PersistActiveCommand(InternetRadioPlayCommand command)
+    {
+        ArgumentNullException.ThrowIfNull(command);
+
+        _configStore.StoredConfig.InternetRadioPlayCommandJson = System.Text.Json.JsonSerializer.Serialize(command);
+        AudioProcessorLog.Write("playback", $"Persisted internet radio stream '{command.DisplayName}' for restart recovery.");
     }
 
     private bool CanReuseActivePlayback(InternetRadioPlayCommand command)
@@ -1345,7 +1408,7 @@ internal sealed class InternetRadioPlaybackController : IAsyncDisposable
         _externalPlayerProcess.EnableRaisingEvents = true;
         _externalPlayerProcess.Exited += OnExternalPlayerExited;
         _activeBackend = launchedPlayer.BackendLabel;
-        Console.WriteLine($"[audio-processor] Started Linux internet radio playback via {_activeBackend} (pid {_externalPlayerProcess.Id}).");
+        AudioProcessorLog.Write("playback", $"Started Linux internet radio playback via {_activeBackend} (pid {_externalPlayerProcess.Id}).");
     }
 
     private LinuxPlayerLaunch? TryStartLinuxPlayer(string streamUrl)
@@ -1356,7 +1419,7 @@ internal sealed class InternetRadioPlaybackController : IAsyncDisposable
 
         if (string.IsNullOrWhiteSpace(sinkName) && !useSystemDefaultSink)
         {
-            Console.WriteLine("[audio-processor] No PipeWire sink is selected for the AP master output.");
+            AudioProcessorLog.Write("playback", "No PipeWire sink is selected for the AP master output.");
             return null;
         }
 
@@ -1365,7 +1428,7 @@ internal sealed class InternetRadioPlaybackController : IAsyncDisposable
             : sinkName.StartsWith("alsa:", StringComparison.OrdinalIgnoreCase)
                 ? LinuxPlayerCandidate.CreateFfplayForAlsa(GetLinuxPlayerVolumePercent(), streamUrl, sinkName[5..])
                 : LinuxPlayerCandidate.CreateFfplay(GetLinuxPlayerVolumePercent(), streamUrl, sinkName);
-        Console.WriteLine($"[audio-processor] Launching Linux internet radio player: {candidate.StartInfo.FileName} {string.Join(' ', candidate.StartInfo.ArgumentList)}");
+        AudioProcessorLog.Write("playback", $"Launching Linux internet radio player: {candidate.StartInfo.FileName} {string.Join(' ', candidate.StartInfo.ArgumentList)}");
         var process = new Process
         {
             StartInfo = candidate.StartInfo
@@ -1474,7 +1537,7 @@ internal sealed class InternetRadioPlaybackController : IAsyncDisposable
         }
 
         var exitCode = process.ExitCode;
-        Console.WriteLine($"[audio-processor] Linux internet radio player exited unexpectedly with code {exitCode}.");
+        AudioProcessorLog.Write("playback", $"Linux internet radio player exited unexpectedly with code {exitCode}.");
 
         if (_externalPlayerProcess == process)
         {
