@@ -187,8 +187,6 @@
                                      HorizontalAlignment="Center"
                                      VerticalAlignment="Center">
                                 <TextBlock Classes="white"
-                                           Width="182"
-                                            Height="20"
                                             FontSize="12"
                                            TextAlignment="Center"
                                            VerticalAlignment="Center"
