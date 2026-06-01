@@ -498,7 +498,7 @@ internal sealed class AudioProcessorConfigStore
 
     public AudioProcessorConfigStore()
     {
-        var configPath = Path.Combine(AppContext.BaseDirectory, ConfigFileName);
+        var configPath = ResolveConfigPath();
         var configDirectory = Path.GetDirectoryName(configPath);
         if (!string.IsNullOrWhiteSpace(configDirectory))
         {
@@ -511,6 +511,17 @@ internal sealed class AudioProcessorConfigStore
     }
 
     public IAudioProcessorStoredConfig StoredConfig { get; }
+
+    private static string ResolveConfigPath()
+    {
+        var configuredPath = Environment.GetEnvironmentVariable("MYFORCE_AUDIO_PROCESSOR_CONFIG_PATH");
+        if (!string.IsNullOrWhiteSpace(configuredPath))
+        {
+            return Path.GetFullPath(configuredPath);
+        }
+
+        return Path.Combine(AppContext.BaseDirectory, ConfigFileName);
+    }
 }
 
 public interface IAudioProcessorStoredConfig

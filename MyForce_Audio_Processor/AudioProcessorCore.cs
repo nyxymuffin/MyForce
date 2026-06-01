@@ -2,6 +2,7 @@ using System.Buffers;
 using System.Collections.ObjectModel;
 using System.Diagnostics;
 using System.Net.Http;
+using System.Text.RegularExpressions;
 using System.Text.Json;
 using MQTTnet;
 using NAudio.Wave;
@@ -498,6 +499,9 @@ internal sealed class AudioFrameworkCatalog
 {
     public const string DefaultSpeakerDeviceId = "default-speaker";
     public const string SystemDefaultSpeakerDisplayName = "System Default Output";
+    private static readonly Regex AlsaPlaybackDeviceRegex = new(
+        @"^card\s+(?<cardNumber>\d+):\s+(?<cardId>[^\s\[]+)\s+\[(?<cardName>[^\]]+)\],\s+device\s+(?<deviceNumber>\d+):\s+(?<deviceId>[^\[]+)\[(?<deviceName>[^\]]+)\]",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
     public AudioFrameworkCatalog(
         IReadOnlyList<AudioDevice> devices,
@@ -605,75 +609,37 @@ internal sealed class AudioFrameworkCatalog
 
         try
         {
-            using var process = new Process
+            var sinkJson = TryRunProcess("pactl", "-f json list sinks");
+            if (!string.IsNullOrWhiteSpace(sinkJson))
             {
-                StartInfo = new ProcessStartInfo
+                var devicesFromJson = ParsePlaybackDevicesFromJson(sinkJson);
+                if (devicesFromJson.Count > 0)
                 {
-                    FileName = "pactl",
-                    Arguments = "-f json list sinks",
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true,
-                    UseShellExecute = false,
-                    CreateNoWindow = true
+                    return devicesFromJson;
                 }
-            };
-
-            if (!process.Start())
-            {
-                return Array.Empty<AudioDevice>();
             }
 
-            var output = process.StandardOutput.ReadToEnd();
-            process.WaitForExit(3000);
-            if (process.ExitCode != 0 || string.IsNullOrWhiteSpace(output))
+            var sinkShortList = TryRunProcess("pactl", "list short sinks");
+            if (!string.IsNullOrWhiteSpace(sinkShortList))
             {
-                return Array.Empty<AudioDevice>();
+                var devicesFromShortList = ParsePlaybackDevicesFromShortList(sinkShortList);
+                if (devicesFromShortList.Count > 0)
+                {
+                    return devicesFromShortList;
+                }
             }
 
-            using var json = JsonDocument.Parse(output);
-            if (json.RootElement.ValueKind != JsonValueKind.Array)
+            var alsaHardwareList = TryRunProcess("aplay", "-l");
+            if (!string.IsNullOrWhiteSpace(alsaHardwareList))
             {
-                return Array.Empty<AudioDevice>();
+                var devicesFromAlsa = ParsePlaybackDevicesFromAlsaHardwareList(alsaHardwareList);
+                if (devicesFromAlsa.Count > 0)
+                {
+                    return devicesFromAlsa;
+                }
             }
 
-            var devices = new List<AudioDevice>();
-            foreach (var sink in json.RootElement.EnumerateArray())
-            {
-                if (!sink.TryGetProperty("name", out var nameElement))
-                {
-                    continue;
-                }
-
-                var deviceId = nameElement.GetString();
-                if (string.IsNullOrWhiteSpace(deviceId))
-                {
-                    continue;
-                }
-
-                var displayName = deviceId;
-                if (sink.TryGetProperty("description", out var descriptionElement)
-                    && descriptionElement.ValueKind == JsonValueKind.String
-                    && !string.IsNullOrWhiteSpace(descriptionElement.GetString()))
-                {
-                    displayName = descriptionElement.GetString()!;
-                }
-                else if (sink.TryGetProperty("properties", out var propertiesElement)
-                    && propertiesElement.ValueKind == JsonValueKind.Object
-                    && propertiesElement.TryGetProperty("device.description", out var deviceDescriptionElement)
-                    && deviceDescriptionElement.ValueKind == JsonValueKind.String
-                    && !string.IsNullOrWhiteSpace(deviceDescriptionElement.GetString()))
-                {
-                    displayName = deviceDescriptionElement.GetString()!;
-                }
-
-                devices.Add(new AudioDevice(new AudioDeviceId(deviceId), displayName, "speaker", false, true));
-            }
-
-            return new ReadOnlyCollection<AudioDevice>(devices
-                .GroupBy(device => device.Id.Value, StringComparer.OrdinalIgnoreCase)
-                .Select(group => group.First())
-                .OrderBy(device => device.DisplayName, StringComparer.OrdinalIgnoreCase)
-                .ToArray());
+            return Array.Empty<AudioDevice>();
         }
         catch (JsonException)
         {
@@ -687,6 +653,154 @@ internal sealed class AudioFrameworkCatalog
         {
             return Array.Empty<AudioDevice>();
         }
+    }
+
+    private static string? TryRunProcess(string fileName, string arguments)
+    {
+        using var process = new Process
+        {
+            StartInfo = new ProcessStartInfo
+            {
+                FileName = fileName,
+                Arguments = arguments,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true
+            }
+        };
+
+        if (!process.Start())
+        {
+            return null;
+        }
+
+        var output = process.StandardOutput.ReadToEnd();
+        process.WaitForExit(3000);
+        return process.ExitCode == 0 && !string.IsNullOrWhiteSpace(output)
+            ? output
+            : null;
+    }
+
+    private static IReadOnlyList<AudioDevice> ParsePlaybackDevicesFromJson(string output)
+    {
+        using var json = JsonDocument.Parse(output);
+        if (json.RootElement.ValueKind != JsonValueKind.Array)
+        {
+            return Array.Empty<AudioDevice>();
+        }
+
+        var devices = new List<AudioDevice>();
+        foreach (var sink in json.RootElement.EnumerateArray())
+        {
+            if (!sink.TryGetProperty("name", out var nameElement))
+            {
+                continue;
+            }
+
+            var deviceId = nameElement.GetString();
+            if (string.IsNullOrWhiteSpace(deviceId))
+            {
+                continue;
+            }
+
+            var displayName = deviceId;
+            if (sink.TryGetProperty("description", out var descriptionElement)
+                && descriptionElement.ValueKind == JsonValueKind.String
+                && !string.IsNullOrWhiteSpace(descriptionElement.GetString()))
+            {
+                displayName = descriptionElement.GetString()!;
+            }
+            else if (sink.TryGetProperty("properties", out var propertiesElement)
+                && propertiesElement.ValueKind == JsonValueKind.Object
+                && propertiesElement.TryGetProperty("device.description", out var deviceDescriptionElement)
+                && deviceDescriptionElement.ValueKind == JsonValueKind.String
+                && !string.IsNullOrWhiteSpace(deviceDescriptionElement.GetString()))
+            {
+                displayName = deviceDescriptionElement.GetString()!;
+            }
+
+            devices.Add(new AudioDevice(new AudioDeviceId(deviceId), displayName, "speaker", false, true));
+        }
+
+        return CreateOrderedPlaybackDeviceList(devices);
+    }
+
+    private static IReadOnlyList<AudioDevice> ParsePlaybackDevicesFromShortList(string output)
+    {
+        var devices = new List<AudioDevice>();
+        using var reader = new StringReader(output);
+        string? line;
+
+        while ((line = reader.ReadLine()) is not null)
+        {
+            if (string.IsNullOrWhiteSpace(line))
+            {
+                continue;
+            }
+
+            var columns = line.Split('\t', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            if (columns.Length < 2)
+            {
+                continue;
+            }
+
+            var deviceId = columns[1];
+            if (string.IsNullOrWhiteSpace(deviceId))
+            {
+                continue;
+            }
+
+            var displayName = columns.Length >= 5 && !string.IsNullOrWhiteSpace(columns[4])
+                ? columns[4]
+                : deviceId;
+            devices.Add(new AudioDevice(new AudioDeviceId(deviceId), displayName, "speaker", false, true));
+        }
+
+        return CreateOrderedPlaybackDeviceList(devices);
+    }
+
+    private static IReadOnlyList<AudioDevice> CreateOrderedPlaybackDeviceList(IEnumerable<AudioDevice> devices)
+    {
+        return new ReadOnlyCollection<AudioDevice>(devices
+            .GroupBy(device => device.Id.Value, StringComparer.OrdinalIgnoreCase)
+            .Select(group => group.First())
+            .OrderBy(device => device.DisplayName, StringComparer.OrdinalIgnoreCase)
+            .ToArray());
+    }
+
+    private static IReadOnlyList<AudioDevice> ParsePlaybackDevicesFromAlsaHardwareList(string output)
+    {
+        var devices = new List<AudioDevice>();
+        using var reader = new StringReader(output);
+        string? line;
+
+        while ((line = reader.ReadLine()) is not null)
+        {
+            if (string.IsNullOrWhiteSpace(line))
+            {
+                continue;
+            }
+
+            var match = AlsaPlaybackDeviceRegex.Match(line);
+            if (!match.Success)
+            {
+                continue;
+            }
+
+            var cardNumber = match.Groups["cardNumber"].Value;
+            var deviceNumber = match.Groups["deviceNumber"].Value;
+            var cardName = match.Groups["cardName"].Value.Trim();
+            var deviceName = match.Groups["deviceName"].Value.Trim();
+            var deviceId = $"alsa:hw:{cardNumber},{deviceNumber}";
+            var displayName = string.IsNullOrWhiteSpace(deviceName)
+                ? cardName
+                : $"{cardName} - {deviceName}";
+
+            devices.Add(new AudioDevice(new AudioDeviceId(deviceId), displayName, "speaker", false, true));
+        }
+
+        return CreateOrderedPlaybackDeviceList(devices);
     }
 }
 
@@ -1246,7 +1360,11 @@ internal sealed class InternetRadioPlaybackController : IAsyncDisposable
             return null;
         }
 
-        var candidate = LinuxPlayerCandidate.CreateFfplay(GetLinuxPlayerVolumePercent(), streamUrl, useSystemDefaultSink ? null : sinkName);
+        var candidate = useSystemDefaultSink
+            ? LinuxPlayerCandidate.CreateFfplay(GetLinuxPlayerVolumePercent(), streamUrl, sinkName: null)
+            : sinkName.StartsWith("alsa:", StringComparison.OrdinalIgnoreCase)
+                ? LinuxPlayerCandidate.CreateFfplayForAlsa(GetLinuxPlayerVolumePercent(), streamUrl, sinkName[5..])
+                : LinuxPlayerCandidate.CreateFfplay(GetLinuxPlayerVolumePercent(), streamUrl, sinkName);
         Console.WriteLine($"[audio-processor] Launching Linux internet radio player: {candidate.StartInfo.FileName} {string.Join(' ', candidate.StartInfo.ArgumentList)}");
         var process = new Process
         {
@@ -1331,10 +1449,10 @@ internal sealed class InternetRadioPlaybackController : IAsyncDisposable
         if (string.IsNullOrWhiteSpace(sinkName)
             || string.Equals(sinkName, AudioFrameworkCatalog.DefaultSpeakerDeviceId, StringComparison.OrdinalIgnoreCase))
         {
-            return "Linux internet radio playback requires ffplay and a selected PipeWire output device for the AP master output.";
+            return "Linux internet radio playback requires ffplay and a reachable system audio output for the AP master output.";
         }
 
-        return $"Linux internet radio playback requires ffplay and access to the PipeWire sink '{sinkName}'.";
+        return $"Linux internet radio playback requires ffplay and access to the configured output '{sinkName}'.";
     }
 
     private int GetLinuxPlayerVolumePercent()
@@ -1395,13 +1513,16 @@ internal sealed class LinuxPlayerCandidate
 
     public ProcessStartInfo StartInfo { get; }
 
-    public static LinuxPlayerCandidate CreateFfplay(int volumePercent, string streamUrl, string sinkName)
+    public static LinuxPlayerCandidate CreateFfplay(int volumePercent, string streamUrl, string? sinkName)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(streamUrl);
-        ArgumentException.ThrowIfNullOrWhiteSpace(sinkName);
 
         var startInfo = CreateStartInfo("ffplay");
-        startInfo.Environment["PULSE_SINK"] = sinkName;
+        if (!string.IsNullOrWhiteSpace(sinkName))
+        {
+            startInfo.Environment["PULSE_SINK"] = sinkName;
+        }
+
         startInfo.ArgumentList.Add("-nodisp");
         startInfo.ArgumentList.Add("-vn");
         startInfo.ArgumentList.Add("-hide_banner");
@@ -1415,6 +1536,25 @@ internal sealed class LinuxPlayerCandidate
                 ? "ffplay on the PipeWire system default output"
                 : $"ffplay on PipeWire sink '{sinkName}'",
             startInfo);
+    }
+
+    public static LinuxPlayerCandidate CreateFfplayForAlsa(int volumePercent, string streamUrl, string alsaDeviceName)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(streamUrl);
+        ArgumentException.ThrowIfNullOrWhiteSpace(alsaDeviceName);
+
+        var startInfo = CreateStartInfo("ffplay");
+        startInfo.Environment["SDL_AUDIODRIVER"] = "alsa";
+        startInfo.Environment["AUDIODEV"] = alsaDeviceName;
+        startInfo.ArgumentList.Add("-nodisp");
+        startInfo.ArgumentList.Add("-vn");
+        startInfo.ArgumentList.Add("-hide_banner");
+        startInfo.ArgumentList.Add("-loglevel");
+        startInfo.ArgumentList.Add("error");
+        startInfo.ArgumentList.Add("-volume");
+        startInfo.ArgumentList.Add(volumePercent.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        startInfo.ArgumentList.Add(streamUrl);
+        return new LinuxPlayerCandidate($"ffplay on ALSA device '{alsaDeviceName}'", startInfo);
     }
 
     private static ProcessStartInfo CreateStartInfo(string fileName)
