@@ -1513,12 +1513,72 @@
                                     Padding="10">
                                 <Grid RowDefinitions="Auto,Auto,*"
                                       RowSpacing="8">
-                                    <TextBlock IsVisible="{Binding IsAdminSystemGeneralSectionSelected}"
-                                               Classes="white"
-                                               FontSize="18"
-                                               TextWrapping="Wrap"
-                                               VerticalAlignment="Top"
-                                               Text="General system settings content will render here. Select Status under System to view live component health." />
+                                    <!-- Sections 3.9 and 6: this Axaml stays read-only and renders retained/admin reference data without becoming a source of truth. -->
+                                    <ScrollViewer Grid.Row="1"
+                                                  IsVisible="{Binding IsAdminSystemGeneralSectionSelected}"
+                                                  HorizontalScrollBarVisibility="Disabled"
+                                                  VerticalScrollBarVisibility="Auto">
+                                        <StackPanel Spacing="10">
+                                            <!-- Section 6: framework component reference cards generated from the shared view-model projection. -->
+                                            <Border Classes="panel"
+                                                    Padding="10">
+                                                <StackPanel Spacing="6">
+                                                    <TextBlock Classes="white"
+                                                               FontSize="20"
+                                                               Text="COMPONENT REFERENCE" />
+                                                    <TextBlock Classes="white"
+                                                               FontSize="14"
+                                                               TextWrapping="Wrap"
+                                                               Text="Framework-defined components and transport roles from PROJECT_FRAMEWORK section 6." />
+                                                </StackPanel>
+                                            </Border>
+
+                                            <ItemsControl ItemsSource="{Binding AdminFrameworkComponentReferences}">
+                                                <ItemsControl.ItemTemplate>
+                                                    <DataTemplate x:DataType="viewModels:AdminFrameworkComponentReference">
+                                                        <Border Classes="buttonFrame"
+                                                                Margin="0,0,0,8"
+                                                                Padding="10">
+                                                            <StackPanel Spacing="6">
+                                                                <Grid ColumnDefinitions="*,Auto"
+                                                                      ColumnSpacing="8">
+                                                                    <StackPanel Spacing="2">
+                                                                        <TextBlock Classes="white"
+                                                                                   FontSize="18"
+                                                                                   Text="{Binding Name}" />
+                                                                        <TextBlock Classes="white"
+                                                                                   FontSize="12"
+                                                                                   Text="{Binding Plane, StringFormat='PLANE: {0}'}" />
+                                                                    </StackPanel>
+                                                                    <Border Grid.Column="1"
+                                                                            Background="#1E1E1E"
+                                                                            BorderBrush="{StaticResource ActiveButtonBorderBrush}"
+                                                                            BorderThickness="1"
+                                                                            CornerRadius="2"
+                                                                            Padding="6,3">
+                                                                        <TextBlock Classes="white"
+                                                                                   FontSize="13"
+                                                                                   Text="{Binding Status}" />
+                                                                    </Border>
+                                                                </Grid>
+                                                                <TextBlock Classes="white"
+                                                                           FontSize="14"
+                                                                           TextWrapping="Wrap"
+                                                                           Text="{Binding Role}" />
+                                                                <TextBlock Classes="white"
+                                                                           FontSize="12"
+                                                                           TextWrapping="Wrap"
+                                                                           Text="{Binding TransportSummary, StringFormat='TRANSPORTS: {0}'}" />
+                                                                <TextBlock Classes="white"
+                                                                           FontSize="12"
+                                                                           Text="{Binding IsCore, StringFormat='CORE: {0}'}" />
+                                                            </StackPanel>
+                                                        </Border>
+                                                    </DataTemplate>
+                                                </ItemsControl.ItemTemplate>
+                                            </ItemsControl>
+                                        </StackPanel>
+                                    </ScrollViewer>
 
                                     <ScrollViewer Grid.Row="1"
                                                   IsVisible="{Binding IsAdminSystemStatusSectionSelected}"

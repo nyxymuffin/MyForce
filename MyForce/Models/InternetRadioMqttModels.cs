@@ -4,6 +4,15 @@ using System.Collections.Generic;
 namespace MyForce.Models;
 
 /// <summary>
+/// Section 5.8.1 common MQTT envelope fields applied to UI command payloads.
+/// </summary>
+internal sealed record MqttCommandEnvelope(
+	int V,
+	DateTimeOffset Ts,
+	string? MsgId,
+	string? Auth);
+
+/// <summary>
 /// Defines the MQTT topics used by the UI and AP for internet radio control.
 /// </summary>
 internal static class InternetRadioMqttTopics
@@ -21,6 +30,10 @@ internal static class InternetRadioMqttTopics
 /// Represents a UI request for the AP to start internet radio playback.
 /// </summary>
 internal sealed record InternetRadioPlayCommandMessage(
+	int V,
+	DateTimeOffset Ts,
+	string? MsgId,
+	string? Auth,
 	string StreamUrl,
 	string DisplayName,
 	string Genre,
@@ -42,6 +55,10 @@ internal sealed record InternetRadioPlaybackStateMessage(
 /// Represents a UI request to update an AP mixer channel gain.
 /// </summary>
 internal sealed record AudioChannelGainCommandMessage(
+	int V,
+	DateTimeOffset Ts,
+	string? MsgId,
+	string? Auth,
 	string ChannelId,
 	decimal Gain);
 
@@ -49,6 +66,10 @@ internal sealed record AudioChannelGainCommandMessage(
 /// Represents a UI request to update the AP master speaker output selection.
 /// </summary>
 internal sealed record OutputSpeakerCommandMessage(
+	int V,
+	DateTimeOffset Ts,
+	string? MsgId,
+	string? Auth,
 	string DeviceId);
 
 /// <summary>

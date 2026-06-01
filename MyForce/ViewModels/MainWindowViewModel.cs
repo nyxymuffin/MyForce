@@ -59,6 +59,14 @@ public sealed record AdminSystemComponentStatus(
 	};
 }
 
+public sealed record AdminFrameworkComponentReference(
+	string Name,
+	string Plane,
+	string Role,
+	string Status,
+	bool IsCore,
+	string TransportSummary);
+
 public enum MainConsoleTab
 {
 	Patrol,
@@ -141,6 +149,8 @@ public enum AuxiliaryAudioSourceMode
 public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 {
 	private const int PresetCount = 6;
+
+	private const int MqttCommandSchemaVersion = 1;
 
 	private const string AdminPinCode = "2135";
 
@@ -270,6 +280,8 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 		WriteIndented = false,
 	};
 
+	private static readonly IReadOnlyList<SystemComponent> FrameworkReferenceComponents = SystemComponent.CreateFrameworkReference();
+
 	private MainConsoleTab _selectedTab = MainConsoleTab.Patrol;
 
 	private bool _isAdminOverlayVisible;
@@ -283,6 +295,8 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 	private string _adminSectionDescription = "Core console configuration and startup settings will live here.";
 
 	private string _adminPinEntry = string.Empty;
+
+	private string? _adminSessionCredential;
 
 	private string _adminPinStatus = "Enter PIN to unlock admin controls.";
 
@@ -914,6 +928,19 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 		private set => SetProperty(ref _systemComponentStatuses, value);
 	}
 
+	/// <summary>
+	/// Section 6 component reference used to document the framework-defined system topology in the admin UI.
+	/// </summary>
+	public IReadOnlyList<AdminFrameworkComponentReference> AdminFrameworkComponentReferences => FrameworkReferenceComponents
+		.Select(static component => new AdminFrameworkComponentReference(
+			component.Name,
+			component.Plane,
+			component.Role,
+			component.Status,
+			component.IsCore,
+			string.Join(", ", component.Transports)))
+		.ToArray();
+
 	public bool IsAdminSystemGeneralSectionSelected => SelectedAdminSection == AdminSection.System;
 
 	public bool IsAdminSystemStatusSectionSelected => SelectedAdminSection == AdminSection.SystemStatus;
@@ -1131,7 +1158,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 	}
 
 	/// <summary>
-	/// Adds a digit to the admin PIN entry and unlocks the admin overlay when the configured PIN is entered.
+	/// Section 4.6: adds a digit to the admin PIN entry and establishes the per-command admin credential session when the configured PIN is entered.
 	/// </summary>
 	public void AppendAdminPinDigit(char digit)
 	{
@@ -1157,6 +1184,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 		if (string.Equals(_adminPinEntry, AdminPinCode, StringComparison.Ordinal))
 		{
 			IsAdminAuthenticated = true;
+			_adminSessionCredential = AdminPinCode;
 			AdminPinStatus = "Admin access granted.";
 			RaiseAdminOverlayStateChanged();
 			return;
@@ -1819,14 +1847,8 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 	{
 		ArgumentNullException.ThrowIfNull(station);
 
-		var command = new InternetRadioPlayCommandMessage(
-			station.StreamUrl,
-			station.DisplayName,
-			station.Genre,
-			station.Language);
-
-		var payload = JsonSerializer.Serialize(command, MqttJsonSerializerOptions);
-		await _mqttConnectionService.PublishAsync(InternetRadioMqttTopics.PlayCommandTopic, payload).ConfigureAwait(false);
+		var command = CreateInternetRadioPlayCommandMessage(station);
+		await PublishCommandAsync(InternetRadioMqttTopics.PlayCommandTopic, command).ConfigureAwait(false);
 	}
 
 	/// <summary>
@@ -1834,7 +1856,8 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 	/// </summary>
 	private async Task PublishInternetRadioStopCommandAsync()
 	{
-		await _mqttConnectionService.PublishAsync(InternetRadioMqttTopics.StopCommandTopic, "{}").ConfigureAwait(false);
+		var envelope = CreateCommandEnvelope(isAdminCommand: false, includeMessageId: true);
+		await PublishCommandAsync(InternetRadioMqttTopics.StopCommandTopic, envelope).ConfigureAwait(false);
 	}
 
 	/// <summary>
@@ -1842,20 +1865,93 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 	/// </summary>
 	private void PublishEntertainmentVolumeCommand()
 	{
-		var command = new AudioChannelGainCommandMessage(
+		var command = CreateAudioChannelGainCommandMessage(
 			AudioProcessorEntertainmentChannelId,
 			MapEntertainmentVolumeToGain(_amFmVolume));
-		var payload = JsonSerializer.Serialize(command, MqttJsonSerializerOptions);
-		_ = _mqttConnectionService.PublishAsync(AudioProcessorChannelGainCommandTopic, payload);
+		_ = PublishCommandAsync(AudioProcessorChannelGainCommandTopic, command);
 	}
 
 	private async Task PublishOutputSpeakerCommandAsync(string deviceId)
 	{
 		ArgumentException.ThrowIfNullOrWhiteSpace(deviceId);
 
-		var command = new OutputSpeakerCommandMessage(deviceId);
+		var command = CreateOutputSpeakerCommandMessage(deviceId, isAdminCommand: true);
+		await PublishCommandAsync(InternetRadioMqttTopics.SpeakerOutputCommandTopic, command).ConfigureAwait(false);
+	}
+
+	/// <summary>
+	/// Sections 3.9.3 and 5.8.1: creates the flat common MQTT envelope used by UI command payloads.
+	/// </summary>
+	private MqttCommandEnvelope CreateCommandEnvelope(bool isAdminCommand, bool includeMessageId)
+	{
+		var auth = isAdminCommand ? RequireAdminSessionCredential() : null;
+		return new MqttCommandEnvelope(
+			MqttCommandSchemaVersion,
+			DateTimeOffset.UtcNow,
+			includeMessageId ? Guid.NewGuid().ToString("D", CultureInfo.InvariantCulture) : null,
+			auth);
+	}
+
+	/// <summary>
+	/// Sections 3.9 and 3.9.3: the UI writes to the system only by publishing MQTT commands, never by mutating authoritative state directly.
+	/// </summary>
+	private Task PublishCommandAsync<TCommand>(string topic, TCommand command, bool retain = false)
+	{
+		ArgumentException.ThrowIfNullOrWhiteSpace(topic);
+		ArgumentNullException.ThrowIfNull(command);
+
 		var payload = JsonSerializer.Serialize(command, MqttJsonSerializerOptions);
-		await _mqttConnectionService.PublishAsync(InternetRadioMqttTopics.SpeakerOutputCommandTopic, payload).ConfigureAwait(false);
+		return _mqttConnectionService.PublishAsync(topic, payload, retain);
+	}
+
+	private InternetRadioPlayCommandMessage CreateInternetRadioPlayCommandMessage(InternetRadioStation station)
+	{
+		ArgumentNullException.ThrowIfNull(station);
+		var envelope = CreateCommandEnvelope(isAdminCommand: false, includeMessageId: true);
+		return new InternetRadioPlayCommandMessage(
+			envelope.V,
+			envelope.Ts,
+			envelope.MsgId,
+			envelope.Auth,
+			station.StreamUrl,
+			station.DisplayName,
+			station.Genre,
+			station.Language);
+	}
+
+	private AudioChannelGainCommandMessage CreateAudioChannelGainCommandMessage(string channelId, decimal gain)
+	{
+		ArgumentException.ThrowIfNullOrWhiteSpace(channelId);
+		var envelope = CreateCommandEnvelope(isAdminCommand: false, includeMessageId: true);
+		return new AudioChannelGainCommandMessage(
+			envelope.V,
+			envelope.Ts,
+			envelope.MsgId,
+			envelope.Auth,
+			channelId,
+			gain);
+	}
+
+	private OutputSpeakerCommandMessage CreateOutputSpeakerCommandMessage(string deviceId, bool isAdminCommand)
+	{
+		ArgumentException.ThrowIfNullOrWhiteSpace(deviceId);
+		var envelope = CreateCommandEnvelope(isAdminCommand, includeMessageId: true);
+		return new OutputSpeakerCommandMessage(
+			envelope.V,
+			envelope.Ts,
+			envelope.MsgId,
+			envelope.Auth,
+			deviceId);
+	}
+
+	private string RequireAdminSessionCredential()
+	{
+		if (!IsAdminAuthenticated || string.IsNullOrWhiteSpace(_adminSessionCredential))
+		{
+			throw new InvalidOperationException("Admin authentication is required for this command.");
+		}
+
+		return _adminSessionCredential;
 	}
 
 	/// <summary>

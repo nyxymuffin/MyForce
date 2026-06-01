@@ -33,7 +33,7 @@ public sealed record SystemComponent(
     string[] Transports)
 {
     /// <summary>
-    /// Creates the framework-defined component reference set from section 6.
+    /// Section 6: creates the framework-defined component reference set used by the UI documentation surface.
     /// </summary>
     public static IReadOnlyList<SystemComponent> CreateFrameworkReference()
     {
