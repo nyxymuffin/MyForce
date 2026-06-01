@@ -1511,13 +1511,13 @@
                             <Border Grid.Row="2"
                                     Classes="panel"
                                     Padding="10">
-                                <Grid RowDefinitions="Auto,Auto,*"
+                                <Grid RowDefinitions="Auto,*"
                                       RowSpacing="8">
                                     <!-- Sections 3.9 and 6: this Axaml stays read-only and renders retained/admin reference data without becoming a source of truth. -->
                                     <ScrollViewer Grid.Row="1"
                                                   IsVisible="{Binding IsAdminSystemGeneralSectionSelected}"
                                                   HorizontalScrollBarVisibility="Disabled"
-                                                  VerticalScrollBarVisibility="Auto">
+                                                  VerticalScrollBarVisibility="Visible">
                                         <StackPanel Spacing="10">
                                             <!-- Section 6: framework component reference cards generated from the shared view-model projection. -->
                                             <Border Classes="panel"
@@ -1584,7 +1584,7 @@
                                     <ScrollViewer Grid.Row="1"
                                                   IsVisible="{Binding IsAdminSystemStatusSectionSelected}"
                                                   HorizontalScrollBarVisibility="Disabled"
-                                                  VerticalScrollBarVisibility="Auto">
+                                                  VerticalScrollBarVisibility="Visible">
                                         <StackPanel Spacing="10">
                                             <Border Classes="panel"
                                                     Padding="10">
