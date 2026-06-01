@@ -67,6 +67,10 @@ public sealed record AdminFrameworkComponentReference(
 	bool IsCore,
 	string TransportSummary);
 
+internal sealed record PendingMqttCommand(string Topic, DateTimeOffset CreatedAtUtc);
+
+public sealed record AdminSchemaModuleProjection(string Id, string TypeId, string Kind, string Category, IReadOnlyList<string> FieldPaths);
+
 public enum MainConsoleTab
 {
 	Patrol,
@@ -156,7 +160,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 
 	private const string AudioProcessorStatusTopic = "myforce/ap/status/service";
 
-	private const string AudioProcessorChannelGainCommandTopic = "myforce/ap/cmd/channel-gain";
+	private const string AudioProcessorChannelGainCommandTopic = InternetRadioMqttTopics.SpecGainCommandTopic;
 
 	private const string AudioProcessorEntertainmentChannelId = "entertainment";
 
@@ -278,6 +282,10 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 
 	private string _mqttConnectionBannerText = "MQTT broker is offline. System state may be stale.";
 
+	private readonly Dictionary<string, PendingMqttCommand> _pendingMqttCommands = new(StringComparer.OrdinalIgnoreCase);
+
+	private string _mqttCommandFeedback = "No pending MQTT commands.";
+
 	private static readonly JsonSerializerOptions MqttJsonSerializerOptions = new()
 	{
 		PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
@@ -309,6 +317,8 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 	private IReadOnlyList<RadioRegistryEntryMessage> _availableRadioTypes = Array.Empty<RadioRegistryEntryMessage>();
 
 	private IReadOnlyList<RadioRuntimeEntryMessage> _radioRuntimeEntries = Array.Empty<RadioRuntimeEntryMessage>();
+
+	private IReadOnlyList<AdminSchemaModuleProjection> _adminSchemaModules = Array.Empty<AdminSchemaModuleProjection>();
 
 	private string _apConfiguredOutputSpeakerId = DefaultAudioOutputSpeakerId;
 
@@ -515,6 +525,12 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 	{
 		get => _mqttConnectionBannerText;
 		private set => SetProperty(ref _mqttConnectionBannerText, value);
+	}
+
+	public string MqttCommandFeedback
+	{
+		get => _mqttCommandFeedback;
+		private set => SetProperty(ref _mqttCommandFeedback, value);
 	}
 
 	public string Clock
@@ -895,6 +911,16 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 		: HasAvailableRadioTypes
 			? "No declared radios are active yet. Use the addable type list below to add built-in resources or RM-backed radios."
 			: "Waiting for retained AP radio runtime data.";
+
+	public IReadOnlyList<AdminSchemaModuleProjection> AdminSchemaModules
+	{
+		get => _adminSchemaModules;
+		private set => SetProperty(ref _adminSchemaModules, value);
+	}
+
+	public string AdminSchemaSummary => AdminSchemaModules.Count == 0
+		? "Waiting for module registry schemas."
+		: $"SCHEMA MODULES: {AdminSchemaModules.Count}  FIELDS: {AdminSchemaModules.Sum(static module => module.FieldPaths.Count)}";
 
 	public bool IsAdminAudioSectionSelected => SelectedAdminSection == AdminSection.Audio;
 
@@ -1753,6 +1779,23 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 
 	private bool HandleSpecMqttMessage(MqttApplicationMessage message)
 	{
+		if (message.Topic.EndsWith("/ack", StringComparison.OrdinalIgnoreCase))
+		{
+			var ackPayload = message.ConvertPayloadToString();
+			if (string.IsNullOrWhiteSpace(ackPayload))
+			{
+				return true;
+			}
+
+			var ack = JsonSerializer.Deserialize<CommandAckMessage>(ackPayload, MqttJsonSerializerOptions);
+			if (ack is not null)
+			{
+				Dispatcher.UIThread.Post(() => ApplyCommandAck(message.Topic, ack));
+			}
+
+			return true;
+		}
+
 		if (string.Equals(message.Topic, InternetRadioMqttTopics.ConsoleTxTopic, StringComparison.OrdinalIgnoreCase))
 		{
 			var payload = message.ConvertPayloadToString();
@@ -1832,6 +1875,25 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 			: "TX IDLE";
 	}
 
+	private void ApplyCommandAck(string topic, CommandAckMessage ack)
+	{
+		ArgumentException.ThrowIfNullOrWhiteSpace(topic);
+		ArgumentNullException.ThrowIfNull(ack);
+
+		_pendingMqttCommands.Remove(ack.MsgId, out var pendingCommand);
+		var commandLabel = pendingCommand?.Topic ?? topic[..^4];
+		if (string.Equals(ack.Status, "ok", StringComparison.OrdinalIgnoreCase))
+		{
+			MqttCommandFeedback = $"Command accepted: {commandLabel}";
+			return;
+		}
+
+		var error = ack.Errors?.FirstOrDefault();
+		MqttCommandFeedback = error is null
+			? $"Command {ack.Status}: {commandLabel}"
+			: $"Command {ack.Status}: {commandLabel} - {error.Message}";
+	}
+
 	private void ApplyModuleRegistrySpec(ModuleRegistrySpecMessage registry)
 	{
 		ArgumentNullException.ThrowIfNull(registry);
@@ -1844,7 +1906,53 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 			registry.Capabilities,
 			registry.ConfigSchema.GetRawText(),
 			registry.ConfigSchema.GetRawText())).ToArray();
+		ApplyAdminSchemaProjection(registry);
 		RaiseAdminNetworkStateChanged();
+	}
+
+	private void ApplyAdminSchemaProjection(ModuleRegistrySpecMessage registry)
+	{
+		var fieldPaths = ExtractSchemaFieldPaths(registry.ConfigSchema).ToArray();
+		var existing = AdminSchemaModules.Where(module => !string.Equals(module.Id, registry.Id, StringComparison.OrdinalIgnoreCase));
+		AdminSchemaModules = existing.Append(new AdminSchemaModuleProjection(
+			registry.Id,
+			registry.TypeId,
+			registry.Kind,
+			registry.Category,
+			fieldPaths)).OrderBy(static module => module.Id, StringComparer.OrdinalIgnoreCase).ToArray();
+	}
+
+	private static IEnumerable<string> ExtractSchemaFieldPaths(JsonElement schema)
+	{
+		if (schema.ValueKind != JsonValueKind.Object || !schema.TryGetProperty("properties", out var properties))
+		{
+			yield break;
+		}
+
+		foreach (var property in properties.EnumerateObject())
+		{
+			foreach (var path in ExtractSchemaFieldPaths(property.Value, property.Name))
+			{
+				yield return path;
+			}
+		}
+	}
+
+	private static IEnumerable<string> ExtractSchemaFieldPaths(JsonElement schema, string prefix)
+	{
+		yield return prefix;
+		if (schema.ValueKind != JsonValueKind.Object || !schema.TryGetProperty("properties", out var properties))
+		{
+			yield break;
+		}
+
+		foreach (var property in properties.EnumerateObject())
+		{
+			foreach (var path in ExtractSchemaFieldPaths(property.Value, $"{prefix}.{property.Name}"))
+			{
+				yield return path;
+			}
+		}
 	}
 
 	private void ApplyModuleStatusSpec(string topic, ModuleStatusSpecMessage status)
@@ -2044,7 +2152,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 		ArgumentNullException.ThrowIfNull(station);
 
 		var command = CreateInternetRadioPlayCommandMessage(station);
-		await PublishCommandAsync(InternetRadioMqttTopics.PlayCommandTopic, command).ConfigureAwait(false);
+		await PublishCommandAsync(InternetRadioMqttTopics.SpecPlayCommandTopic, command).ConfigureAwait(false);
 	}
 
 	/// <summary>
@@ -2053,7 +2161,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 	private async Task PublishInternetRadioStopCommandAsync()
 	{
 		var envelope = CreateCommandEnvelope(isAdminCommand: false, includeMessageId: true);
-		await PublishCommandAsync(InternetRadioMqttTopics.StopCommandTopic, envelope).ConfigureAwait(false);
+		await PublishCommandAsync(InternetRadioMqttTopics.SpecStopCommandTopic, envelope).ConfigureAwait(false);
 	}
 
 	/// <summary>
@@ -2072,7 +2180,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 		ArgumentException.ThrowIfNullOrWhiteSpace(deviceId);
 
 		var command = CreateOutputSpeakerCommandMessage(deviceId, isAdminCommand: true);
-		await PublishCommandAsync(InternetRadioMqttTopics.SpeakerOutputCommandTopic, command).ConfigureAwait(false);
+		await PublishCommandAsync(InternetRadioMqttTopics.SpecSpeakerOutputCommandTopic, command).ConfigureAwait(false);
 	}
 
 	/// <summary>
@@ -2096,8 +2204,29 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 		ArgumentException.ThrowIfNullOrWhiteSpace(topic);
 		ArgumentNullException.ThrowIfNull(command);
 
+		TrackPendingCommand(topic, command);
 		var payload = JsonSerializer.Serialize(command, MqttJsonSerializerOptions);
 		return _mqttConnectionService.PublishAsync(topic, payload, retain);
+	}
+
+	private void TrackPendingCommand<TCommand>(string topic, TCommand command)
+	{
+		var msgId = command switch
+		{
+			MqttCommandEnvelope envelope => envelope.MsgId,
+			InternetRadioPlayCommandMessage play => play.MsgId,
+			AudioChannelGainCommandMessage gain => gain.MsgId,
+			OutputSpeakerCommandMessage speaker => speaker.MsgId,
+			_ => null
+		};
+
+		if (string.IsNullOrWhiteSpace(msgId))
+		{
+			return;
+		}
+
+		_pendingMqttCommands[msgId] = new PendingMqttCommand(topic, DateTimeOffset.UtcNow);
+		MqttCommandFeedback = $"Command pending: {topic}";
 	}
 
 	private InternetRadioPlayCommandMessage CreateInternetRadioPlayCommandMessage(InternetRadioStation station)
@@ -2217,6 +2346,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 	{
 		PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(SystemComponentStatuses)));
 		PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(AdminSystemStatusSummary)));
+		PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(MqttCommandFeedback)));
 		PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IsAdminSystemGeneralSectionSelected)));
 		PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IsAdminSystemStatusSectionSelected)));
 		PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IsAdminAudioSectionSelected)));
@@ -2250,6 +2380,8 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 		PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(AdminRadioEntryCount)));
 		PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(HasAdminRadioEntries)));
 		PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(AdminRadioSummary)));
+		PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(AdminSchemaModules)));
+		PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(AdminSchemaSummary)));
 		PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IsAdminRadioSectionSelected)));
 		PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IsAdminNetworkSectionSelected)));
 		PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IsAdminIntegrationsSectionSelected)));

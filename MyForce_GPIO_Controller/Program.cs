@@ -512,6 +512,7 @@ internal sealed class GpioControllerCoordinator : IAsyncDisposable
 	public async Task HandleConnectedAsync(CancellationToken cancellationToken)
 	{
 		await _mqttRuntime.SubscribeAsync(_topics.AllCommandsTopicFilter, cancellationToken).ConfigureAwait(false);
+		await _mqttRuntime.SubscribeAsync(_topics.LegacyAllCommandsTopicFilter, cancellationToken).ConfigureAwait(false);
 		var detail = _hasPublishedConnectedSnapshot
 			   ? "GPIO controller reconnected to MQTT broker."
 			   : _startupStatusDetail;
@@ -530,13 +531,15 @@ internal sealed class GpioControllerCoordinator : IAsyncDisposable
 			return;
 		}
 
-		if (string.Equals(topic, _topics.ApplyConfigTopic, StringComparison.OrdinalIgnoreCase))
+		if (string.Equals(topic, _topics.ApplyConfigTopic, StringComparison.OrdinalIgnoreCase)
+			|| string.Equals(topic, _topics.LegacyApplyConfigTopic, StringComparison.OrdinalIgnoreCase))
 		{
 			await ApplyConfigAsync(args.ApplicationMessage.Payload, CancellationToken.None).ConfigureAwait(false);
 			return;
 		}
 
-		if (string.Equals(topic, _topics.ClearConfigTopic, StringComparison.OrdinalIgnoreCase))
+		if (string.Equals(topic, _topics.ClearConfigTopic, StringComparison.OrdinalIgnoreCase)
+			|| string.Equals(topic, _topics.LegacyClearConfigTopic, StringComparison.OrdinalIgnoreCase))
 		{
 			_currentConfig = GpioControllerConfigPayload.Empty;
 			_configStore.Clear();
@@ -587,6 +590,12 @@ internal sealed class GpioControllerCoordinator : IAsyncDisposable
 			retain: true,
 			cancellationToken: cancellationToken).ConfigureAwait(false);
 
+		await _mqttRuntime.PublishAsync(
+			_topics.LegacyServiceRegistryTopic,
+			GpioControllerJson.Serialize(GpioControllerServiceRegistryPayload.Create(_topics)),
+			retain: true,
+			cancellationToken: cancellationToken).ConfigureAwait(false);
+
 		await PublishConfigSnapshotAsync(cancellationToken).ConfigureAwait(false);
 		await PublishStatusAsync(detail, cancellationToken).ConfigureAwait(false);
 	}
@@ -623,6 +632,12 @@ internal sealed class GpioControllerCoordinator : IAsyncDisposable
 			GpioControllerJson.Serialize(_currentConfig),
 			retain: true,
 			cancellationToken: cancellationToken).ConfigureAwait(false);
+
+		await _mqttRuntime.PublishAsync(
+			_topics.LegacyConfigStateTopic,
+			GpioControllerJson.Serialize(_currentConfig),
+			retain: true,
+			cancellationToken: cancellationToken).ConfigureAwait(false);
 	}
 
 	private async Task PublishStatusAsync(string detail, CancellationToken cancellationToken)
@@ -631,6 +646,17 @@ internal sealed class GpioControllerCoordinator : IAsyncDisposable
 
 		await _mqttRuntime.PublishAsync(
 			_topics.ServiceStatusTopic,
+			GpioControllerJson.Serialize(
+				GpioControllerServiceStatusPayload.CreateRunning(
+					serviceId: "gpio-controller",
+					relayBoardCount: _currentConfig.RelayBoards.Count,
+					digitalInputBoardCount: _currentConfig.DigitalInputBoards.Count,
+					detail: detail)),
+			retain: true,
+			cancellationToken: cancellationToken).ConfigureAwait(false);
+
+		await _mqttRuntime.PublishAsync(
+			_topics.LegacyServiceStatusTopic,
 			GpioControllerJson.Serialize(
 				GpioControllerServiceStatusPayload.CreateRunning(
 					serviceId: "gpio-controller",
@@ -1031,19 +1057,33 @@ public interface IGpioControllerStoredConfig
 
 internal sealed class GpioControllerTopicFactory
 {
-	private const string RootTopic = "myforce/gpio";
+	private const string LegacyRootTopic = "myforce/gpio";
 
-	public string AllCommandsTopicFilter => $"{RootTopic}/cmd/#";
+	private const string ModuleTopic = "myforce/module/gpio.controller";
 
-	public string ApplyConfigTopic => $"{RootTopic}/cmd/config/apply";
+	public string AllCommandsTopicFilter => $"{ModuleTopic}/cmd/#";
 
-	public string ClearConfigTopic => $"{RootTopic}/cmd/config/clear";
+	public string ApplyConfigTopic => $"{ModuleTopic}/cmd/config";
 
-	public string ConfigStateTopic => $"{RootTopic}/state/config";
+	public string ClearConfigTopic => $"{ModuleTopic}/cmd/clear_config";
 
-	public string ServiceRegistryTopic => $"{RootTopic}/registry/service";
+	public string ConfigStateTopic => $"{ModuleTopic}/config";
 
-	public string ServiceStatusTopic => $"{RootTopic}/status/service";
+	public string ServiceRegistryTopic => $"{ModuleTopic}/registry";
+
+	public string ServiceStatusTopic => $"{ModuleTopic}/status";
+
+	public string LegacyAllCommandsTopicFilter => $"{LegacyRootTopic}/cmd/#";
+
+	public string LegacyApplyConfigTopic => $"{LegacyRootTopic}/cmd/config/apply";
+
+	public string LegacyClearConfigTopic => $"{LegacyRootTopic}/cmd/config/clear";
+
+	public string LegacyConfigStateTopic => $"{LegacyRootTopic}/state/config";
+
+	public string LegacyServiceRegistryTopic => $"{LegacyRootTopic}/registry/service";
+
+	public string LegacyServiceStatusTopic => $"{LegacyRootTopic}/status/service";
 }
 
 internal sealed record MqttLastWillMessage(string Topic, string Payload, bool Retain);

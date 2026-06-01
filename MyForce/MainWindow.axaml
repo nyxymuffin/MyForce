@@ -1616,6 +1616,10 @@
                                                                FontSize="14"
                                                                TextWrapping="Wrap"
                                                                Text="{Binding AdminSystemStatusSummary}" />
+                                                    <TextBlock Classes="white"
+                                                               FontSize="12"
+                                                               TextWrapping="Wrap"
+                                                               Text="{Binding MqttCommandFeedback}" />
                                                 </StackPanel>
                                             </Border>
 
@@ -1837,6 +1841,49 @@
                                                                FontSize="12"
                                                                TextWrapping="Wrap"
                                                                Text="{Binding AdminRadioSummary}" />
+                                                </StackPanel>
+                                            </Border>
+
+                                            <Border Classes="panel"
+                                                    Padding="10">
+                                                <StackPanel Spacing="6">
+                                                    <TextBlock Classes="white"
+                                                               FontSize="18"
+                                                               Text="SCHEMA-DRIVEN ADMIN" />
+                                                    <TextBlock Classes="white"
+                                                               FontSize="12"
+                                                               TextWrapping="Wrap"
+                                                               Text="{Binding AdminSchemaSummary}" />
+                                                    <ItemsControl ItemsSource="{Binding AdminSchemaModules}">
+                                                        <ItemsControl.ItemTemplate>
+                                                            <DataTemplate x:DataType="viewModels:AdminSchemaModuleProjection">
+                                                                <Border Classes="buttonFrame"
+                                                                        Margin="0,0,0,8"
+                                                                        Padding="8">
+                                                                    <StackPanel Spacing="4">
+                                                                        <TextBlock Classes="white"
+                                                                                   FontSize="15"
+                                                                                   Text="{Binding Id}" />
+                                                                        <TextBlock Classes="white"
+                                                                                   FontSize="11"
+                                                                                   Text="{Binding TypeId, StringFormat='TYPE: {0}'}" />
+                                                                        <TextBlock Classes="white"
+                                                                                   FontSize="11"
+                                                                                   Text="{Binding FieldPaths.Count, StringFormat='SCHEMA FIELDS: {0}'}" />
+                                                                        <ItemsControl ItemsSource="{Binding FieldPaths}">
+                                                                            <ItemsControl.ItemTemplate>
+                                                                                <DataTemplate>
+                                                                                    <TextBlock Classes="white"
+                                                                                               FontSize="10"
+                                                                                               Text="{Binding .}" />
+                                                                                </DataTemplate>
+                                                                            </ItemsControl.ItemTemplate>
+                                                                        </ItemsControl>
+                                                                    </StackPanel>
+                                                                </Border>
+                                                            </DataTemplate>
+                                                        </ItemsControl.ItemTemplate>
+                                                    </ItemsControl>
                                                 </StackPanel>
                                             </Border>
 

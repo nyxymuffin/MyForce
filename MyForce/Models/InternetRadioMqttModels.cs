@@ -40,6 +40,14 @@ internal static class InternetRadioMqttTopics
 
 	public const string StopCommandTopic = "myforce/ap/cmd/internet-radio/stop";
 
+	public const string SpecPlayCommandTopic = "myforce/module/media.internet-radio/cmd/play";
+
+	public const string SpecStopCommandTopic = "myforce/module/media.internet-radio/cmd/stop";
+
+	public const string SpecGainCommandTopic = "myforce/module/media.internet-radio/cmd/gain";
+
+	public const string SpecSpeakerOutputCommandTopic = "myforce/module/audio.processor/cmd/output-speaker";
+
 	public const string AudioProcessorRegistryTopic = "myforce/ap/registry/service";
 
 	public const string StateTopic = "myforce/ap/state/internet-radio";
@@ -244,3 +252,12 @@ internal sealed record ZoneInfoMessage(int Index, string? Label);
 internal sealed record SignalInfoMessage([property: JsonPropertyName("rssi_dbm")] int? RssiDbm);
 
 internal sealed record ConsoleTxStateMessage(int V, DateTimeOffset Ts, string? Holder, string? Target, string State);
+
+internal sealed record CommandAckMessage(
+	int V,
+	DateTimeOffset Ts,
+	[property: JsonPropertyName("msg_id")] string MsgId,
+	string Status,
+	IReadOnlyList<CommandAckErrorMessage>? Errors);
+
+internal sealed record CommandAckErrorMessage(string? Field, string Code, string Message);

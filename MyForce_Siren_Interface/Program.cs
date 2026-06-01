@@ -38,7 +38,9 @@ internal sealed class SirenInterfaceMqttApp
 
 	private Task? _statusHeartbeatTask;
 
-	private readonly string _serviceStatusTopic = "myforce/siren/status/service";
+	private readonly string _serviceStatusTopic = "myforce/module/siren.interface/status";
+
+	private readonly string _legacyServiceStatusTopic = "myforce/siren/status/service";
 
 	private readonly MqttLastWillMessage _lastWillMessage;
 
@@ -94,6 +96,7 @@ internal sealed class SirenInterfaceMqttApp
 			State: "Running",
 			Detail: $"Heartbeat: {DateTime.UtcNow:O}"));
 		await _mqttRuntime.PublishAsync(_serviceStatusTopic, payload, retain: true, cancellationToken).ConfigureAwait(false);
+		await _mqttRuntime.PublishAsync(_legacyServiceStatusTopic, payload, retain: true, cancellationToken).ConfigureAwait(false);
 	}
 
 	private async Task RunStatusHeartbeatAsync(CancellationToken cancellationToken)

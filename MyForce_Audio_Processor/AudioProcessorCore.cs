@@ -48,6 +48,8 @@ internal sealed class AudioProcessorCoordinator : IAsyncDisposable
 
 	private readonly AudioProcessorRoutingState _routingState;
 
+	private readonly AudioMatrixEngine _audioMatrixEngine;
+
 	private readonly MqttServiceRuntime _mqttRuntime;
 
 	private readonly AudioProcessorTopicFactory _topics;
@@ -57,6 +59,8 @@ internal sealed class AudioProcessorCoordinator : IAsyncDisposable
 	private readonly RadioPluginCatalog _pluginCatalog;
 
 	private readonly AudioProcessorPersistedTopology _persistedTopology;
+
+	private readonly RadioModuleHostManager _radioModuleHostManager;
 
 	public AudioProcessorCoordinator(MqttServiceRuntime mqttRuntime, AudioProcessorTopicFactory topics)
 	{
@@ -73,7 +77,9 @@ internal sealed class AudioProcessorCoordinator : IAsyncDisposable
 		_internetRadioController = new InternetRadioPlaybackController(_configStore);
 		_mixerState = AudioMixerState.CreateDefault(_audioFramework.ChannelStrips);
 		_routingState = AudioProcessorRoutingState.CreateDefault(_registry.RadioIds, ResolveInitialSpeakerDeviceId());
+		_audioMatrixEngine = new AudioMatrixEngine(_mixerState.CurrentSnapshot, _routingState.CurrentSnapshot);
 		_txController = new TxController(_registry.Radios);
+		_radioModuleHostManager = new RadioModuleHostManager(_registry.Radios, _pluginCatalog.Modules, AudioProcessorLog.Write);
 		_internetRadioController.SetOutputSpeaker(_routingState.CurrentSnapshot.SpeakerSink.DeviceId);
 		AudioProcessorLog.Write("discovery", $"Audio framework initialized with {_audioFramework.Devices.Count(device => device.OutputEnabled && string.Equals(device.Role, "speaker", StringComparison.OrdinalIgnoreCase))} output speaker device(s).");
 		AudioProcessorLog.Write("discovery", $"Discovered {_pluginCatalog.Modules.Count} radio plugin type(s) from '{_pluginCatalog.PluginDirectoryPath}'.");
@@ -83,7 +89,9 @@ internal sealed class AudioProcessorCoordinator : IAsyncDisposable
 	public async Task StartAsync(CancellationToken cancellationToken)
 	{
 		await _mqttRuntime.SubscribeAsync(_topics.AllCommandsTopicFilter, cancellationToken).ConfigureAwait(false);
+		await _mqttRuntime.SubscribeAsync(_topics.AllModuleCommandsTopicFilter, cancellationToken).ConfigureAwait(false);
 		await _mqttRuntime.SubscribeAsync(_topics.ConsolePttCommandTopicFilter, cancellationToken).ConfigureAwait(false);
+		await _radioModuleHostManager.StartAsync(cancellationToken).ConfigureAwait(false);
 		await RestoreInternetRadioPlaybackAsync(cancellationToken).ConfigureAwait(false);
 		await PublishBirthSnapshotAsync(cancellationToken).ConfigureAwait(false);
 	}
@@ -248,6 +256,115 @@ internal sealed record DiscoveredRadioModule(
 	RadioCapabilities Capabilities,
 	IRadioModuleFactory Factory);
 
+internal sealed class RadioModuleHostManager : IAsyncDisposable
+{
+	private readonly IReadOnlyList<RadioRuntimeDefinition> _radios;
+	private readonly IReadOnlyList<DiscoveredRadioModule> _discoveredModules;
+	private readonly Action<string, string> _log;
+	private readonly List<HostedRadioModule> _hostedModules = [];
+
+	public RadioModuleHostManager(IReadOnlyList<RadioRuntimeDefinition> radios, IReadOnlyList<DiscoveredRadioModule> discoveredModules, Action<string, string> log)
+	{
+		ArgumentNullException.ThrowIfNull(radios);
+		ArgumentNullException.ThrowIfNull(discoveredModules);
+		ArgumentNullException.ThrowIfNull(log);
+
+		_radios = radios;
+		_discoveredModules = discoveredModules;
+		_log = log;
+	}
+
+	public async Task StartAsync(CancellationToken cancellationToken)
+	{
+		foreach (var radio in _radios.Where(static radio => radio.Kind is RadioRuntimeKind.Module or RadioRuntimeKind.AdvancedModule))
+		{
+			var discoveredModule = _discoveredModules.FirstOrDefault(module => string.Equals(module.TypeId, radio.TypeId, StringComparison.OrdinalIgnoreCase));
+			if (discoveredModule is null)
+			{
+				_log("module", $"No plugin loaded for radio '{radio.Id.Value}' type '{radio.TypeId}'. Module remains declared but unavailable.");
+				continue;
+			}
+
+			var host = new RadioModuleHost(radio.Id, _log);
+			var module = discoveredModule.Factory.Create(host);
+			var applyResult = await module.ApplyConfigAsync((JsonObject)radio.Config.Settings.DeepClone(), cancellationToken).ConfigureAwait(false);
+			if (applyResult.Status != MyForce.Contracts.Radio.OperationStatus.Ok)
+			{
+				_log("module", $"Plugin '{radio.TypeId}' rejected initial config for '{radio.Id.Value}': {applyResult.Status}.");
+			}
+
+			await module.StartAsync(cancellationToken).ConfigureAwait(false);
+			_hostedModules.Add(new HostedRadioModule(radio.Id, discoveredModule, host, module));
+			_log("module", $"Started radio module '{radio.Id.Value}' using plugin '{discoveredModule.TypeId}' version {discoveredModule.Version}.");
+		}
+	}
+
+	public async ValueTask DisposeAsync()
+	{
+		foreach (var hostedModule in _hostedModules.AsEnumerable().Reverse())
+		{
+			try
+			{
+				await hostedModule.Module.StopAsync(CancellationToken.None).ConfigureAwait(false);
+				await hostedModule.Module.DisposeAsync().ConfigureAwait(false);
+			}
+			catch (Exception ex) when (ex is not OutOfMemoryException)
+			{
+				_log("module", $"Stopping radio module '{hostedModule.RadioId.Value}' failed: {ex.Message}");
+			}
+		}
+
+		_hostedModules.Clear();
+	}
+}
+
+internal sealed record HostedRadioModule(RadioId RadioId, DiscoveredRadioModule DiscoveredModule, RadioModuleHost Host, IRadioModule Module);
+
+internal sealed class RadioModuleHost : IModuleHost
+{
+	private readonly Action<string, string> _log;
+
+	public RadioModuleHost(RadioId radioId, Action<string, string> log)
+	{
+		ArgumentNullException.ThrowIfNull(radioId);
+		ArgumentNullException.ThrowIfNull(log);
+		RadioId = radioId;
+		_log = log;
+	}
+
+	public RadioId RadioId { get; }
+
+	public IControlTransport? ControlTransport => null;
+
+	public float GetRxLevel() => 0f;
+
+	public Task ReportStateAsync(RadioStateReport state, CancellationToken cancellationToken)
+	{
+		ArgumentNullException.ThrowIfNull(state);
+		_log("module", $"Radio module '{RadioId.Value}' reported state.");
+		return Task.CompletedTask;
+	}
+
+	public Task ReportDetectAsync(bool isDetected, CancellationToken cancellationToken)
+	{
+		_log("module", $"Radio module '{RadioId.Value}' detect={(isDetected ? "active" : "idle")}.");
+		return Task.CompletedTask;
+	}
+
+	public Task EmitEventAsync(string name, JsonObject? data, CancellationToken cancellationToken)
+	{
+		ArgumentException.ThrowIfNullOrWhiteSpace(name);
+		_log("module", $"Radio module '{RadioId.Value}' emitted event '{name}'.");
+		return Task.CompletedTask;
+	}
+
+	public void Log(LogLevel level, string message)
+	{
+		ArgumentException.ThrowIfNullOrWhiteSpace(message);
+		_log("module", $"{level}: {RadioId.Value}: {message}");
+	}
+}
+
 internal sealed class AudioProcessorPersistedTopology
 {
 	private static readonly JsonSerializerOptions SerializerOptions = new()
@@ -315,6 +432,7 @@ internal sealed record RelaySetDefinition(
 	public async Task HandleConnectedAsync(CancellationToken cancellationToken)
 	{
 		await _mqttRuntime.SubscribeAsync(_topics.AllCommandsTopicFilter, cancellationToken).ConfigureAwait(false);
+		await _mqttRuntime.SubscribeAsync(_topics.AllModuleCommandsTopicFilter, cancellationToken).ConfigureAwait(false);
 		await _mqttRuntime.SubscribeAsync(_topics.ConsolePttCommandTopicFilter, cancellationToken).ConfigureAwait(false);
 		await PublishHeartbeatAsync(cancellationToken).ConfigureAwait(false);
 	}
@@ -329,7 +447,14 @@ internal sealed record RelaySetDefinition(
 			return;
 		}
 
-		if (string.Equals(topic, _topics.OutputSpeakerCommandTopic, StringComparison.OrdinalIgnoreCase))
+		if (AudioProcessorTopicFactory.TryParseModuleCommandTopic(topic, out var moduleId, out var commandName)
+			&& await TryHandleSpecModuleCommandAsync(topic, moduleId, commandName, args.ApplicationMessage.Payload).ConfigureAwait(false))
+		{
+			return;
+		}
+
+		if (string.Equals(topic, _topics.OutputSpeakerCommandTopic, StringComparison.OrdinalIgnoreCase)
+			|| string.Equals(topic, _topics.AudioOutputCommandTopic, StringComparison.OrdinalIgnoreCase))
 		{
 			var msgId = GetMessageId(args.ApplicationMessage.Payload);
 			if (!ValidateAdminCommand(args.ApplicationMessage.Payload, topic))
@@ -389,7 +514,8 @@ internal sealed record RelaySetDefinition(
 			return;
 		}
 
-		if (string.Equals(topic, _topics.ChannelGainCommandTopic, StringComparison.OrdinalIgnoreCase))
+		if (string.Equals(topic, _topics.ChannelGainCommandTopic, StringComparison.OrdinalIgnoreCase)
+			|| string.Equals(topic, _topics.MediaGainCommandTopic, StringComparison.OrdinalIgnoreCase))
 		{
 			var msgId = GetMessageId(args.ApplicationMessage.Payload);
 			if (!ValidateAdminCommand(args.ApplicationMessage.Payload, topic))
@@ -432,7 +558,8 @@ internal sealed record RelaySetDefinition(
 			return;
 		}
 
-		if (string.Equals(topic, _topics.InternetRadioPlayCommandTopic, StringComparison.OrdinalIgnoreCase))
+		if (string.Equals(topic, _topics.InternetRadioPlayCommandTopic, StringComparison.OrdinalIgnoreCase)
+			|| string.Equals(topic, _topics.MediaPlayCommandTopic, StringComparison.OrdinalIgnoreCase))
 		{
 			var msgId = GetMessageId(args.ApplicationMessage.Payload);
 			var command = AudioProcessorJson.Deserialize<InternetRadioPlayCommand>(args.ApplicationMessage.Payload);
@@ -447,13 +574,65 @@ internal sealed record RelaySetDefinition(
 			return;
 		}
 
-		if (string.Equals(topic, _topics.InternetRadioStopCommandTopic, StringComparison.OrdinalIgnoreCase))
+		if (string.Equals(topic, _topics.InternetRadioStopCommandTopic, StringComparison.OrdinalIgnoreCase)
+			|| string.Equals(topic, _topics.MediaStopCommandTopic, StringComparison.OrdinalIgnoreCase))
 		{
 			var msgId = GetMessageId(args.ApplicationMessage.Payload);
 			_internetRadioController.Stop();
 			await PublishInternetRadioStateAsync(CancellationToken.None).ConfigureAwait(false);
 			await PublishCommandAckAsync(topic, msgId, "ok", null, null, null).ConfigureAwait(false);
 		}
+	}
+
+	private async Task<bool> TryHandleSpecModuleCommandAsync(string topic, string moduleId, string commandName, ReadOnlySequence<byte> payload)
+	{
+		if (string.Equals(moduleId, _topics.AudioModuleId, StringComparison.OrdinalIgnoreCase)
+			|| string.Equals(moduleId, _topics.MediaModuleId, StringComparison.OrdinalIgnoreCase))
+		{
+			return false;
+		}
+
+		var radio = _registry.Radios.FirstOrDefault(radio => string.Equals(radio.Id.Value, moduleId, StringComparison.OrdinalIgnoreCase));
+		if (radio is null)
+		{
+			return false;
+		}
+
+		var envelope = AudioProcessorJson.Deserialize<MqttCommandEnvelope>(payload);
+		if (string.Equals(commandName, "config", StringComparison.OrdinalIgnoreCase))
+		{
+			if (!ValidateAdminCommand(payload, topic))
+			{
+				await PublishCommandAckAsync(topic, envelope?.MsgId, "rejected", "auth", "invalid_auth", "Admin authentication is required.").ConfigureAwait(false);
+				return true;
+			}
+
+			var command = AudioProcessorJson.Deserialize<ModuleConfigCommandPayload>(payload);
+			if (command is null || !string.Equals(command.Id, moduleId, StringComparison.OrdinalIgnoreCase))
+			{
+				await PublishCommandAckAsync(topic, envelope?.MsgId, "rejected", "id", "invalid_module", "Module config command id did not match the topic module id.").ConfigureAwait(false);
+				return true;
+			}
+
+			AudioProcessorLog.Write("config", $"Accepted config command for module '{moduleId}'. Runtime config apply is staged for the module host lifecycle.");
+			await _mqttRuntime.PublishAsync(
+				_topics.ModuleConfigTopic(radio.Id),
+				AudioProcessorJson.Serialize(ModuleConfigSpecPayload.Create(radio)),
+				retain: true,
+				cancellationToken: CancellationToken.None).ConfigureAwait(false);
+			await PublishCommandAckAsync(topic, envelope?.MsgId, "ok", null, null, null).ConfigureAwait(false);
+			return true;
+		}
+
+		if (!radio.Capabilities.Controls.Contains(commandName, StringComparer.OrdinalIgnoreCase))
+		{
+			await PublishCommandAckAsync(topic, envelope?.MsgId, "rejected", "action", "unsupported_action", $"Module '{moduleId}' does not support action '{commandName}'.").ConfigureAwait(false);
+			return true;
+		}
+
+		AudioProcessorLog.Write("control", $"Accepted control action '{commandName}' for module '{moduleId}'. Module execution is staged for hosted RMs.");
+		await PublishCommandAckAsync(topic, envelope?.MsgId, "ok", null, null, null).ConfigureAwait(false);
+		return true;
 	}
 
 	private async Task PublishCommandAckAsync(string commandTopic, string? msgId, string status, string? field, string? code, string? message)
@@ -530,6 +709,7 @@ internal sealed record RelaySetDefinition(
 		}
 
 		_routingState.SetSpeakerSink(deviceId);
+		_audioMatrixEngine.UpdateRouting(_routingState.CurrentSnapshot);
 		AudioProcessorLog.Write("config", $"Applying AP master output speaker '{deviceId}'.");
 		_configStore.StoredConfig.OutputSpeakerDeviceId = deviceId;
 		_internetRadioController.SetOutputSpeaker(deviceId);
@@ -558,6 +738,7 @@ internal sealed record RelaySetDefinition(
 
 	public async ValueTask DisposeAsync()
 	{
+		await _radioModuleHostManager.DisposeAsync().ConfigureAwait(false);
 		await _internetRadioController.DisposeAsync().ConfigureAwait(false);
 	}
 
@@ -592,6 +773,7 @@ internal sealed record RelaySetDefinition(
 			_routingState.SetOperatorMicTarget(request.RadioId);
 			_mixerState.SetChannelActive(AudioChannelId.OperatorMic, true);
 			_mixerState.SetTransmitTarget(request.RadioId, true);
+			_audioMatrixEngine.UpdateSnapshots(_mixerState.CurrentSnapshot, _routingState.CurrentSnapshot);
 			return;
 		}
 
@@ -610,6 +792,8 @@ internal sealed record RelaySetDefinition(
 		{
 			_mixerState.SetChannelActive(AudioChannelId.OperatorMic, false);
 		}
+
+		_audioMatrixEngine.UpdateSnapshots(_mixerState.CurrentSnapshot, _routingState.CurrentSnapshot);
 	}
 
 	private ManualPttRequest? CreateManualPttRequest(string topic, ReadOnlySequence<byte> payload)
@@ -686,6 +870,7 @@ internal sealed record RelaySetDefinition(
 
 	private async Task PublishMixerStateAsync(CancellationToken cancellationToken)
 	{
+		_audioMatrixEngine.UpdateMixer(_mixerState.CurrentSnapshot);
 		await _mqttRuntime.PublishAsync(
 			_topics.AudioMixerStateTopic,
 			AudioProcessorJson.Serialize(AudioMixerStatePayload.Create(_mixerState.CurrentSnapshot)),
@@ -1181,6 +1366,8 @@ internal sealed class AudioProcessorTopicFactory
 
 	public string AllCommandsTopicFilter => $"{RootTopic}/cmd/#";
 
+	public string AllModuleCommandsTopicFilter => $"{ModuleRootTopic}/+/cmd/#";
+
 	public string ConsolePttCommandTopicFilter => $"{ConsoleRootTopic}/+/cmd/ptt";
 
 	public string SystemPluginsTopic => $"{SystemRootTopic}/plugins";
@@ -1188,6 +1375,44 @@ internal sealed class AudioProcessorTopicFactory
 	public string SystemDefinitionTopic => $"{SystemRootTopic}/definition";
 
 	public string ConsoleTxTopic => $"{ConsoleRootTopic}/tx";
+
+	public string MediaModuleId => "media.internet-radio";
+
+	public string AudioModuleId => "audio.processor";
+
+	public string MediaPlayCommandTopic => $"{ModuleRootTopic}/{MediaModuleId}/cmd/play";
+
+	public string MediaStopCommandTopic => $"{ModuleRootTopic}/{MediaModuleId}/cmd/stop";
+
+	public string MediaGainCommandTopic => $"{ModuleRootTopic}/{MediaModuleId}/cmd/gain";
+
+	public string AudioOutputCommandTopic => $"{ModuleRootTopic}/{AudioModuleId}/cmd/output-speaker";
+
+	public string AudioFrameworkSpecStateTopic => $"{ModuleRootTopic}/{AudioModuleId}/state";
+
+	public static bool TryParseModuleCommandTopic(string topic, out string moduleId, out string commandName)
+	{
+		moduleId = string.Empty;
+		commandName = string.Empty;
+
+		if (string.IsNullOrWhiteSpace(topic))
+		{
+			return false;
+		}
+
+		var parts = topic.Split('/', StringSplitOptions.RemoveEmptyEntries);
+		if (parts.Length != 5
+			|| !string.Equals(parts[0], "myforce", StringComparison.OrdinalIgnoreCase)
+			|| !string.Equals(parts[1], "module", StringComparison.OrdinalIgnoreCase)
+			|| !string.Equals(parts[3], "cmd", StringComparison.OrdinalIgnoreCase))
+		{
+			return false;
+		}
+
+		moduleId = parts[2];
+		commandName = parts[4];
+		return true;
+	}
 
 	public string ModuleRegistryTopic(RadioId radioId)
 	{
@@ -1699,6 +1924,70 @@ internal sealed class AudioMixerState
 	}
 }
 
+internal sealed class AudioMatrixEngine
+{
+	private AudioMixerSnapshot _mixerSnapshot;
+	private RoutingSnapshot _routingSnapshot;
+
+	public AudioMatrixEngine(AudioMixerSnapshot mixerSnapshot, RoutingSnapshot routingSnapshot)
+	{
+		ArgumentNullException.ThrowIfNull(mixerSnapshot);
+		ArgumentNullException.ThrowIfNull(routingSnapshot);
+		_mixerSnapshot = mixerSnapshot;
+		_routingSnapshot = routingSnapshot;
+	}
+
+	public void UpdateMixer(AudioMixerSnapshot mixerSnapshot)
+	{
+		ArgumentNullException.ThrowIfNull(mixerSnapshot);
+		_mixerSnapshot = mixerSnapshot;
+	}
+
+	public void UpdateRouting(RoutingSnapshot routingSnapshot)
+	{
+		ArgumentNullException.ThrowIfNull(routingSnapshot);
+		_routingSnapshot = routingSnapshot;
+	}
+
+	public void UpdateSnapshots(AudioMixerSnapshot mixerSnapshot, RoutingSnapshot routingSnapshot)
+	{
+		UpdateMixer(mixerSnapshot);
+		UpdateRouting(routingSnapshot);
+	}
+
+	public int Mix(ReadOnlySpan<AudioMatrixInputFrame> inputs, Span<float> output)
+	{
+		output.Clear();
+		if (inputs.IsEmpty || output.IsEmpty)
+		{
+			return 0;
+		}
+
+		var channels = _mixerSnapshot.Channels.ToDictionary(static channel => channel.Id.Value, StringComparer.OrdinalIgnoreCase);
+		foreach (var input in inputs)
+		{
+			if (!channels.TryGetValue(input.ChannelId, out var channel) || channel.Muted)
+			{
+				continue;
+			}
+
+			var samples = input.Samples.Span;
+			var sampleCount = Math.Min(samples.Length, output.Length);
+			var gain = (float)channel.Gain;
+			for (var index = 0; index < sampleCount; index++)
+			{
+				output[index] += samples[index] * gain;
+			}
+		}
+
+		return output.Length;
+	}
+
+	public IReadOnlyList<RoutingCrosspoint> ActiveCrosspoints => _routingSnapshot.Crosspoints.Where(static crosspoint => crosspoint.Enabled).ToArray();
+}
+
+internal readonly record struct AudioMatrixInputFrame(string ChannelId, ReadOnlyMemory<float> Samples);
+
 internal sealed record RoutingSnapshot(
 	ReadOnlyCollection<RoutingCrosspoint> Crosspoints,
 	SinkEndpoint SpeakerSink,
@@ -1773,6 +2062,15 @@ internal sealed record AudioOutputConfigCommand(string DeviceId, string? CabinSp
 internal sealed record OutputSpeakerCommand(string DeviceId);
 
 internal sealed record InternetRadioPlayCommand(string StreamUrl, string DisplayName, string Genre, string Language);
+
+internal sealed record ModuleConfigCommandPayload(
+	int V,
+	DateTimeOffset Ts,
+	[property: JsonPropertyName("msg_id")] string? MsgId,
+	string? Auth,
+	string Id,
+	JsonObject Config,
+	bool? Partial);
 
 internal sealed record InternetRadioPlaybackState(bool IsPlaying, string? StreamUrl, string? DisplayName, string? Genre, string? Language, string Status, string Detail);
 
