@@ -24,6 +24,7 @@ using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Input;
+using Avalonia.Platform;
 using Mapsui;
 using Mapsui.Extensions;
 using Mapsui.Layers;
@@ -75,11 +76,24 @@ public partial class MainWindow : Window
 	{
 		base.OnOpened(e);
 
-		// Setting WindowState in XAML is unreliable on some displays/drivers when
-		// SystemDecorations is None, leaving the window at its natural size centered
-		// on the desktop (the "black bars" are the desktop showing around it). Force
-		// fullscreen once the window has actually been realized.
-		WindowState = WindowState.FullScreen;
+		// WindowState.FullScreen is unreliable on some displays/drivers when
+		// SystemDecorations is None: the window stays at its natural size centered on
+		// the desktop, which shows through as black bars on all sides. Instead, pin the
+		// borderless window manually to the screen's full bounds.
+		Screen? screen = Screens.ScreenFromWindow(this) ?? Screens.Primary;
+		if (screen is null)
+		{
+			WindowState = WindowState.FullScreen;
+			return;
+		}
+
+		// screen.Bounds is in physical pixels; Position is physical, but Width/Height
+		// are logical (DIP) units, so divide by the screen's scaling factor.
+		WindowState = WindowState.Normal;
+		PixelRect bounds = screen.Bounds;
+		Position = bounds.Position;
+		Width = bounds.Width / screen.Scaling;
+		Height = bounds.Height / screen.Scaling;
 	}
 
 	protected override void OnClosed(System.EventArgs e)
