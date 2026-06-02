@@ -858,7 +858,21 @@
                                                    FontSize="18"
                                                    TextAlignment="Center"
                                                    Text="AM / FM" />
-                                        <Border Grid.Row="1" Classes="buttonFrame" Width="168" Height="130" PointerPressed="OnAmFmMutePressed">
+                                        <Border Grid.Row="1" Classes="buttonFrame" Width="168" Height="130" PointerPressed="OnAmFmMutePressed" IsVisible="{Binding !IsAmFmMuted}">
+                                            <Grid>
+                                                <Viewbox Stretch="Uniform"
+                                                         HorizontalAlignment="Center"
+                                                         VerticalAlignment="Center"
+                                                         MaxWidth="128"
+                                                         MaxHeight="92">
+                                                    <TextBlock Classes="white"
+                                                               TextAlignment="Center"
+                                                               VerticalAlignment="Center"
+                                                               Text="MUTE" />
+                                                </Viewbox>
+                                            </Grid>
+                                        </Border>
+                                        <Border Grid.Row="1" Classes="buttonFrame active" Width="168" Height="130" PointerPressed="OnAmFmMutePressed" IsVisible="{Binding IsAmFmMuted}">
                                             <Grid>
                                                 <Viewbox Stretch="Uniform"
                                                          HorizontalAlignment="Center"
