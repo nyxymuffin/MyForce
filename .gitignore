@@ -539,3 +539,4 @@ google-services.json
 *.db-shm
 *.db-wal
 PROJECT_FRAMEWORK.md
+CLAUDE.md

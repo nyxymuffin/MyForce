@@ -1050,7 +1050,7 @@ internal sealed class AudioProcessorRegistry
 		if (topology.RadioDefinitions.Count == 0)
 		{
 			log("config", "No persisted radio definitions found; using built-in starter topology.");
-			return CreateDefault();
+			return CreateDefault(discoveredModules, log);
 		}
 
 		var radios = new List<RadioRuntimeDefinition>();
@@ -1071,42 +1071,48 @@ internal sealed class AudioProcessorRegistry
 		return new AudioProcessorRegistry(radios.AsReadOnly(), Array.Empty<BridgeDefinition>());
 	}
 
-	public static AudioProcessorRegistry CreateDefault()
+	public static AudioProcessorRegistry CreateDefault(IReadOnlyList<AudioProcessorCoordinator.DiscoveredRadioModule> discoveredModules, Action<string, string> log)
 	{
-		var radios = new List<RadioRuntimeDefinition>
-		{
-			CreateModuleRadio(
-				id: "barrett",
-				typeId: "barrett_2050",
-				displayName: "Barrett 2050",
-				controls: ["channel_select", "zone_select"]),
-			CreateModuleRadio(
-				id: "xpr",
-				typeId: "motorola_xpr",
-				displayName: "Motorola XPR",
-				controls: ["channel_select", "zone_select", "set_power"]),
-			CreateModuleRadio(
-				id: "mtm5400",
-				typeId: "motorola_mtm5400",
-				displayName: "Motorola MTM5400",
-				controls: ["channel_select", "zone_select", "set_power"]),
-			CreateModuleRadio(
-				id: "apx-xtl",
-				typeId: "motorola_apx_xtl",
-				displayName: "Motorola APX/XTL",
-				controls: ["channel_select", "zone_select", "set_power"]),
-			CreateModuleRadio(
-				id: "harris",
-				typeId: "harris_mobile",
-				displayName: "Harris Mobile",
-				controls: ["channel_select", "zone_select"]),
-			CreateResourceRadio(
-				id: "4w",
-				typeId: "4w_resource",
-				displayName: "4-Wire Resource")
-		};
+		ArgumentNullException.ThrowIfNull(discoveredModules);
+		ArgumentNullException.ThrowIfNull(log);
 
+		var radios = new List<RadioRuntimeDefinition>();
+
+		// Module radios are declared only for plugins that were actually discovered: the AP must
+		// report the status of the modules it has, not a fixed catalog of modules it might host.
+		foreach (var module in discoveredModules)
+		{
+			radios.Add(CreateDiscoveredModuleRadio(module));
+		}
+
+		// The 4-wire resource is a built-in AP capability rather than a plugin, so it is always present.
+		radios.Add(CreateResourceRadio(id: "4w", typeId: "4w_resource", displayName: "4-Wire Resource"));
+
+		log("config", $"Built starter topology from {discoveredModules.Count} discovered module plugin(s) plus the built-in 4-wire resource.");
 		return new AudioProcessorRegistry(radios.AsReadOnly(), Array.Empty<BridgeDefinition>());
+	}
+
+	/// <summary>
+	/// Builds a declared module radio from a discovered plugin's advertised metadata.
+	/// </summary>
+	private static RadioRuntimeDefinition CreateDiscoveredModuleRadio(AudioProcessorCoordinator.DiscoveredRadioModule module)
+	{
+		ArgumentNullException.ThrowIfNull(module);
+
+		var config = new RadioModuleInstanceConfig(
+			new KeyingConfig(SelectPreferredKeying(module.Capabilities), null, 120, 60, true),
+			new DetectConfig(SelectPreferredDetect(module.Capabilities), null),
+			new DeviceBindingConfig($"radio-{module.TypeId}"),
+			new JsonObject());
+
+		return CreateRadioDefinition(
+			new RadioId(module.TypeId),
+			module.TypeId,
+			module.DisplayName,
+			RadioRuntimeKind.Module,
+			module.Capabilities,
+			module.ConfigSchema,
+			config);
 	}
 
 	private static RadioRuntimeDefinition? CreatePersistedRadio(AudioProcessorCoordinator.PersistedRadioDefinition definition, IReadOnlyList<AudioProcessorCoordinator.DiscoveredRadioModule> discoveredModules, Action<string, string> log)
@@ -1131,8 +1137,8 @@ internal sealed class AudioProcessorRegistry
 		var discoveredModule = discoveredModules.FirstOrDefault(module => string.Equals(module.TypeId, definition.TypeId, StringComparison.OrdinalIgnoreCase));
 		if (discoveredModule is null)
 		{
-			log("config", $"Persisted radio '{definition.RadioId}' type '{definition.TypeId}' has no loaded plugin; publishing declaration with unavailable module metadata.");
-			return CreateModuleRadio(definition.RadioId, definition.TypeId, displayName, []);
+			log("config", $"Persisted radio '{definition.RadioId}' type '{definition.TypeId}' has no loaded plugin; skipping it so the AP reports only discovered modules.");
+			return null;
 		}
 
 		return CreateRadioDefinition(
@@ -1218,40 +1224,6 @@ internal sealed class AudioProcessorRegistry
 				new JsonObject()));
 	}
 
-	/// <summary>
-	/// Creates a module-backed radio that can either use AP relay and VOX or RM-owned keying and detection.
-	/// </summary>
-	private static RadioRuntimeDefinition CreateModuleRadio(string id, string typeId, string displayName, IReadOnlyList<string> controls)
-	{
-		ArgumentException.ThrowIfNullOrWhiteSpace(id);
-		ArgumentException.ThrowIfNullOrWhiteSpace(typeId);
-		ArgumentException.ThrowIfNullOrWhiteSpace(displayName);
-		ArgumentNullException.ThrowIfNull(controls);
-
-		var capabilities = new RadioCapabilities(
-			Keying: [KeyingMethod.Relay, KeyingMethod.Rm],
-			Detect: [DetectMethod.Vox, DetectMethod.Rm],
-			ProvidesAudio: false,
-			Controls: controls);
-
-		return CreateRadioDefinition(
-			new RadioId(id),
-			typeId,
-			displayName,
-			RadioRuntimeKind.Module,
-			capabilities,
-			CreateModuleSettingsSchema(controls),
-			new RadioModuleInstanceConfig(
-				new KeyingConfig(KeyingMethod.Rm, null, 120, 60, true),
-				new DetectConfig(DetectMethod.Rm, null),
-				new DeviceBindingConfig($"radio-{id}"),
-				new JsonObject
-				{
-					["default_channel"] = 1,
-					["default_zone"] = 1
-				}));
-	}
-
 	private static RadioRuntimeDefinition CreateRadioDefinition(
 		RadioId id,
 		string typeId,
@@ -1284,39 +1256,6 @@ internal sealed class AudioProcessorRegistry
 		""";
 	}
 
-	private static string CreateModuleSettingsSchema(IReadOnlyList<string> controls)
-	{
-		ArgumentNullException.ThrowIfNull(controls);
-
-		var controlsSchema = new JsonArray();
-		foreach (var control in controls)
-		{
-			controlsSchema.Add(JsonValue.Create(control));
-		}
-
-		var schema = new JsonObject
-		{
-			["$schema"] = "https://json-schema.org/draft/2020-12/schema",
-			["type"] = "object",
-			["properties"] = new JsonObject
-			{
-				["default_channel"] = new JsonObject { ["type"] = "integer", ["minimum"] = 1 },
-				["default_zone"] = new JsonObject { ["type"] = "integer", ["minimum"] = 1 },
-				["controls"] = new JsonObject
-				{
-					["type"] = "array",
-					["items"] = new JsonObject
-					{
-						["type"] = "string",
-						["enum"] = controlsSchema
-					}
-				}
-			},
-			["additionalProperties"] = false
-		};
-
-		return schema.ToJsonString();
-	}
 }
 
 internal enum RadioRuntimeKind

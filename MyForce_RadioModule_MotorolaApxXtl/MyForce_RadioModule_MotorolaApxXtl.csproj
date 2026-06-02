@@ -15,14 +15,19 @@
     </ProjectReference>
   </ItemGroup>
 
-  <!-- Convenience: drop the built plugin into the Audio Processor's discovery folder
-       (%APPDATA%\myforce\plugins on Windows) so it is picked up on the next AP launch. -->
-  <Target Name="DeployToAudioProcessorPlugins" AfterTargets="Build" Condition="'$(APPDATA)' != ''">
+  <!-- Convenience: drop the built plugin into the Audio Processor's discovery folder so it is
+       picked up on the next AP launch. This mirrors the AP's own resolution of
+       Environment.SpecialFolder.ApplicationData: $XDG_CONFIG_HOME (else ~/.config) on Linux,
+       %APPDATA% on Windows. If the AP is configured with an explicit PluginDirectoryPath,
+       deploy there instead. -->
+  <Target Name="DeployToAudioProcessorPlugins" AfterTargets="Build">
     <PropertyGroup>
-      <MyForcePluginsDir>$(APPDATA)\myforce\plugins</MyForcePluginsDir>
+      <MyForcePluginsDir Condition="'$(OS)' == 'Windows_NT'">$(APPDATA)\myforce\plugins</MyForcePluginsDir>
+      <MyForcePluginsDir Condition="'$(OS)' != 'Windows_NT' And '$(XDG_CONFIG_HOME)' != ''">$(XDG_CONFIG_HOME)/myforce/plugins</MyForcePluginsDir>
+      <MyForcePluginsDir Condition="'$(OS)' != 'Windows_NT' And '$(XDG_CONFIG_HOME)' == ''">$(HOME)/.config/myforce/plugins</MyForcePluginsDir>
     </PropertyGroup>
-    <MakeDir Directories="$(MyForcePluginsDir)" />
-    <Copy SourceFiles="$(TargetPath)" DestinationFolder="$(MyForcePluginsDir)" SkipUnchangedFiles="true" />
+    <MakeDir Directories="$(MyForcePluginsDir)" Condition="'$(MyForcePluginsDir)' != ''" />
+    <Copy SourceFiles="$(TargetPath)" DestinationFolder="$(MyForcePluginsDir)" SkipUnchangedFiles="true" Condition="'$(MyForcePluginsDir)' != ''" />
   </Target>
 
 </Project>
