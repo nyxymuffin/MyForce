@@ -71,6 +71,17 @@ public partial class MainWindow : Window
 		InitializeRadarMap();
 	}
 
+	protected override void OnOpened(EventArgs e)
+	{
+		base.OnOpened(e);
+
+		// Setting WindowState in XAML is unreliable on some displays/drivers when
+		// SystemDecorations is None, leaving the window at its natural size centered
+		// on the desktop (the "black bars" are the desktop showing around it). Force
+		// fullscreen once the window has actually been realized.
+		WindowState = WindowState.FullScreen;
+	}
+
 	protected override void OnClosed(System.EventArgs e)
 	{
 		_alertRefreshCts?.Cancel();
