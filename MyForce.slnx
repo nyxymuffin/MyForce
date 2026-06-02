@@ -5,4 +5,9 @@
   <Project Path="MyForce_CarInterface/MyForce_CarInterface.csproj" Id="5dfd1248-0595-4c32-b6e8-65606c39d91f" />
   <Project Path="MyForce_GPIO_Controller/MyForce_GPIO_Controller.csproj" Id="03216f1a-d071-43fb-8ac4-93d8353e8ff3" />
   <Project Path="MyForce_Siren_Interface/MyForce_Siren_Interface.csproj" Id="ed373d49-ebd3-4a79-9354-1ada75e8f372" />
+  <Project Path="MyForce_RadioModule_Barrett/MyForce_RadioModule_Barrett.csproj" />
+  <Project Path="MyForce_RadioModule_MotorolaXpr/MyForce_RadioModule_MotorolaXpr.csproj" />
+  <Project Path="MyForce_RadioModule_MotorolaMtm5400/MyForce_RadioModule_MotorolaMtm5400.csproj" />
+  <Project Path="MyForce_RadioModule_MotorolaApxXtl/MyForce_RadioModule_MotorolaApxXtl.csproj" />
+  <Project Path="MyForce_RadioModule_Harris/MyForce_RadioModule_Harris.csproj" />
 </Solution>

@@ -1,0 +1,28 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Private=false: the Audio Processor already has the contract assembly loaded.
+         The plugin must NOT ship its own copy into the plugins folder, or the loaded
+         IRadioModuleFactory type identity would not match the host's. -->
+    <ProjectReference Include="..\MyForce.Contracts.Radio\MyForce.Contracts.Radio.csproj">
+      <Private>false</Private>
+    </ProjectReference>
+  </ItemGroup>
+
+  <!-- Convenience: drop the built plugin into the Audio Processor's discovery folder
+       (%APPDATA%\myforce\plugins on Windows) so it is picked up on the next AP launch. -->
+  <Target Name="DeployToAudioProcessorPlugins" AfterTargets="Build" Condition="'$(APPDATA)' != ''">
+    <PropertyGroup>
+      <MyForcePluginsDir>$(APPDATA)\myforce\plugins</MyForcePluginsDir>
+    </PropertyGroup>
+    <MakeDir Directories="$(MyForcePluginsDir)" />
+    <Copy SourceFiles="$(TargetPath)" DestinationFolder="$(MyForcePluginsDir)" SkipUnchangedFiles="true" />
+  </Target>
+
+</Project>
