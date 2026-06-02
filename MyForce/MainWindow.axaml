@@ -397,8 +397,6 @@
                                      HorizontalAlignment="Center"
                                      VerticalAlignment="Center">
                                 <TextBlock Classes="white"
-                                           Width="132"
-                                           Height="34"
                                            FontSize="30"
                                            VerticalAlignment="Center"
                                            HorizontalAlignment="Center"
@@ -1434,8 +1432,7 @@
                 <Border Grid.Column="1"
                         Classes="panel"
                         Padding="20">
-                    <Grid RowDefinitions="Auto,Auto,*"
-                          RowSpacing="16">
+                    <Grid RowDefinitions="*">
                         <Border IsVisible="{Binding IsAdminPinPromptVisible}"
                                 Classes="panel"
                                 Padding="12"
