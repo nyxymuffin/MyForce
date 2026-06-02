@@ -140,8 +140,7 @@
                        Text="{Binding MqttConnectionBannerText}" />
         </Border>
 
-        <Viewbox Stretch="Fill"
-                 StretchDirection="DownOnly">
+        <Viewbox Stretch="Fill">
             <Grid Width="1280"
                   Height="760"
                   HorizontalAlignment="Center"
