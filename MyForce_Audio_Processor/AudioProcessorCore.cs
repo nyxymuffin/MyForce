@@ -17,6 +17,7 @@
 //
 using System.Buffers;
 using System.Globalization;
+using System.Runtime.InteropServices;
 using System.Runtime.Loader;
 using System.Collections.ObjectModel;
 using System.Diagnostics;
@@ -2097,18 +2098,17 @@ internal sealed class AudioFrameworkCatalog
 
 	private static string? TryRunProcess(string fileName, string arguments)
 	{
-		using var process = new Process
+		var startInfo = new ProcessStartInfo
 		{
-			StartInfo = new ProcessStartInfo
-			{
-				FileName = fileName,
-				Arguments = arguments,
-				RedirectStandardOutput = true,
-				RedirectStandardError = true,
-				UseShellExecute = false,
-				CreateNoWindow = true
-			}
+			FileName = fileName,
+			Arguments = arguments,
+			RedirectStandardOutput = true,
+			RedirectStandardError = true,
+			UseShellExecute = false,
+			CreateNoWindow = true
 		};
+		LinuxRuntimeEnvironment.Apply(startInfo);
+		using var process = new Process { StartInfo = startInfo };
 
 		if (!process.Start())
 		{
@@ -3275,18 +3275,17 @@ internal sealed class InternetRadioPlaybackController : IAsyncDisposable
 	{
 		try
 		{
-			using var process = new Process
+			var startInfo = new ProcessStartInfo
 			{
-				StartInfo = new ProcessStartInfo
-				{
-					FileName = fileName,
-					Arguments = arguments,
-					RedirectStandardOutput = true,
-					RedirectStandardError = true,
-					UseShellExecute = false,
-					CreateNoWindow = true
-				}
+				FileName = fileName,
+				Arguments = arguments,
+				RedirectStandardOutput = true,
+				RedirectStandardError = true,
+				UseShellExecute = false,
+				CreateNoWindow = true
 			};
+			LinuxRuntimeEnvironment.Apply(startInfo);
+			using var process = new Process { StartInfo = startInfo };
 
 			if (!process.Start())
 			{
@@ -3747,7 +3746,7 @@ internal sealed class LinuxPlayerCandidate
 
 	private static ProcessStartInfo CreateStartInfo(string fileName)
 	{
-		return new ProcessStartInfo
+		var startInfo = new ProcessStartInfo
 		{
 			FileName = fileName,
 			UseShellExecute = false,
@@ -3755,5 +3754,42 @@ internal sealed class LinuxPlayerCandidate
 			RedirectStandardError = true,
 			RedirectStandardOutput = true
 		};
+		LinuxRuntimeEnvironment.Apply(startInfo);
+		return startInfo;
 	}
+}
+
+/// <summary>
+/// Ensures child processes (ffplay, pactl) can reach the user's PulseAudio/PipeWire server when the
+/// AP runs as a systemd service that lacks XDG_RUNTIME_DIR. Without this, pactl cannot find the
+/// server socket (/run/user/&lt;uid&gt;/pulse/native) and device discovery falls back to raw ALSA.
+/// </summary>
+internal static class LinuxRuntimeEnvironment
+{
+	public static void Apply(ProcessStartInfo startInfo)
+	{
+		ArgumentNullException.ThrowIfNull(startInfo);
+		if (!OperatingSystem.IsLinux())
+		{
+			return;
+		}
+
+		// ProcessStartInfo.Environment is seeded from the AP's own environment; only fill the gap.
+		if (startInfo.Environment.TryGetValue("XDG_RUNTIME_DIR", out var existing) && !string.IsNullOrWhiteSpace(existing))
+		{
+			return;
+		}
+
+		try
+		{
+			startInfo.Environment["XDG_RUNTIME_DIR"] = $"/run/user/{geteuid()}";
+		}
+		catch (Exception ex) when (ex is DllNotFoundException or EntryPointNotFoundException)
+		{
+			// libc unavailable (non-Linux test host); leave the environment untouched.
+		}
+	}
+
+	[DllImport("libc", SetLastError = true)]
+	private static extern uint geteuid();
 }
