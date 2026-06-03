@@ -2947,6 +2947,10 @@ internal sealed class InternetRadioPlaybackController : IAsyncDisposable
 
 	private readonly HttpClient _httpClient;
 
+	// Serializes play/stop so concurrent commands cannot spawn two players at once. The AP owns the
+	// single entertainment source into the matrix (§3.5), so exactly one stream may be active.
+	private readonly SemaphoreSlim _playbackGate = new(1, 1);
+
 	private readonly ConcurrentQueue<string> _linuxPlayerDiagnostics = new();
 
 	private Process? _externalPlayerProcess;
@@ -3030,52 +3034,62 @@ internal sealed class InternetRadioPlaybackController : IAsyncDisposable
 		ArgumentException.ThrowIfNullOrWhiteSpace(command.StreamUrl);
 		ArgumentException.ThrowIfNullOrWhiteSpace(command.DisplayName);
 
-		if (CanReuseActivePlayback(command))
+		// One stream at a time: a second concurrent play waits here, then the release below tears
+		// down the prior player before this one starts, so two ffplay processes can never coexist.
+		await _playbackGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+		try
 		{
+			if (CanReuseActivePlayback(command))
+			{
+				_activeCommand = command;
+				PersistActiveCommand(command);
+				CurrentState = CurrentState with
+				{
+					IsPlaying = true,
+					StreamUrl = command.StreamUrl,
+					DisplayName = command.DisplayName,
+					Genre = command.Genre,
+					Language = command.Language,
+					Status = "PLAYING",
+					Detail = $"Internet radio stream playing on {GetPlaybackBackendDescription()}."
+				};
+
+				return;
+			}
+
+			await EnsureStreamReachableAsync(command.StreamUrl, cancellationToken).ConfigureAwait(false);
+
+			ReleasePlaybackResources();
+
+			if (OperatingSystem.IsWindows())
+			{
+				StartWindowsPlayback(command);
+			}
+			else if (OperatingSystem.IsLinux())
+			{
+				StartLinuxPlayback(command);
+			}
+			else
+			{
+				throw new PlatformNotSupportedException("Internet radio playback is currently supported on Windows and Linux only.");
+			}
+
 			_activeCommand = command;
 			PersistActiveCommand(command);
-			CurrentState = CurrentState with
-			{
-				IsPlaying = true,
-				StreamUrl = command.StreamUrl,
-				DisplayName = command.DisplayName,
-				Genre = command.Genre,
-				Language = command.Language,
-				Status = "PLAYING",
-				Detail = $"Internet radio stream playing on {GetPlaybackBackendDescription()}."
-			};
 
-			return;
+			CurrentState = new InternetRadioPlaybackState(
+				IsPlaying: true,
+				StreamUrl: command.StreamUrl,
+				DisplayName: command.DisplayName,
+				Genre: command.Genre,
+				Language: command.Language,
+				Status: "PLAYING",
+				Detail: $"Internet radio stream playing on {GetPlaybackBackendDescription()}.");
 		}
-
-		await EnsureStreamReachableAsync(command.StreamUrl, cancellationToken).ConfigureAwait(false);
-
-		ReleasePlaybackResources();
-
-		if (OperatingSystem.IsWindows())
+		finally
 		{
-			StartWindowsPlayback(command);
+			_playbackGate.Release();
 		}
-		else if (OperatingSystem.IsLinux())
-		{
-			StartLinuxPlayback(command);
-		}
-		else
-		{
-			throw new PlatformNotSupportedException("Internet radio playback is currently supported on Windows and Linux only.");
-		}
-
-		_activeCommand = command;
-		PersistActiveCommand(command);
-
-		CurrentState = new InternetRadioPlaybackState(
-			IsPlaying: true,
-			StreamUrl: command.StreamUrl,
-			DisplayName: command.DisplayName,
-			Genre: command.Genre,
-			Language: command.Language,
-			Status: "PLAYING",
-			Detail: $"Internet radio stream playing on {GetPlaybackBackendDescription()}.");
 	}
 
 	/// <summary>
@@ -3083,17 +3097,26 @@ internal sealed class InternetRadioPlaybackController : IAsyncDisposable
 	/// </summary>
 	public void Stop()
 	{
-		ReleasePlaybackResources();
-		_activeCommand = null;
-		_configStore.StoredConfig.InternetRadioPlayCommandJson = string.Empty;
-		_unexpectedLinuxRestartAttempts = 0;
-
-		CurrentState = CurrentState with
+		// Take the same gate as PlayAsync so a stop cannot race a start and leave an orphan player.
+		_playbackGate.Wait();
+		try
 		{
-			IsPlaying = false,
-			Status = "STOPPED",
-			Detail = "Internet radio playback stopped."
-		};
+			ReleasePlaybackResources();
+			_activeCommand = null;
+			_configStore.StoredConfig.InternetRadioPlayCommandJson = string.Empty;
+			_unexpectedLinuxRestartAttempts = 0;
+
+			CurrentState = CurrentState with
+			{
+				IsPlaying = false,
+				Status = "STOPPED",
+				Detail = "Internet radio playback stopped."
+			};
+		}
+		finally
+		{
+			_playbackGate.Release();
+		}
 	}
 
 	/// <summary>
@@ -3474,6 +3497,7 @@ internal sealed class InternetRadioPlaybackController : IAsyncDisposable
 	{
 		Stop();
 		_httpClient.Dispose();
+		_playbackGate.Dispose();
 		return ValueTask.CompletedTask;
 	}
 }

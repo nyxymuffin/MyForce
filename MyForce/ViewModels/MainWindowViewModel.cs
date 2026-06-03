@@ -479,7 +479,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 		_ => throw new ArgumentOutOfRangeException(),
 	};
 
-	public string EntertainmentModeName => _selectedAuxiliarySourceMode switch
+	public string EntertainmentModeName => _isAmFmMuted ? "MUTE" : _selectedAuxiliarySourceMode switch
 	{
 		AuxiliaryAudioSourceMode.Fm1 => AmFmFrequencyDisplay,
 		AuxiliaryAudioSourceMode.Am1 => _amFrequency.ToString("0.0", CultureInfo.InvariantCulture),
