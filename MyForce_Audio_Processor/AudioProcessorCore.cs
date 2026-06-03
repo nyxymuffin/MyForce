@@ -3625,8 +3625,14 @@ internal sealed class InternetRadioPlaybackController : IAsyncDisposable
 			return null;
 		}
 
-		// Resolve "alsa:hw:card,device" to the PipeWire sink wrapping that ALSA card.
+		// Resolve "alsa:hw:card,device" to the PipeWire sink wrapping that ALSA card. Prefer an exact
+		// card+device match, but fall back to any sink on the same card, since PipeWire commonly exposes
+		// a card only as device 0 even when the operator picked another PCM index for the same hardware.
 		var hwTarget = deviceId["alsa:".Length..]; // e.g. "hw:3,3"
+		var targetCard = hwTarget.StartsWith("hw:", StringComparison.OrdinalIgnoreCase)
+			? hwTarget["hw:".Length..].Split(',')[0]
+			: null;
+
 		var json = RunProcessCapture("pactl", "-f json list sinks");
 		if (string.IsNullOrWhiteSpace(json))
 		{
@@ -3641,6 +3647,7 @@ internal sealed class InternetRadioPlaybackController : IAsyncDisposable
 				return null;
 			}
 
+			string? cardMatch = null;
 			foreach (var sink in document.RootElement.EnumerateArray())
 			{
 				if (!sink.TryGetProperty("name", out var nameElement) || nameElement.ValueKind != JsonValueKind.String
@@ -3658,16 +3665,21 @@ internal sealed class InternetRadioPlaybackController : IAsyncDisposable
 				var device = ReadProperty(props, "alsa.device") ?? ReadProperty(props, "api.alsa.pcm.device") ?? "0";
 				if (string.Equals($"hw:{card},{device}", hwTarget, StringComparison.OrdinalIgnoreCase))
 				{
-					return nameElement.GetString();
+					return nameElement.GetString(); // exact match wins
+				}
+
+				if (!string.IsNullOrWhiteSpace(targetCard) && string.Equals(card, targetCard, StringComparison.OrdinalIgnoreCase))
+				{
+					cardMatch ??= nameElement.GetString();
 				}
 			}
+
+			return cardMatch;
 		}
 		catch (JsonException)
 		{
 			return null;
 		}
-
-		return null;
 	}
 
 	/// <summary>
@@ -4169,9 +4181,10 @@ internal sealed class InternetRadioPlaybackController : IAsyncDisposable
 
 	private LinuxPlayerLaunch? TryStartLinuxPlayer(string streamUrl)
 	{
-		// Always play through PipeWire/Pulse, never raw ALSA. Use mpv (stable native pulse output) rather
-		// than ffplay (whose SDL backend aborts mid-stream with exit 134 on this host); mpv still appears
-		// as a controllable sink-input tagged with the entertainment app name.
+		// Always play through the PipeWire mixer (mpv --ao=pulse), so the stream is a controllable
+		// sink-input and the entertainment + master volumes always apply. A selected ALSA device is
+		// resolved to its PipeWire sink (by card); if it cannot be resolved, fall back to the default
+		// sink (still a mixer sink-input) rather than bypassing the mixer with direct ALSA.
 		var pulseSink = ResolvePulseSinkName(_outputSpeakerDeviceId);
 		var candidate = LinuxPlayerCandidate.CreateMpv(GetLinuxPlayerVolumePercent(), streamUrl, pulseSink);
 		AudioProcessorLog.Write("playback", $"Launching Linux internet radio player: {candidate.StartInfo.FileName} {string.Join(' ', candidate.StartInfo.ArgumentList)}");
