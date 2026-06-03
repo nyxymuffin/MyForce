@@ -3049,22 +3049,115 @@ internal sealed class InternetRadioPlaybackController : IAsyncDisposable
 
 	public void SetOutputSpeaker(string? deviceId)
 	{
-		if (string.IsNullOrWhiteSpace(deviceId))
-		{
-			_outputSpeakerDeviceId = AudioFrameworkCatalog.DefaultSpeakerDeviceId;
-		}
-		else
-		{
-			_outputSpeakerDeviceId = deviceId;
-		}
+		_outputSpeakerDeviceId = string.IsNullOrWhiteSpace(deviceId)
+			? AudioFrameworkCatalog.DefaultSpeakerDeviceId
+			: deviceId;
 
 		if (CurrentState.IsPlaying)
 		{
+			// Move the live stream to the newly selected output immediately, so the switch happens on
+			// change rather than only after a mute/unmute toggle.
+			TryMoveLinuxStreamToCurrentSink();
 			CurrentState = CurrentState with
 			{
 				Detail = $"Internet radio stream playing on {GetPlaybackBackendDescription()}."
 			};
 		}
+	}
+
+	/// <summary>
+	/// Maps the operator-selected output device id to a PipeWire/Pulse sink name (null = default sink).
+	/// An "alsa:hw:card,device" selection is resolved to the sink that wraps it, so playback always
+	/// flows through PipeWire rather than grabbing the ALSA device directly.
+	/// </summary>
+	private static string? ResolvePulseSinkName(string? deviceId)
+	{
+		if (string.IsNullOrWhiteSpace(deviceId)
+			|| string.Equals(deviceId, AudioFrameworkCatalog.DefaultSpeakerDeviceId, StringComparison.OrdinalIgnoreCase))
+		{
+			return null;
+		}
+
+		if (!deviceId.StartsWith("alsa:", StringComparison.OrdinalIgnoreCase))
+		{
+			return deviceId; // already a PipeWire sink name
+		}
+
+		if (!OperatingSystem.IsLinux())
+		{
+			return null;
+		}
+
+		// Resolve "alsa:hw:card,device" to the PipeWire sink wrapping that ALSA card.
+		var hwTarget = deviceId["alsa:".Length..]; // e.g. "hw:3,3"
+		var json = RunProcessCapture("pactl", "-f json list sinks");
+		if (string.IsNullOrWhiteSpace(json))
+		{
+			return null;
+		}
+
+		try
+		{
+			using var document = JsonDocument.Parse(json);
+			if (document.RootElement.ValueKind != JsonValueKind.Array)
+			{
+				return null;
+			}
+
+			foreach (var sink in document.RootElement.EnumerateArray())
+			{
+				if (!sink.TryGetProperty("name", out var nameElement) || nameElement.ValueKind != JsonValueKind.String
+					|| !sink.TryGetProperty("properties", out var props) || props.ValueKind != JsonValueKind.Object)
+				{
+					continue;
+				}
+
+				var card = ReadProperty(props, "alsa.card") ?? ReadProperty(props, "api.alsa.pcm.card");
+				if (string.IsNullOrWhiteSpace(card))
+				{
+					continue;
+				}
+
+				var device = ReadProperty(props, "alsa.device") ?? ReadProperty(props, "api.alsa.pcm.device") ?? "0";
+				if (string.Equals($"hw:{card},{device}", hwTarget, StringComparison.OrdinalIgnoreCase))
+				{
+					return nameElement.GetString();
+				}
+			}
+		}
+		catch (JsonException)
+		{
+			return null;
+		}
+
+		return null;
+	}
+
+	/// <summary>
+	/// Moves the running ffplay sink-input to the currently selected PipeWire sink (gapless). Best-effort.
+	/// </summary>
+	private void TryMoveLinuxStreamToCurrentSink()
+	{
+		if (!OperatingSystem.IsLinux() || _externalPlayerProcess is null || _externalPlayerProcess.HasExited)
+		{
+			return;
+		}
+
+		var sinkInputIndex = TryResolveFfplaySinkInputIndex(_externalPlayerProcess.Id);
+		if (sinkInputIndex is null)
+		{
+			return;
+		}
+
+		// A null sink name means "default sink"; pactl accepts the @DEFAULT_SINK@ token for that.
+		var targetSink = ResolvePulseSinkName(_outputSpeakerDeviceId) ?? "@DEFAULT_SINK@";
+		if (RunProcessCapture("pactl", $"move-sink-input {sinkInputIndex.Value} {targetSink}") is null)
+		{
+			AudioProcessorLog.Write("playback", $"pactl move-sink-input to '{targetSink}' failed; output will switch on the next stream restart.");
+			return;
+		}
+
+		AudioProcessorLog.Write("playback", $"Moved entertainment stream (sink-input {sinkInputIndex.Value}) to '{targetSink}'.");
 	}
 
 	/// <summary>
@@ -3493,21 +3586,11 @@ internal sealed class InternetRadioPlaybackController : IAsyncDisposable
 
 	private LinuxPlayerLaunch? TryStartLinuxPlayer(string streamUrl)
 	{
-		var sinkName = _outputSpeakerDeviceId;
-		var useSystemDefaultSink = string.IsNullOrWhiteSpace(sinkName)
-			|| string.Equals(sinkName, AudioFrameworkCatalog.DefaultSpeakerDeviceId, StringComparison.OrdinalIgnoreCase);
-
-		if (string.IsNullOrWhiteSpace(sinkName) && !useSystemDefaultSink)
-		{
-			AudioProcessorLog.Write("playback", "No PipeWire sink is selected for the AP master output.");
-			return null;
-		}
-
-		var candidate = useSystemDefaultSink
-			? LinuxPlayerCandidate.CreateFfplay(GetLinuxPlayerVolumePercent(), streamUrl, sinkName: null)
-			: sinkName.StartsWith("alsa:", StringComparison.OrdinalIgnoreCase)
-				? LinuxPlayerCandidate.CreateFfplayForAlsa(GetLinuxPlayerVolumePercent(), streamUrl, sinkName[5..])
-				: LinuxPlayerCandidate.CreateFfplay(GetLinuxPlayerVolumePercent(), streamUrl, sinkName);
+		// Always play through PipeWire/Pulse, never raw ALSA. Opening an ALSA hw device directly
+		// fights PipeWire (which owns the card) and aborts ffplay with SIGABRT (exit 134); routing
+		// through the pulse sink avoids the contention and keeps the stream a controllable sink-input.
+		var pulseSink = ResolvePulseSinkName(_outputSpeakerDeviceId);
+		var candidate = LinuxPlayerCandidate.CreateFfplay(GetLinuxPlayerVolumePercent(), streamUrl, pulseSink);
 		AudioProcessorLog.Write("playback", $"Launching Linux internet radio player: {candidate.StartInfo.FileName} {string.Join(' ', candidate.StartInfo.ArgumentList)}");
 		var process = new Process
 		{
