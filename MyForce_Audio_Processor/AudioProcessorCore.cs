@@ -593,13 +593,8 @@ internal sealed record RelaySetDefinition(
 		if (string.Equals(topic, _topics.ChannelGainCommandTopic, StringComparison.OrdinalIgnoreCase)
 			|| string.Equals(topic, _topics.MediaGainCommandTopic, StringComparison.OrdinalIgnoreCase))
 		{
+			// Volume/gain is an OPERATING command (§4.6): no admin auth required.
 			var msgId = GetMessageId(args.ApplicationMessage.Payload);
-			if (!ValidateAdminCommand(args.ApplicationMessage.Payload, topic))
-			{
-				await PublishCommandAckAsync(topic, msgId, "rejected", "auth", "invalid_auth", "Admin authentication is required.").ConfigureAwait(false);
-				return;
-			}
-
 			var command = AudioProcessorJson.Deserialize<AudioChannelGainCommand>(args.ApplicationMessage.Payload);
 			if (command is null)
 			{
@@ -615,13 +610,8 @@ internal sealed record RelaySetDefinition(
 
 		if (string.Equals(topic, _topics.ChannelMuteCommandTopic, StringComparison.OrdinalIgnoreCase))
 		{
+			// Mute is an OPERATING command (volume, §4.6): no admin auth required.
 			var msgId = GetMessageId(args.ApplicationMessage.Payload);
-			if (!ValidateAdminCommand(args.ApplicationMessage.Payload, topic))
-			{
-				await PublishCommandAckAsync(topic, msgId, "rejected", "auth", "invalid_auth", "Admin authentication is required.").ConfigureAwait(false);
-				return;
-			}
-
 			var command = AudioProcessorJson.Deserialize<AudioChannelMuteCommand>(args.ApplicationMessage.Payload);
 			if (command is null)
 			{
@@ -3145,10 +3135,123 @@ internal sealed class InternetRadioPlaybackController : IAsyncDisposable
 
 		if (OperatingSystem.IsLinux() && _externalPlayerProcess is not null && _activeCommand is not null)
 		{
+			// ffplay stays at its fixed launch volume; the operator's gain is applied to the stream's
+			// PipeWire sink-input level feeding the master output (the entertainment mixer input).
+			TryApplyLinuxEntertainmentGain();
 			CurrentState = CurrentState with
 			{
-				Detail = $"Internet radio stream playing on {GetPlaybackBackendDescription()}. Entertainment gain is controlled by the AP mixer state."
+				Detail = $"Internet radio stream playing on {GetPlaybackBackendDescription()}. Entertainment gain applied via the PipeWire mixer."
 			};
+		}
+	}
+
+	/// <summary>
+	/// Applies the entertainment gain to the running ffplay stream's PipeWire sink-input volume, so
+	/// loudness is controlled by the AP mixer into the master output rather than by ffplay itself.
+	/// Best-effort: a no-op if pactl or the sink-input is unavailable.
+	/// </summary>
+	private void TryApplyLinuxEntertainmentGain()
+	{
+		if (_externalPlayerProcess is null || _externalPlayerProcess.HasExited)
+		{
+			return;
+		}
+
+		var sinkInputIndex = TryResolveFfplaySinkInputIndex(_externalPlayerProcess.Id);
+		if (sinkInputIndex is null)
+		{
+			AudioProcessorLog.Write("playback", "Could not resolve the ffplay PipeWire sink-input; entertainment gain will apply on the next change.");
+			return;
+		}
+
+		// _outputGain is 0..2 (unity = 1.0). Map to a percent and cap to keep headroom below clipping.
+		var percent = Math.Clamp((int)Math.Round((double)_outputGain * 100.0), 0, 150);
+		var result = RunProcessCapture("pactl", $"set-sink-input-volume {sinkInputIndex.Value} {percent.ToString(CultureInfo.InvariantCulture)}%");
+		if (result is null)
+		{
+			AudioProcessorLog.Write("playback", $"pactl set-sink-input-volume failed for sink-input {sinkInputIndex.Value}.");
+			return;
+		}
+
+		AudioProcessorLog.Write("playback", $"Applied entertainment mixer gain {percent}% to ffplay sink-input {sinkInputIndex.Value}.");
+	}
+
+	/// <summary>
+	/// Resolves the PipeWire sink-input index owned by the ffplay process via pactl JSON, matching on
+	/// application.process.id. Returns null when pactl is unavailable or no matching input exists.
+	/// </summary>
+	private static int? TryResolveFfplaySinkInputIndex(int processId)
+	{
+		var json = RunProcessCapture("pactl", "-f json list sink-inputs");
+		if (string.IsNullOrWhiteSpace(json))
+		{
+			return null;
+		}
+
+		try
+		{
+			using var document = JsonDocument.Parse(json);
+			if (document.RootElement.ValueKind != JsonValueKind.Array)
+			{
+				return null;
+			}
+
+			foreach (var sinkInput in document.RootElement.EnumerateArray())
+			{
+				if (!sinkInput.TryGetProperty("properties", out var properties)
+					|| properties.ValueKind != JsonValueKind.Object
+					|| !properties.TryGetProperty("application.process.id", out var pidElement))
+				{
+					continue;
+				}
+
+				var pidText = pidElement.ValueKind == JsonValueKind.String ? pidElement.GetString() : pidElement.ToString();
+				if (string.Equals(pidText, processId.ToString(CultureInfo.InvariantCulture), StringComparison.Ordinal)
+					&& sinkInput.TryGetProperty("index", out var indexElement)
+					&& indexElement.TryGetInt32(out var index))
+				{
+					return index;
+				}
+			}
+		}
+		catch (JsonException)
+		{
+			return null;
+		}
+
+		return null;
+	}
+
+	/// <summary>Runs a short-lived process and returns stdout, or null on failure/non-zero exit.</summary>
+	private static string? RunProcessCapture(string fileName, string arguments)
+	{
+		try
+		{
+			using var process = new Process
+			{
+				StartInfo = new ProcessStartInfo
+				{
+					FileName = fileName,
+					Arguments = arguments,
+					RedirectStandardOutput = true,
+					RedirectStandardError = true,
+					UseShellExecute = false,
+					CreateNoWindow = true
+				}
+			};
+
+			if (!process.Start())
+			{
+				return null;
+			}
+
+			var output = process.StandardOutput.ReadToEnd();
+			process.WaitForExit(2000);
+			return process.ExitCode == 0 ? output : null;
+		}
+		catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException)
+		{
+			return null;
 		}
 	}
 
@@ -3447,9 +3550,14 @@ internal sealed class InternetRadioPlaybackController : IAsyncDisposable
 		return $"Linux internet radio playback requires ffplay and access to the configured output '{sinkName}'.";
 	}
 
+	// ffplay always launches at a fixed level; the operator's volume is applied separately through
+	// the PipeWire mixer (the stream's sink-input volume into the master output), never by changing
+	// ffplay itself (per the entertainment-resource volume rule).
+	private const int LinuxPlayerFixedVolumePercent = 95;
+
 	private int GetLinuxPlayerVolumePercent()
 	{
-		return 100;
+		return LinuxPlayerFixedVolumePercent;
 	}
 
 	private void OnExternalPlayerExited(object? sender, EventArgs e)
