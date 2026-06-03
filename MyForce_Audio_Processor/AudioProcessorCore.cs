@@ -3956,7 +3956,8 @@ internal sealed class InternetRadioPlaybackController : IAsyncDisposable
 					byPid ??= index;
 				}
 
-				if (string.Equals(binary, "ffplay", StringComparison.OrdinalIgnoreCase)
+				if (string.Equals(binary, "mpv", StringComparison.OrdinalIgnoreCase)
+					|| string.Equals(binary, "ffplay", StringComparison.OrdinalIgnoreCase)
 					|| string.Equals(appName, "ffplay", StringComparison.OrdinalIgnoreCase))
 				{
 					byBinary ??= index;
@@ -4168,11 +4169,11 @@ internal sealed class InternetRadioPlaybackController : IAsyncDisposable
 
 	private LinuxPlayerLaunch? TryStartLinuxPlayer(string streamUrl)
 	{
-		// Always play through PipeWire/Pulse, never raw ALSA. Opening an ALSA hw device directly
-		// fights PipeWire (which owns the card) and aborts ffplay with SIGABRT (exit 134); routing
-		// through the pulse sink avoids the contention and keeps the stream a controllable sink-input.
+		// Always play through PipeWire/Pulse, never raw ALSA. Use mpv (stable native pulse output) rather
+		// than ffplay (whose SDL backend aborts mid-stream with exit 134 on this host); mpv still appears
+		// as a controllable sink-input tagged with the entertainment app name.
 		var pulseSink = ResolvePulseSinkName(_outputSpeakerDeviceId);
-		var candidate = LinuxPlayerCandidate.CreateFfplay(GetLinuxPlayerVolumePercent(), streamUrl, pulseSink);
+		var candidate = LinuxPlayerCandidate.CreateMpv(GetLinuxPlayerVolumePercent(), streamUrl, pulseSink);
 		AudioProcessorLog.Write("playback", $"Launching Linux internet radio player: {candidate.StartInfo.FileName} {string.Join(' ', candidate.StartInfo.ArgumentList)}");
 		var process = new Process
 		{
@@ -4304,10 +4305,10 @@ internal sealed class InternetRadioPlaybackController : IAsyncDisposable
 		if (string.IsNullOrWhiteSpace(sinkName)
 			|| string.Equals(sinkName, AudioFrameworkCatalog.DefaultSpeakerDeviceId, StringComparison.OrdinalIgnoreCase))
 		{
-			return "Linux internet radio playback requires ffplay and a reachable system audio output for the AP master output.";
+			return "Linux internet radio playback requires mpv and a reachable PipeWire/Pulse output for the AP master output.";
 		}
 
-		return $"Linux internet radio playback requires ffplay and access to the configured output '{sinkName}'.";
+		return $"Linux internet radio playback requires mpv and access to the configured output '{sinkName}'.";
 	}
 
 	// ffplay always launches at a fixed level; the operator's volume is applied separately through
@@ -4442,6 +4443,42 @@ internal sealed class LinuxPlayerCandidate
 	public string BackendLabel { get; }
 
 	public ProcessStartInfo StartInfo { get; }
+
+	/// <summary>
+	/// Builds an mpv player for internet radio. mpv's native PulseAudio/PipeWire output is far more
+	/// stable than ffplay's SDL backend (which aborts mid-stream with exit 134 on this host) and
+	/// reliably registers a sink-input tagged with the entertainment app name for mixer volume.
+	/// </summary>
+	public static LinuxPlayerCandidate CreateMpv(int volumePercent, string streamUrl, string? sinkName)
+	{
+		ArgumentException.ThrowIfNullOrWhiteSpace(streamUrl);
+
+		var startInfo = CreateStartInfo("mpv");
+		if (!string.IsNullOrWhiteSpace(sinkName))
+		{
+			// libpulse (used by mpv's pulse output) honours PULSE_SINK to target a specific sink.
+			startInfo.Environment["PULSE_SINK"] = sinkName;
+		}
+
+		startInfo.ArgumentList.Add("--no-video");
+		startInfo.ArgumentList.Add("--no-terminal");
+		startInfo.ArgumentList.Add("--really-quiet");
+		startInfo.ArgumentList.Add("--no-config");
+		startInfo.ArgumentList.Add("--ao=pulse");
+		// Tag the sink-input so the AP resolves it for mixer volume (the entertainment matrix input).
+		startInfo.ArgumentList.Add($"--audio-client-name={InternetRadioPlaybackController.EntertainmentSinkInputAppName}");
+		startInfo.ArgumentList.Add($"--volume={volumePercent.ToString(System.Globalization.CultureInfo.InvariantCulture)}");
+		// Buffer the network stream and ride out transient drops rather than aborting.
+		startInfo.ArgumentList.Add("--cache=yes");
+		startInfo.ArgumentList.Add("--network-timeout=15");
+		startInfo.ArgumentList.Add(streamUrl);
+
+		return new LinuxPlayerCandidate(
+			string.IsNullOrWhiteSpace(sinkName)
+				? "mpv on the PipeWire system default output"
+				: $"mpv on PipeWire sink '{sinkName}'",
+			startInfo);
+	}
 
 	public static LinuxPlayerCandidate CreateFfplay(int volumePercent, string streamUrl, string? sinkName)
 	{
