@@ -15,6 +15,7 @@
 //
 // Copyright (C) 2025-2026 NyxTel Wireless / Nyx Gallini
 //
+using System.Text.Json;
 using System.Text.Json.Nodes;
 using MyForce.Contracts.Radio;
 
@@ -63,7 +64,7 @@ public sealed class MotorolaXprModule : IRadioModule
 {
 	private readonly IModuleHost _host;
 
-	private JsonObject _config = [];
+	private JsonNode _config = new JsonObject();
 
 	public MotorolaXprModule(IModuleHost host)
 	{
@@ -77,17 +78,17 @@ public sealed class MotorolaXprModule : IRadioModule
 		return Task.CompletedTask;
 	}
 
-	public Task<OperationResult> ApplyConfigAsync(JsonObject configuration, CancellationToken cancellationToken)
+	public Task<OperationResult> ApplyConfigAsync(JsonElement settings, CancellationToken cancellationToken)
 	{
-		ArgumentNullException.ThrowIfNull(configuration);
-		_config = (JsonObject)configuration.DeepClone();
+		// The AP passes only the RM-owned "settings" section (3.7.8); validate and apply it here.
+		_config = JsonNode.Parse(settings.GetRawText()) ?? new JsonObject();
 		// TODO: validate the RM settings section and apply it to the radio.
 		return Task.FromResult(OperationResult.Ok());
 	}
 
-	public JsonObject GetConfig() => (JsonObject)_config.DeepClone();
+	public JsonNode GetConfig() => _config.DeepClone();
 
-	public Task<OperationResult> ExecuteControlAsync(string action, JsonObject? args, CancellationToken cancellationToken)
+	public Task<OperationResult> ExecuteControlAsync(string action, JsonElement args, CancellationToken cancellationToken)
 	{
 		// TODO: implement "channel_select", "zone_select", and "set_power".
 		return Task.FromResult(OperationResult.Error($"Control '{action}' is not implemented yet."));

@@ -36,6 +36,14 @@ internal sealed class AudioProcessorCoordinator : IAsyncDisposable
 
 	private const string VipPttOrigin = "vip";
 
+	// Matches AudioProcessorPersistedTopology's camelCase store format so config write-back
+	// round-trips with the boot-time read (§4.2).
+	private static readonly JsonSerializerOptions PersistedTopologySerializerOptions = new()
+	{
+		PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+		WriteIndented = false
+	};
+
 	private readonly AudioProcessorRegistry _registry;
 
 	private readonly AudioFrameworkCatalog _audioFramework;
@@ -54,7 +62,33 @@ internal sealed class AudioProcessorCoordinator : IAsyncDisposable
 
 	private readonly AudioProcessorTopicFactory _topics;
 
-	private readonly TxController _txController;
+	// Phase 1 (§3.6): the real-time engine, backend, built-in primitives, and TX sequencer.
+	private readonly IAudioBackend _audioBackend;
+
+	private readonly RealtimeAudioEngine _realtimeEngine;
+
+	private readonly EngineTopology _engineTopology;
+
+	private readonly RelayKeyingService _relayKeying;
+
+	private readonly TxStateMachine _txStateMachine;
+
+	// VOX detect primitive (§3.6.8): one per radio that declares VOX, plus its RX source index
+	// and the latest Call Detect state the control-thread poll loop maintains.
+	private readonly Dictionary<string, VoxDetector> _voxDetectors;
+
+	private readonly Dictionary<string, int> _rxSourceIndexByRadio;
+
+	private readonly Dictionary<string, bool> _callDetectByRadio = new(StringComparer.OrdinalIgnoreCase);
+
+	// Radios whose operator-mic gate is currently open (TX). Guarded by _engineRoutingGate.
+	private readonly HashSet<string> _openMicGates = new(StringComparer.OrdinalIgnoreCase);
+
+	private readonly object _engineRoutingGate = new();
+
+	private readonly CancellationTokenSource _lifetimeCts = new();
+
+	private Task? _voxPollTask;
 
 	private readonly RadioPluginCatalog _pluginCatalog;
 
@@ -78,8 +112,28 @@ internal sealed class AudioProcessorCoordinator : IAsyncDisposable
 		_mixerState = AudioMixerState.CreateDefault(_audioFramework.ChannelStrips);
 		_routingState = AudioProcessorRoutingState.CreateDefault(_registry.RadioIds, ResolveInitialSpeakerDeviceId());
 		_audioMatrixEngine = new AudioMatrixEngine(_mixerState.CurrentSnapshot, _routingState.CurrentSnapshot);
-		_txController = new TxController(_registry.Radios);
 		_radioModuleHostManager = new RadioModuleHostManager(_registry.Radios, _pluginCatalog.Modules, AudioProcessorLog.Write);
+
+		// Phase 1 real-time engine (§3.6): build the fixed source/sink topology, open a backend,
+		// and wire the built-in keying/detect primitives and the TX state machine to it.
+		_relayKeying = new RelayKeyingService(_persistedTopology.RelaySets, AudioProcessorLog.Write);
+		var engineSetup = BuildEngineSetup(_registry.RadioIds, ResolveInitialSpeakerDeviceId());
+		_engineTopology = engineSetup.Topology;
+		_rxSourceIndexByRadio = engineSetup.RxSourceIndexByRadio;
+		_audioBackend = CreateAudioBackend(EngineAudioFormat.Default);
+		_audioBackend.Bind(engineSetup.CaptureDeviceIds, engineSetup.PlaybackDeviceIds);
+		_audioBackend.DeviceHotplug += OnBackendDeviceHotplug;
+		_realtimeEngine = new RealtimeAudioEngine(_audioBackend, _engineTopology, AudioProcessorLog.Write);
+		_voxDetectors = BuildVoxDetectors(_registry.Radios);
+		_txStateMachine = new TxStateMachine(
+			_registry.Radios,
+			KeyRadioAsync,
+			UnkeyRadioAsync,
+			TryGetTalkPermitReady,
+			SetMicGate,
+			PublishRadioModuleStateAsync,
+			AudioProcessorLog.Write);
+		_realtimeEngine.PublishRouting(BuildEngineRoutingSnapshot());
 		_internetRadioController.SetOutputSpeaker(_routingState.CurrentSnapshot.SpeakerSink.DeviceId);
 		AudioProcessorLog.Write("discovery", $"Audio framework initialized with {_audioFramework.Devices.Count(device => device.OutputEnabled && string.Equals(device.Role, "speaker", StringComparison.OrdinalIgnoreCase))} output speaker device(s).");
 		AudioProcessorLog.Write("discovery", $"Discovered {_pluginCatalog.Modules.Count} radio plugin type(s) from '{_pluginCatalog.PluginDirectoryPath}'.");
@@ -92,6 +146,13 @@ internal sealed class AudioProcessorCoordinator : IAsyncDisposable
 		await _mqttRuntime.SubscribeAsync(_topics.AllModuleCommandsTopicFilter, cancellationToken).ConfigureAwait(false);
 		await _mqttRuntime.SubscribeAsync(_topics.ConsolePttCommandTopicFilter, cancellationToken).ConfigureAwait(false);
 		await _radioModuleHostManager.StartAsync(cancellationToken).ConfigureAwait(false);
+
+		// Build the routing matrix and start the RT audio thread (§3.6.10 boot step 4), then begin
+		// the control-thread VOX poll loop that turns engine RX levels into Call Detect (§3.6.8).
+		_realtimeEngine.PublishRouting(BuildEngineRoutingSnapshot());
+		_realtimeEngine.Start();
+		_voxPollTask = RunVoxPollLoopAsync(_lifetimeCts.Token);
+
 		await RestoreInternetRadioPlaybackAsync(cancellationToken).ConfigureAwait(false);
 		await PublishBirthSnapshotAsync(cancellationToken).ConfigureAwait(false);
 	}
@@ -132,7 +193,7 @@ internal sealed record ModuleRadioStateSpecPayload(
 	string? Mode,
 	SignalInfo? Signal)
 {
-	public static ModuleRadioStateSpecPayload Create(RadioRuntimeDefinition radio, RadioTxState state)
+	public static ModuleRadioStateSpecPayload Create(RadioRuntimeDefinition radio, RadioTxState state, bool rxActive)
 	{
 		ArgumentNullException.ThrowIfNull(radio);
 		ArgumentNullException.ThrowIfNull(state);
@@ -142,7 +203,7 @@ internal sealed record ModuleRadioStateSpecPayload(
 			1,
 			DateTimeOffset.UtcNow,
 			radio.Id.Value,
-			RxActive: false,
+			RxActive: rxActive,                       // Call Detect from the VOX primitive (§3.6.8)
 			TxActive: isTxActive,
 			TxSource: isTxActive ? "manual" : "idle",
 			Channel: null,
@@ -159,7 +220,7 @@ internal sealed record ConsoleTxStatePayload(
 	string? Target,
 	string State)
 {
-	public static ConsoleTxStatePayload Create(TxController txController)
+	public static ConsoleTxStatePayload Create(TxStateMachine txController)
 	{
 		ArgumentNullException.ThrowIfNull(txController);
 		var target = txController.ActiveManualTransmitRadioId?.Value;
@@ -287,7 +348,8 @@ internal sealed class RadioModuleHostManager : IAsyncDisposable
 
 			var host = new RadioModuleHost(radio.Id, _log);
 			var module = discoveredModule.Factory.Create(host);
-			var applyResult = await module.ApplyConfigAsync((JsonObject)radio.Config.Settings.DeepClone(), cancellationToken).ConfigureAwait(false);
+			// Pass only the RM-owned settings section as a JsonElement per the reconciled contract (§3.7.7).
+			var applyResult = await module.ApplyConfigAsync(radio.Config.Settings.Deserialize<JsonElement>(), cancellationToken).ConfigureAwait(false);
 			if (applyResult.Status != MyForce.Contracts.Radio.OperationStatus.Ok)
 			{
 				_log("module", $"Plugin '{radio.TypeId}' rejected initial config for '{radio.Id.Value}': {applyResult.Status}.");
@@ -297,6 +359,16 @@ internal sealed class RadioModuleHostManager : IAsyncDisposable
 			_hostedModules.Add(new HostedRadioModule(radio.Id, discoveredModule, host, module));
 			_log("module", $"Started radio module '{radio.Id.Value}' using plugin '{discoveredModule.TypeId}' version {discoveredModule.Version}.");
 		}
+	}
+
+	/// <summary>
+	/// Resolves the live RM instance for a radio, or null if no plugin is hosting it. Used by the
+	/// TX state machine to drive in-process RM keying (§3.6.3).
+	/// </summary>
+	public IRadioModule? TryGetModule(RadioId radioId)
+	{
+		ArgumentNullException.ThrowIfNull(radioId);
+		return _hostedModules.FirstOrDefault(module => module.RadioId == radioId)?.Module;
 	}
 
 	public async ValueTask DisposeAsync()
@@ -338,24 +410,21 @@ internal sealed class RadioModuleHost : IModuleHost
 
 	public float GetRxLevel() => 0f;
 
-	public Task ReportStateAsync(RadioStateReport state, CancellationToken cancellationToken)
+	public void ReportState(RadioStateReport state)
 	{
 		ArgumentNullException.ThrowIfNull(state);
 		_log("module", $"Radio module '{RadioId.Value}' reported state.");
-		return Task.CompletedTask;
 	}
 
-	public Task ReportDetectAsync(bool isDetected, CancellationToken cancellationToken)
+	public void ReportDetect(bool rxActive)
 	{
-		_log("module", $"Radio module '{RadioId.Value}' detect={(isDetected ? "active" : "idle")}.");
-		return Task.CompletedTask;
+		_log("module", $"Radio module '{RadioId.Value}' detect={(rxActive ? "active" : "idle")}.");
 	}
 
-	public Task EmitEventAsync(string name, JsonObject? data, CancellationToken cancellationToken)
+	public void EmitEvent(string name, JsonNode? data = null)
 	{
 		ArgumentException.ThrowIfNullOrWhiteSpace(name);
 		_log("module", $"Radio module '{RadioId.Value}' emitted event '{name}'.");
-		return Task.CompletedTask;
 	}
 
 	public void Log(LogLevel level, string message)
@@ -507,11 +576,17 @@ internal sealed record RelaySetDefinition(
 				return;
 			}
 
-			ApplyManualPtt(request);
+			var outcome = await ApplyManualPttAsync(request, CancellationToken.None).ConfigureAwait(false);
 			await PublishMixerStateAsync(CancellationToken.None).ConfigureAwait(false);
 			await PublishStatusAsync(CancellationToken.None).ConfigureAwait(false);
 			await PublishConsoleTxStateAsync(CancellationToken.None).ConfigureAwait(false);
-			await PublishCommandAckAsync(topic, request.MsgId, "ok", null, null, null).ConfigureAwait(false);
+			await PublishCommandAckAsync(
+				topic,
+				request.MsgId,
+				outcome.Accepted ? "ok" : "rejected",
+				outcome.Accepted ? null : "ptt",
+				outcome.Accepted ? null : "tx_rejected",
+				outcome.Accepted ? null : outcome.Detail).ConfigureAwait(false);
 			return;
 		}
 
@@ -615,10 +690,16 @@ internal sealed record RelaySetDefinition(
 				return true;
 			}
 
-			AudioProcessorLog.Write("config", $"Accepted config command for module '{moduleId}'. Runtime config apply is staged for the module host lifecycle.");
+			// Persist the accepted config to the System Config Store and mirror it back retained
+			// (§4.2/§4.4). The RM-owned settings section is the new truth on the next boot; live
+			// re-apply of disruptive common-section changes is deferred (§3.6.9).
+			var acceptedSettings = command.Config["settings"] as JsonObject ?? command.Config;
+			var mergedConfig = radio.Config with { Settings = (JsonObject)acceptedSettings.DeepClone() };
+			PersistRadioInstanceConfig(radio, mergedConfig.Settings);
+			AudioProcessorLog.Write("config", $"Persisted config for module '{moduleId}' to the System Config Store.");
 			await _mqttRuntime.PublishAsync(
 				_topics.ModuleConfigTopic(radio.Id),
-				AudioProcessorJson.Serialize(ModuleConfigSpecPayload.Create(radio)),
+				AudioProcessorJson.Serialize(new ModuleConfigSpecPayload(1, DateTimeOffset.UtcNow, radio.Id.Value, RadioInstanceConfigPayload.Create(mergedConfig))),
 				retain: true,
 				cancellationToken: CancellationToken.None).ConfigureAwait(false);
 			await PublishCommandAckAsync(topic, envelope?.MsgId, "ok", null, null, null).ConfigureAwait(false);
@@ -776,8 +857,27 @@ internal sealed record RelaySetDefinition(
 
 	public async ValueTask DisposeAsync()
 	{
+		// Stop the control-thread VOX loop and the RT engine before tearing down dependents (§3.6.6).
+		await _lifetimeCts.CancelAsync().ConfigureAwait(false);
+		if (_voxPollTask is not null)
+		{
+			try
+			{
+				await _voxPollTask.ConfigureAwait(false);
+			}
+			catch (OperationCanceledException)
+			{
+			}
+		}
+
+		_realtimeEngine.Dispose();
+		_audioBackend.DeviceHotplug -= OnBackendDeviceHotplug;
+		_audioBackend.Dispose();
+		_relayKeying.Dispose();
+		await _txStateMachine.DisposeAsync().ConfigureAwait(false);
 		await _radioModuleHostManager.DisposeAsync().ConfigureAwait(false);
 		await _internetRadioController.DisposeAsync().ConfigureAwait(false);
+		_lifetimeCts.Dispose();
 	}
 
 	/// <summary>
@@ -788,50 +888,357 @@ internal sealed record RelaySetDefinition(
 		await PublishStatusAsync(cancellationToken).ConfigureAwait(false);
 	}
 
-	private void ApplyManualPtt(ManualPttRequest request)
+	/// <summary>
+	/// Handles a manual PTT request through the §3.4 TX state machine. Origin is restricted to the
+	/// VIP physical button (§5.8.6); the legacy mixer/routing state is kept in sync only for the
+	/// MQTT display payloads, while the real audio gate is opened by the state machine's gate
+	/// callback (<see cref="SetMicGate"/>).
+	/// </summary>
+	private async Task<TxOutcome> ApplyManualPttAsync(ManualPttRequest request, CancellationToken cancellationToken)
 	{
 		ArgumentNullException.ThrowIfNull(request);
 
 		if (!string.Equals(request.Origin, VipPttOrigin, StringComparison.OrdinalIgnoreCase))
 		{
 			AudioProcessorLog.Write("tx", $"Manual PTT rejected for '{request.RadioId.Value}' because origin '{request.Origin ?? "<missing>"}' is not authorized.");
-			return;
+			return TxOutcome.Rejected("PTT is restricted to the VIP physical button.");
+		}
+
+		if (!_registry.Radios.Any(radio => radio.Id == request.RadioId))
+		{
+			return TxOutcome.Rejected($"Unknown radio '{request.RadioId.Value}'.");
 		}
 
 		if (request.IsPressed)
 		{
-			var startResult = _txController.BeginManualTransmit(request.RadioId);
-			if (!startResult.Started)
+			var keyOutcome = await _txStateMachine.RequestKeyAsync(request.RadioId, request.IsOverride, cancellationToken).ConfigureAwait(false);
+			if (keyOutcome.Accepted)
 			{
-				AudioProcessorLog.Write("tx", $"Manual transmit rejected for '{request.RadioId.Value}': {startResult.Detail}");
-				return;
+				// Mirror into the legacy mixer/routing state purely for the MQTT display (§3.9.2).
+				_routingState.SetOperatorMicTarget(request.RadioId);
+				_mixerState.SetChannelActive(AudioChannelId.OperatorMic, true);
+				_mixerState.SetTransmitTarget(request.RadioId, true);
 			}
 
-			AudioProcessorLog.Write("tx", $"Manual transmit started for '{request.RadioId.Value}' using {_txController.GetState(request.RadioId).KeyingMethodLabel} keying.");
-			_routingState.SetOperatorMicTarget(request.RadioId);
-			_mixerState.SetChannelActive(AudioChannelId.OperatorMic, true);
-			_mixerState.SetTransmitTarget(request.RadioId, true);
-			_audioMatrixEngine.UpdateSnapshots(_mixerState.CurrentSnapshot, _routingState.CurrentSnapshot);
+			return keyOutcome;
+		}
+
+		var unkeyOutcome = await _txStateMachine.RequestUnkeyAsync(request.RadioId, cancellationToken).ConfigureAwait(false);
+		if (unkeyOutcome.Accepted)
+		{
+			_routingState.ClearOperatorMicTarget(request.RadioId);
+			_mixerState.SetTransmitTarget(request.RadioId, false);
+			if (_txStateMachine.ActiveManualTransmitRadioId is null)
+			{
+				_mixerState.SetChannelActive(AudioChannelId.OperatorMic, false);
+			}
+		}
+
+		return unkeyOutcome;
+	}
+
+	// ---- Phase 1 engine wiring (§3.6): topology, backend, keying, VOX, gate ----
+
+	/// <summary>
+	/// Builds the fixed engine source/sink topology from the declared radios (§3.6.10): source 0 is
+	/// the operator mic, then one RX per radio; sink 0 is the speaker, then one TX per radio. Each
+	/// endpoint binds to a backend port at the same index, so a slot is stable across unplug (§3.6.10).
+	/// </summary>
+	private static EngineSetupResult BuildEngineSetup(IReadOnlyList<RadioId> radioIds, string speakerDeviceId)
+	{
+		ArgumentNullException.ThrowIfNull(radioIds);
+		ArgumentException.ThrowIfNullOrWhiteSpace(speakerDeviceId);
+
+		var sources = new List<EngineEndpoint> { new("mic", EngineEndpointKind.OperatorMic, 0) };
+		var sinks = new List<EngineEndpoint> { new("spk", EngineEndpointKind.Speaker, 0) };
+		var captureDeviceIds = new List<string> { "operator-mic" };
+		var playbackDeviceIds = new List<string> { speakerDeviceId };
+		var rxSourceIndexByRadio = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+
+		for (var index = 0; index < radioIds.Count; index++)
+		{
+			var radioId = radioIds[index];
+			var port = index + 1; // port 0 is the mic / speaker
+			sources.Add(new EngineEndpoint($"rx:{radioId.Value}", EngineEndpointKind.RadioRx, port));
+			sinks.Add(new EngineEndpoint($"tx:{radioId.Value}", EngineEndpointKind.RadioTx, port));
+			captureDeviceIds.Add($"radio-{radioId.Value}");
+			playbackDeviceIds.Add($"radio-{radioId.Value}");
+			rxSourceIndexByRadio[radioId.Value] = port;
+		}
+
+		return new EngineSetupResult(new EngineTopology(sources, sinks), captureDeviceIds, playbackDeviceIds, rxSourceIndexByRadio);
+	}
+
+	/// <summary>
+	/// Selects the concrete backend (§3.6.4): ALSA on the in-vehicle Linux target, the portable
+	/// null backend elsewhere so the engine still runs on the dev box. PipeWire is a future backend
+	/// behind the same interface.
+	/// </summary>
+	private static IAudioBackend CreateAudioBackend(EngineAudioFormat format)
+	{
+		if (OperatingSystem.IsLinux())
+		{
+			return new AlsaAudioBackend(format, AudioProcessorLog.Write);
+		}
+
+		AudioProcessorLog.Write("engine", "Non-Linux host: using the null audio backend (no device I/O). ALSA/PipeWire is used on the in-vehicle target.");
+		return new NullAudioBackend(format);
+	}
+
+	private static Dictionary<string, VoxDetector> BuildVoxDetectors(IReadOnlyList<RadioRuntimeDefinition> radios)
+	{
+		ArgumentNullException.ThrowIfNull(radios);
+
+		var detectors = new Dictionary<string, VoxDetector>(StringComparer.OrdinalIgnoreCase);
+		foreach (var radio in radios.Where(radio => radio.Config.Detect.Method == MyForce.Contracts.Radio.DetectMethod.Vox))
+		{
+			var vox = radio.Config.Detect.Vox;
+			detectors[radio.Id.Value] = new VoxDetector(vox?.ThresholdDb ?? -45d, vox?.AttackMs ?? 20, vox?.HangMs ?? 250);
+		}
+
+		return detectors;
+	}
+
+	/// <summary>Asserts keying for a radio: relay built-in or in-process RM call (§3.6.3). Returns success.</summary>
+	private async Task<bool> KeyRadioAsync(RadioId radioId, CancellationToken cancellationToken)
+	{
+		var radio = _registry.Radios.First(radio => radio.Id == radioId);
+		if (radio.Config.Keying.Method == MyForce.Contracts.Radio.KeyingMethod.Relay)
+		{
+			var relaySetId = radio.Config.Keying.Relay?.RelaySet ?? $"auto-{radioId.Value}";
+			var channel = radio.Config.Keying.Relay?.Channel ?? 1;
+			return _relayKeying.Assert(relaySetId, channel);
+		}
+
+		if (_radioModuleHostManager.TryGetModule(radioId) is IKeyingProvider provider)
+		{
+			// In-process RM keying; talk-permit readiness (if any) is reported via RadioStateReport.Ready (§3.4).
+			await provider.KeyAsync(cancellationToken).ConfigureAwait(false);
+			return true;
+		}
+
+		AudioProcessorLog.Write("tx", $"Radio '{radioId.Value}' declares RM keying but no plugin keying provider is loaded; using a virtual key.");
+		return true;
+	}
+
+	/// <summary>Releases keying for a radio (relay deassert or RM UnkeyAsync, §3.6.3).</summary>
+	private async Task UnkeyRadioAsync(RadioId radioId, CancellationToken cancellationToken)
+	{
+		var radio = _registry.Radios.First(radio => radio.Id == radioId);
+		if (radio.Config.Keying.Method == MyForce.Contracts.Radio.KeyingMethod.Relay)
+		{
+			var relaySetId = radio.Config.Keying.Relay?.RelaySet ?? $"auto-{radioId.Value}";
+			var channel = radio.Config.Keying.Relay?.Channel ?? 1;
+			_relayKeying.Deassert(relaySetId, channel);
 			return;
 		}
 
-		var stopResult = _txController.EndManualTransmit(request.RadioId);
-		if (!stopResult.Stopped)
+		if (_radioModuleHostManager.TryGetModule(radioId) is IKeyingProvider provider)
 		{
-			AudioProcessorLog.Write("tx", $"Manual transmit release ignored for '{request.RadioId.Value}': {stopResult.Detail}");
+			await provider.UnkeyAsync(cancellationToken).ConfigureAwait(false);
+		}
+	}
+
+	/// <summary>Talk-permit readiness for trunked/digital radios (§3.4). Null = not reported by any RM yet.</summary>
+	private bool? TryGetTalkPermitReady(RadioId radioId) => null;
+
+	/// <summary>
+	/// Opens or closes a radio's operator-mic gate by republishing the routing snapshot to the RT
+	/// engine (§3.4 TX step / un-key step). Refuses to open onto an Unavailable TX port (§3.6.10).
+	/// </summary>
+	private void SetMicGate(RadioId radioId, bool open)
+	{
+		lock (_engineRoutingGate)
+		{
+			if (open)
+			{
+				if (_engineTopology.TryGetSinkIndex($"tx:{radioId.Value}", out var sinkIndex)
+					&& !_audioBackend.IsPortAvailable(AudioPortDirection.Playback, sinkIndex))
+				{
+					AudioProcessorLog.Write("tx", $"Mic gate not opened for '{radioId.Value}' because its TX device is Unavailable.");
+					return;
+				}
+
+				_openMicGates.Add(radioId.Value);
+			}
+			else
+			{
+				_openMicGates.Remove(radioId.Value);
+			}
+		}
+
+		_realtimeEngine.PublishRouting(BuildEngineRoutingSnapshot());
+	}
+
+	/// <summary>
+	/// Constructs the current routing snapshot: every radio RX monitored to the speaker at unity,
+	/// and the operator mic routed to the TX of each open-gated radio (§3.5). Bridge mix-minus is
+	/// Phase 2; this covers manual TX and RX monitoring.
+	/// </summary>
+	private EngineRoutingSnapshot BuildEngineRoutingSnapshot()
+	{
+		var builder = new EngineRoutingBuilder(_engineTopology);
+		foreach (var radioId in _registry.RadioIds)
+		{
+			builder.SetGain($"rx:{radioId.Value}", "spk", 1.0f);
+		}
+
+		string[] openGates;
+		lock (_engineRoutingGate)
+		{
+			openGates = _openMicGates.ToArray();
+		}
+
+		foreach (var radioValue in openGates)
+		{
+			builder.SetGain("mic", $"tx:{radioValue}", 1.0f);
+		}
+
+		return builder.Build();
+	}
+
+	/// <summary>Publishes a radio's retained module state (TX phase merged with VOX Call Detect, §5.8.5).</summary>
+	private async Task PublishRadioModuleStateAsync(RadioId radioId)
+	{
+		var radio = _registry.Radios.FirstOrDefault(radio => radio.Id == radioId);
+		if (radio is null)
+		{
 			return;
 		}
 
-		AudioProcessorLog.Write("tx", $"Manual transmit released for '{request.RadioId.Value}'.");
-		_routingState.ClearOperatorMicTarget(request.RadioId);
-		_mixerState.SetTransmitTarget(request.RadioId, false);
+		var rxActive = _callDetectByRadio.TryGetValue(radioId.Value, out var detected) && detected;
+		await _mqttRuntime.PublishAsync(
+			_topics.ModuleStateTopic(radioId),
+			AudioProcessorJson.Serialize(ModuleRadioStateSpecPayload.Create(radio, _txStateMachine.GetState(radioId), rxActive)),
+			retain: true,
+			cancellationToken: CancellationToken.None).ConfigureAwait(false);
+	}
 
-		if (_txController.ActiveManualTransmitRadioId is null)
+	/// <summary>
+	/// Writes a radio's accepted instance config into the System Config Store (§4.2). The full
+	/// declared topology is re-serialized so other radios' definitions are preserved; on the next
+	/// boot the store rehydrates this config as the truth.
+	/// </summary>
+	private void PersistRadioInstanceConfig(RadioRuntimeDefinition radio, JsonObject settings)
+	{
+		ArgumentNullException.ThrowIfNull(radio);
+		ArgumentNullException.ThrowIfNull(settings);
+
+		var definitions = LoadPersistedRadioDefinitionsForWrite();
+		var updated = new PersistedRadioDefinition(
+			radio.Id.Value,
+			radio.TypeId,
+			radio.DisplayName,
+			radio.Kind.ToString(),
+			settings.ToJsonString());
+
+		var existingIndex = definitions.FindIndex(definition => string.Equals(definition.RadioId, radio.Id.Value, StringComparison.OrdinalIgnoreCase));
+		if (existingIndex >= 0)
 		{
-			_mixerState.SetChannelActive(AudioChannelId.OperatorMic, false);
+			definitions[existingIndex] = updated;
+		}
+		else
+		{
+			definitions.Add(updated);
 		}
 
-		_audioMatrixEngine.UpdateSnapshots(_mixerState.CurrentSnapshot, _routingState.CurrentSnapshot);
+		_configStore.StoredConfig.RadioDefinitionsJson = JsonSerializer.Serialize(definitions, PersistedTopologySerializerOptions);
+	}
+
+	/// <summary>
+	/// Loads the persisted radio definitions for a write, seeding from the live registry the first
+	/// time so a single config edit does not drop the rest of the declared topology.
+	/// </summary>
+	private List<PersistedRadioDefinition> LoadPersistedRadioDefinitionsForWrite()
+	{
+		var json = _configStore.StoredConfig.RadioDefinitionsJson;
+		if (!string.IsNullOrWhiteSpace(json))
+		{
+			try
+			{
+				var stored = JsonSerializer.Deserialize<List<PersistedRadioDefinition>>(json, PersistedTopologySerializerOptions);
+				if (stored is { Count: > 0 })
+				{
+					return stored;
+				}
+			}
+			catch (JsonException)
+			{
+				AudioProcessorLog.Write("config", "Stored radio definitions were invalid JSON; reseeding from the live registry.");
+			}
+		}
+
+		return _registry.Radios
+			.Select(radio => new PersistedRadioDefinition(
+				radio.Id.Value,
+				radio.TypeId,
+				radio.DisplayName,
+				radio.Kind.ToString(),
+				radio.Config.Settings.ToJsonString()))
+			.ToList();
+	}
+
+	/// <summary>
+	/// Reacts to a backend hotplug edge (§3.6.10): a returning device re-activates its slot, a lost
+	/// device marks the radio Unavailable. The matrix slot itself is unchanged.
+	/// </summary>
+	private void OnBackendDeviceHotplug(object? sender, AudioDeviceHotplugEventArgs args)
+	{
+		const string radioPrefix = "radio-";
+		if (!args.DeviceId.StartsWith(radioPrefix, StringComparison.OrdinalIgnoreCase))
+		{
+			return;
+		}
+
+		var radioValue = args.DeviceId[radioPrefix.Length..];
+		var radio = _registry.Radios.FirstOrDefault(radio => string.Equals(radio.Id.Value, radioValue, StringComparison.OrdinalIgnoreCase));
+		if (radio is null)
+		{
+			return;
+		}
+
+		AudioProcessorLog.Write("engine", $"Radio '{radio.Id.Value}' device {(args.IsPresent ? "returned (Available)" : "lost (Unavailable)")}.");
+		_ = _mqttRuntime.PublishAsync(
+			_topics.ModuleStatusTopic(radio.Id),
+			AudioProcessorJson.Serialize(ModuleStatusSpecPayload.CreateForHealth(radio, args.IsPresent)),
+			retain: true,
+			cancellationToken: CancellationToken.None);
+	}
+
+	/// <summary>
+	/// Control-thread loop that turns each radio's engine RX level into a debounced Call Detect via
+	/// the VOX primitive (§3.6.8) and publishes rx_active when it changes. Runs off the RT path.
+	/// </summary>
+	private async Task RunVoxPollLoopAsync(CancellationToken cancellationToken)
+	{
+		try
+		{
+			while (!cancellationToken.IsCancellationRequested)
+			{
+				var nowMs = Environment.TickCount64;
+				foreach (var (radioValue, detector) in _voxDetectors)
+				{
+					if (!_rxSourceIndexByRadio.TryGetValue(radioValue, out var sourceIndex))
+					{
+						continue;
+					}
+
+					var level = _realtimeEngine.GetSourceLevel(sourceIndex);
+					var detected = detector.Update(level, nowMs);
+					var previous = _callDetectByRadio.TryGetValue(radioValue, out var prior) && prior;
+					if (detected != previous)
+					{
+						_callDetectByRadio[radioValue] = detected;
+						await PublishRadioModuleStateAsync(new RadioId(radioValue)).ConfigureAwait(false);
+					}
+				}
+
+				await Task.Delay(TimeSpan.FromMilliseconds(20), cancellationToken).ConfigureAwait(false);
+			}
+		}
+		catch (OperationCanceledException)
+		{
+		}
 	}
 
 	private ManualPttRequest? CreateManualPttRequest(string topic, ReadOnlySequence<byte> payload)
@@ -873,7 +1280,8 @@ internal sealed record RelaySetDefinition(
 			request.V.ToString(CultureInfo.InvariantCulture),
 			request.Ts,
 			request.MsgId,
-			request.Auth);
+			request.Auth,
+			request.Override ?? false);
 	}
 
 	private async Task PublishBirthSnapshotAsync(CancellationToken cancellationToken)
@@ -934,7 +1342,7 @@ internal sealed record RelaySetDefinition(
 					serviceId: "audio-processor",
 					radioCount: _registry.RadioIds.Count,
 					bridgeCount: _registry.Bridges.Count,
-					activeManualTransmitRadioId: _txController.ActiveManualTransmitRadioId?.Value)),
+					activeManualTransmitRadioId: _txStateMachine.ActiveManualTransmitRadioId?.Value)),
 			retain: true,
 			cancellationToken: cancellationToken).ConfigureAwait(false);
 	}
@@ -961,7 +1369,7 @@ internal sealed record RelaySetDefinition(
 	{
 		await _mqttRuntime.PublishAsync(
 			_topics.RadioRuntimeTopic,
-			AudioProcessorJson.Serialize(RadioRuntimePayload.Create(_registry, _txController)),
+			AudioProcessorJson.Serialize(RadioRuntimePayload.Create(_registry, _txStateMachine)),
 			retain: true,
 			cancellationToken: cancellationToken).ConfigureAwait(false);
 
@@ -987,7 +1395,7 @@ internal sealed record RelaySetDefinition(
 
 			await _mqttRuntime.PublishAsync(
 				_topics.ModuleStateTopic(radio.Id),
-				AudioProcessorJson.Serialize(ModuleRadioStateSpecPayload.Create(radio, _txController.GetState(radio.Id))),
+				AudioProcessorJson.Serialize(ModuleRadioStateSpecPayload.Create(radio, _txStateMachine.GetState(radio.Id), _callDetectByRadio.TryGetValue(radio.Id.Value, out var radioRxActive) && radioRxActive)),
 				retain: true,
 				cancellationToken: cancellationToken).ConfigureAwait(false);
 		}
@@ -1000,7 +1408,7 @@ internal sealed record RelaySetDefinition(
 	{
 		await _mqttRuntime.PublishAsync(
 			_topics.ConsoleTxTopic,
-			AudioProcessorJson.Serialize(ConsoleTxStatePayload.Create(_txController)),
+			AudioProcessorJson.Serialize(ConsoleTxStatePayload.Create(_txStateMachine)),
 			retain: true,
 			cancellationToken: cancellationToken).ConfigureAwait(false);
 	}
@@ -1099,8 +1507,10 @@ internal sealed class AudioProcessorRegistry
 	{
 		ArgumentNullException.ThrowIfNull(module);
 
+		// talk_permit defaults to false (§3.7.8): without an RM reporting Ready, TX uses a fixed
+		// lead. A radio that needs a talk-permit opts in via config once its RM reports readiness.
 		var config = new RadioModuleInstanceConfig(
-			new KeyingConfig(SelectPreferredKeying(module.Capabilities), null, 120, 60, true),
+			new KeyingConfig(SelectPreferredKeying(module.Capabilities), null, 120, 60, false),
 			new DetectConfig(SelectPreferredDetect(module.Capabilities), null),
 			new DeviceBindingConfig($"radio-{module.TypeId}"),
 			new JsonObject());
@@ -1158,7 +1568,7 @@ internal sealed class AudioProcessorRegistry
 
 		var settings = DeserializeSettings(definition.InstanceConfigJson);
 		return new RadioModuleInstanceConfig(
-			new KeyingConfig(SelectPreferredKeying(capabilities), null, 120, 60, true),
+			new KeyingConfig(SelectPreferredKeying(capabilities), null, 120, 60, false),
 			new DetectConfig(SelectPreferredDetect(capabilities), null),
 			new DeviceBindingConfig($"radio-{definition.RadioId}"),
 			settings);
@@ -1323,91 +1733,6 @@ internal sealed class AudioProcessorRoutingState
 	}
 }
 
-internal sealed class TxController
-{
-	private readonly Dictionary<string, RadioTxState> _radioStates;
-
-	public TxController(IEnumerable<RadioRuntimeDefinition> radios)
-	{
-		ArgumentNullException.ThrowIfNull(radios);
-		_radioStates = radios.ToDictionary(
-			static radio => radio.Id.Value,
-			static radio => RadioTxState.Create(radio),
-			StringComparer.OrdinalIgnoreCase);
-	}
-
-	public RadioId? ActiveManualTransmitRadioId { get; private set; }
-
-	/// <summary>
-	/// Starts the AP-side TX state sequence for a manual transmit request.
-	/// </summary>
-	public TxStartResult BeginManualTransmit(RadioId radioId)
-	{
-		ArgumentNullException.ThrowIfNull(radioId);
-
-		var state = GetMutableState(radioId);
-		if (ActiveManualTransmitRadioId is not null && ActiveManualTransmitRadioId != radioId)
-		{
-			return new TxStartResult(false, $"Radio '{ActiveManualTransmitRadioId.Value}' already holds manual transmit.");
-		}
-
-		state = state with
-		{
-			State = TxStatePhase.Transmitting,
-			IsKeyAsserted = true,
-			IsTalkPermitReady = !state.Config.Keying.TalkPermit,
-			LastTransitionUtc = DateTimeOffset.UtcNow
-		};
-		_radioStates[radioId.Value] = state;
-		ActiveManualTransmitRadioId = radioId;
-		return new TxStartResult(true, $"Lead {state.Config.Keying.PttLeadMs} ms, tail {state.Config.Keying.PttTailMs} ms.");
-	}
-
-	/// <summary>
-	/// Ends the AP-side TX state sequence for a manual transmit release.
-	/// </summary>
-	public TxStopResult EndManualTransmit(RadioId radioId)
-	{
-		ArgumentNullException.ThrowIfNull(radioId);
-
-		var state = GetMutableState(radioId);
-		if (ActiveManualTransmitRadioId != radioId)
-		{
-			return new TxStopResult(false, "Radio is not the active manual transmit target.");
-		}
-
-		state = state with
-		{
-			State = TxStatePhase.Idle,
-			IsKeyAsserted = false,
-			IsTalkPermitReady = false,
-			LastTransitionUtc = DateTimeOffset.UtcNow
-		};
-		_radioStates[radioId.Value] = state;
-		ActiveManualTransmitRadioId = null;
-		return new TxStopResult(true, $"Tail {state.Config.Keying.PttTailMs} ms complete.");
-	}
-
-	/// <summary>
-	/// Gets the current AP TX state for a known radio.
-	/// </summary>
-	public RadioTxState GetState(RadioId radioId)
-	{
-		ArgumentNullException.ThrowIfNull(radioId);
-		return GetMutableState(radioId);
-	}
-
-	private RadioTxState GetMutableState(RadioId radioId)
-	{
-		if (_radioStates.TryGetValue(radioId.Value, out var state))
-		{
-			return state;
-		}
-
-		throw new InvalidOperationException($"Unknown radio id '{radioId.Value}'.");
-	}
-}
-
 internal enum TxStatePhase
 {
 	Idle,
@@ -1440,10 +1765,6 @@ internal sealed record RadioTxState(
 			DateTimeOffset.UtcNow);
 	}
 }
-
-internal sealed record TxStartResult(bool Started, string Detail);
-
-internal sealed record TxStopResult(bool Stopped, string Detail);
 
 internal sealed class AudioProcessorTopicFactory
 {
@@ -2120,7 +2441,17 @@ internal sealed record SinkEndpoint(string Kind, string? RadioId = null)
 	}
 }
 
-internal sealed record ManualPttRequest(RadioId RadioId, bool IsPressed, string? Origin, string? V, DateTimeOffset? Ts, string? MsgId, string? Auth);
+internal sealed record ManualPttRequest(RadioId RadioId, bool IsPressed, string? Origin, string? V, DateTimeOffset? Ts, string? MsgId, string? Auth, bool IsOverride = false);
+
+/// <summary>
+/// Output of <see cref="AudioProcessorCoordinator.BuildEngineSetup"/>: the fixed engine topology
+/// plus the ordered backend device id lists and the RX source index per radio for VOX (§3.6.8).
+/// </summary>
+internal sealed record EngineSetupResult(
+	EngineTopology Topology,
+	IReadOnlyList<string> CaptureDeviceIds,
+	IReadOnlyList<string> PlaybackDeviceIds,
+	Dictionary<string, int> RxSourceIndexByRadio);
 
 internal sealed class ConsolePttRequest
 {
@@ -2311,6 +2642,22 @@ internal sealed record ModuleStatusSpecPayload(int V, DateTimeOffset Ts, string 
 		ArgumentNullException.ThrowIfNull(radio);
 		return new ModuleStatusSpecPayload(1, DateTimeOffset.UtcNow, radio.Id.Value, true, "available", null);
 	}
+
+	/// <summary>
+	/// Device-health status (§3.6.10): the AP process stays online, but a radio whose bound device
+	/// is absent reports Unavailable with a device_absent reason (§5.8.4).
+	/// </summary>
+	public static ModuleStatusSpecPayload CreateForHealth(RadioRuntimeDefinition radio, bool isPresent)
+	{
+		ArgumentNullException.ThrowIfNull(radio);
+		return new ModuleStatusSpecPayload(
+			1,
+			DateTimeOffset.UtcNow,
+			radio.Id.Value,
+			Online: true,
+			Health: isPresent ? "available" : "unavailable",
+			Reason: isPresent ? null : "device_absent");
+	}
 }
 
 internal sealed record RadioRegistryPayload(
@@ -2324,7 +2671,7 @@ internal sealed record RadioRegistryPayload(
 
 internal sealed record RadioRuntimePayload(IReadOnlyList<RadioRuntimeStatePayload> Radios)
 {
-	public static RadioRuntimePayload Create(AudioProcessorRegistry registry, TxController txController)
+	public static RadioRuntimePayload Create(AudioProcessorRegistry registry, TxStateMachine txController)
 	{
 		ArgumentNullException.ThrowIfNull(registry);
 		ArgumentNullException.ThrowIfNull(txController);
@@ -2561,7 +2908,15 @@ internal static class AudioProcessorJson
 	private static readonly JsonSerializerOptions SerializerOptions = new()
 	{
 		PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-		WriteIndented = false
+		WriteIndented = false,
+		// Capability enums must serialize as lowercase strings so the UI reads keying/detect as
+		// ["relay","rm"] / ["vox","rm"] per §3.7.4, not as numeric values. Scoped to these two
+		// enums so other enums (e.g. service state) keep their existing numeric wire form.
+		Converters =
+		{
+			new JsonStringEnumConverter<MyForce.Contracts.Radio.KeyingMethod>(JsonNamingPolicy.CamelCase),
+			new JsonStringEnumConverter<MyForce.Contracts.Radio.DetectMethod>(JsonNamingPolicy.CamelCase)
+		}
 	};
 
 	public static string Serialize<T>(T value)

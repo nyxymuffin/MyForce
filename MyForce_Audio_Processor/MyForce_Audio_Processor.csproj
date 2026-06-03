@@ -11,6 +11,8 @@
     <PackageReference Include="Config.Net" Version="5.2.1" />
     <PackageReference Include="NAudio" Version="2.3.0" />
     <PackageReference Include="MQTTnet" Version="5.1.0.1559" />
+    <!-- System.IO.Ports: cross-platform serial for AP-owned relay keying (§3.6.3). -->
+    <PackageReference Include="System.IO.Ports" Version="10.0.0" />
   </ItemGroup>
 
   <ItemGroup>

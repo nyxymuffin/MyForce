@@ -53,15 +53,25 @@ public interface IRadioModuleFactory
 /// </summary>
 public interface IRadioModule : IAsyncDisposable
 {
-	Task<OperationResult> ApplyConfigAsync(JsonObject configuration, CancellationToken cancellationToken);
+	/// <summary>
+	/// Validate the RM-owned "settings" section against ConfigSchema and apply it (§3.7.7).
+	/// Only the settings subset is passed; keying/detect/device are AP-owned (§3.7.8). Idempotent;
+	/// disruptive changes may defer until idle (§3.6.9).
+	/// </summary>
+	Task<OperationResult> ApplyConfigAsync(JsonElement settings, CancellationToken cancellationToken);
 
-	JsonObject GetConfig();
+	/// <summary>Return the current applied settings.</summary>
+	JsonNode GetConfig();
 
 	Task StartAsync(CancellationToken cancellationToken);
 
-	Task<OperationResult> ExecuteControlAsync(string action, JsonObject? args, CancellationToken cancellationToken);
-
 	Task StopAsync(CancellationToken cancellationToken);
+
+	/// <summary>
+	/// Invoke an idiosyncratic control declared in Capabilities (e.g. "channel_select"); args follow
+	/// the control's ArgsSchema (§3.7.7).
+	/// </summary>
+	Task<OperationResult> ExecuteControlAsync(string action, JsonElement args, CancellationToken cancellationToken);
 }
 
 /// <summary>
@@ -71,13 +81,17 @@ public interface IModuleHost
 {
 	IControlTransport? ControlTransport { get; }
 
+	/// <summary>Current engine RX level (0..1) for this radio; only for an RM with custom detection (§3.7.3).</summary>
 	float GetRxLevel();
 
-	Task ReportStateAsync(RadioStateReport state, CancellationToken cancellationToken);
+	/// <summary>Push state the RM knows; the AP merges rx/tx and publishes §5.8.5 (§3.7.3).</summary>
+	void ReportState(RadioStateReport state);
 
-	Task ReportDetectAsync(bool isDetected, CancellationToken cancellationToken);
+	/// <summary>Push Call Detect when the radio's detect method is "rm"; ignored otherwise (§3.6.8).</summary>
+	void ReportDetect(bool rxActive);
 
-	Task EmitEventAsync(string name, JsonObject? data, CancellationToken cancellationToken);
+	/// <summary>Transient advisory event, surfaced on MQTT evt/* (§5.2).</summary>
+	void EmitEvent(string name, JsonNode? data = null);
 
 	void Log(LogLevel level, string message);
 }
@@ -97,7 +111,11 @@ public interface IControlTransport
 /// </summary>
 public interface IKeyingProvider
 {
-	Task<KeyingResult> KeyAsync(bool isPressed, CancellationToken cancellationToken);
+	/// <summary>Assert PTT in-process; the AP TX Controller waits ptt_lead_ms then opens the gate (§3.4, §3.6.3).</summary>
+	Task KeyAsync(CancellationToken cancellationToken);
+
+	/// <summary>De-assert PTT after the tail (§3.4).</summary>
+	Task UnkeyAsync(CancellationToken cancellationToken);
 }
 
 /// <summary>
@@ -105,18 +123,27 @@ public interface IKeyingProvider
 /// </summary>
 public interface IAudioProvider
 {
-	IAudioExchange AudioExchange { get; }
+	/// <summary>The AP hands the module the in-process audio exchange around StartAsync (§3.6.2.2).</summary>
+	void BindAudio(IAudioExchange exchange);
 }
 
 /// <summary>
-/// Provides PCM exchange methods between an ARM and the AP audio engine.
+/// In-process PCM exchange between an ARM (its own thread) and the engine, via lock-free ring
+/// buffers at the engine format. Not called on the RT thread (§3.6.2.2).
 /// </summary>
 public interface IAudioExchange
 {
-	void WriteRxPcm(ReadOnlyMemory<float> samples);
+	AudioFormat Format { get; }
 
-	int ReadTxPcm(Memory<float> samples);
+	/// <summary>Write received-from-radio PCM into the matrix (RX).</summary>
+	void WriteRx(ReadOnlySpan<float> frame);
+
+	/// <summary>Read operator/matrix PCM destined for the radio (TX); returns samples available, 0 when not keyed.</summary>
+	int ReadTx(Span<float> frame);
 }
+
+/// <summary>Engine audio format an ARM exchanges PCM at (§3.6.2.2).</summary>
+public readonly record struct AudioFormat(int SampleRateHz, int FrameSamples, int Channels);
 
 /// <summary>
 /// Captures the static capabilities a radio module advertises.
@@ -192,11 +219,6 @@ public sealed record ZoneInfo(int Index, string? Label);
 /// Describes signal metadata reported by a radio module.
 /// </summary>
 public sealed record SignalInfo(int? RssiDbm);
-
-/// <summary>
-/// Describes the result of a keying operation initiated by the TX Controller.
-/// </summary>
-public sealed record KeyingResult(bool Ready, string? Detail = null);
 
 /// <summary>
 /// Describes the result of a config or control operation.
