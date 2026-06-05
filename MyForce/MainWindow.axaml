@@ -307,42 +307,32 @@
                 <Border Grid.Row="3" Classes="panel" Width="304" Height="100" Padding="12,10">
                     <Grid Width="278"
                           Height="78"
-                          RowDefinitions="24,18,18,18"
+                          RowDefinitions="26,26,26"
                           RowSpacing="0"
                           VerticalAlignment="Center">
-                        <!-- Selected Radio Extra Info 1 -->
+                        <!-- Radio id received on the current channel -->
                         <TextBlock Classes="white"
                                    Width="278"
-                                   Height="24"
+                                   Height="26"
                                    FontSize="13"
                                    TextAlignment="Center"
-                                   Text="{Binding CurSelChExt1}" />
-                        <!-- Selected Radio Extra Info 2 -->
+                                   Text="{Binding RxRidDisplay}" />
+                        <!-- Physical hand grip controller (HCD) mode -->
                         <TextBlock Grid.Row="1"
                                    Classes="white"
                                    Width="278"
-                                   Height="18"
-                                   FontSize="12"
+                                   Height="26"
+                                   FontSize="13"
                                    TextAlignment="Center"
-                                   Text="{Binding CurSelChExt2}" />
-                        <!-- Selected Radio Extra Info 3 -->
+                                   Text="{Binding HandGripModeDisplay}" />
+                        <!-- Active soft-key set (follows the hand grip mode) -->
                         <TextBlock Grid.Row="2"
-                                   Width="278"
-                                   Height="18"
-                                   Foreground="{StaticResource SignalBrush}"
-                                   FontFamily="Segoe UI"
-                                   FontWeight="Bold"
-                                   FontSize="12"
-                                   TextAlignment="Center"
-                                   Text="{Binding CurSelChExt3}" />
-                        <!-- Selected Radio Extra Info 4 -->
-                        <TextBlock Grid.Row="3"
                                    Classes="white"
                                    Width="278"
-                                   Height="18"
-                                   FontSize="11"
+                                   Height="26"
+                                   FontSize="13"
                                    TextAlignment="Center"
-                                   Text="{Binding CurSelChExt4}" />
+                                   Text="{Binding SoftKeysDisplay}" />
                     </Grid>
                 </Border>
 

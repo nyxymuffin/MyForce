@@ -500,6 +500,46 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 
 	public string CurSelChExt4 { get => _CurSelChExt4; set => SetProperty(ref _CurSelChExt4, value); }
 
+	// Hand grip controller (HCD) + soft-key scaffolding. The physical hand grip selects a mode
+	// (Lights / Radio / Patrol) which contextualizes the soft keys; the RX RID is the radio id
+	// received on the current channel. Sources are wired as the HCD and radio RID land.
+	private string? _rxRid;
+
+	private HandGripMode _handGripMode = HandGripMode.Patrol;
+
+	/// <summary>The radio id received on the currently selected channel (who is transmitting).</summary>
+	public string? RxRid
+	{
+		get => _rxRid;
+		set
+		{
+			if (SetProperty(ref _rxRid, value))
+			{
+				OnPropertyChanged(nameof(RxRidDisplay));
+			}
+		}
+	}
+
+	/// <summary>The physical hand grip controller's current mode; drives the active soft-key set.</summary>
+	public HandGripMode HandGripMode
+	{
+		get => _handGripMode;
+		set
+		{
+			if (SetProperty(ref _handGripMode, value))
+			{
+				OnPropertyChanged(nameof(HandGripModeDisplay));
+				OnPropertyChanged(nameof(SoftKeysDisplay));
+			}
+		}
+	}
+
+	public string RxRidDisplay => $"RX RID: {(string.IsNullOrWhiteSpace(_rxRid) ? "---" : _rxRid)}";
+
+	public string HandGripModeDisplay => $"Hand Grip Mode: {_handGripMode}";
+
+	public string SoftKeysDisplay => $"Soft Keys: {_handGripMode}";
+
 	public string MqttStatus
 	{
 		get => _mqttStatus;
@@ -2967,4 +3007,18 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 		PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
 		return true;
 	}
+
+	private void OnPropertyChanged(string propertyName)
+		=> PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
+}
+
+/// <summary>
+/// The physical hand grip controller (HCD) mode, which contextualizes the on-screen soft keys.
+/// Scaffolding for hand-grip and custom soft-key support.
+/// </summary>
+public enum HandGripMode
+{
+	Lights,
+	Radio,
+	Patrol
 }

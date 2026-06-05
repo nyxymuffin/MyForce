@@ -3,7 +3,7 @@ Diagram_Title ""
 Notes1 
 Notes2 
 Page_Settings_Table Width Height Orientation Pos_X Pos_Y Draw_Scale Fine_Scale Created_By Create_Date Updated_By Update_Date Adjust_X Adjust_Y Page_Locked Default_Zoom
- page_settings 2999 2000 landscape -2 93 0.5 2 Auto Auto admin 6/1/2026 0 0 Unlocked 100
+ page_settings 2999 2000 landscape -2 93 0.5 2 Auto Auto admin 6/3/2026 0 0 Unlocked 100
 Colours_Table Bkgnd Link_Text Grid Float_Foregnd Float_Backgnd
  colours &hFFFFFF& &hFF0000& &hFEEDED& &h0& &hC0FFFF&
 Text_Styles_Table Font Size Bold Italic UL ST FColour BColour F_Transpcy B_Transpcy BorderWidth BorderColour BorderTspcy
@@ -46,6 +46,8 @@ Obj_Table Index Type X Y Caption_Lbl Float_text Hyperlink Parent Addr_Lbl X_scal
  object 30 "video camera_2.wmf" 1376 1292 57 ! ! 0 58 2 2 2 0 0 0 false 85 123 false 0 ! !
  object 31 "Terminal Server2" 746 1116 61 ! ! 0 62 1 1 2 0 0 0 false 78 47 false 0 ! !
  object 32 "radio tower.wmf" 550 1172 59 ! ! 0 60 2 2 2 0 0 0 false 48 129 false 0 ! !
+ object 33 Satellite 2092 422 63 ! ! 0 64 1 1 2 0 0 0 false 180 74 false 0 ! !
+ object 34 "Satellite Dish" 2038 694 65 ! ! 0 66 1 1 2 0 0 0 false 107 72 false 0 ! !
 Label_Table Index X Y Text Font_Name Size Bold Italic UL ST Colour Parent_Object Type Backgnd Locked Rotate Ftranspcy Btranspcy Layer Style Parent_Link Link_pos Link_Seg F_Slope NCB BorderWidth BorderColour BorderTspcy Xoffset Yoffset
  label 1 s 68.5 "MQTT Broker" ! ! ! ! false ! &h0& 1 object ! ! 0 255 0 0 ! 0 0 0 false 0 0 0 255
  label 2 n -55 ! ! ! ! ! false ! &h0& 1 ip ! ! 0 255 0 0 ! 0 0 0 false 8 0 0 255
@@ -109,6 +111,10 @@ Label_Table Index X Y Text Font_Name Size Bold Italic UL ST Colour Parent_Object
  label 60 n -64.5 ! ! ! ! ! false ! &h0& 32 ip ! ! 0 255 0 0 ! 0 0 0 false 8 0 0 255
  label 61 s 37 "SoundCard + USB" ! ! ! ! false ! &h0& 31 object ! ! 0 255 0 0 ! 0 0 0 false 0 0 0 255
  label 62 n -23.5 ! ! ! ! ! false ! &h0& 31 ip ! ! 0 255 0 0 ! 0 0 0 false 8 0 0 255
+ label 63 s 50.5 "RS232 GPS Module" ! ! ! ! false ! &h0& 33 object ! ! 0 255 0 0 ! 0 0 0 false 0 0 0 255
+ label 64 n -37 ! ! ! ! ! false ! &h0& 33 ip ! ! 0 255 0 0 ! 0 0 0 false 8 0 0 255
+ label 65 s 49.5 "Location Broker" ! ! ! ! false ! &h0& 34 object ! ! 0 255 0 0 ! 0 0 0 false 0 0 0 255
+ label 66 n -36 ! ! ! ! ! false ! &h0& 34 ip ! ! 0 255 0 0 ! 0 0 0 false 8 0 0 255
 Link_Table Index Obj1 Obj2 Style Hostname1_Lbl Hostname2_Lbl Addr1_Lbl Addr2_Lbl Comment1 Comment2 Xoffset1 Yoffset1 Xoffset2 Yoffset2 Node_List Align Layer
  link_object 1 15 2 "SM Fibre" 0 0 0 0 ! ! 0 -12 -4 -4 ! False 3 -1
  link_object 2 2 14 "SM Fibre" 0 0 0 0 ! ! -4 -4 12 -4 ! False 3 -1
@@ -140,6 +146,8 @@ Link_Table Index Obj1 Obj2 Style Hostname1_Lbl Hostname2_Lbl Addr1_Lbl Addr2_Lbl
  link_object 28 30 21 "Leased Line" 0 0 0 0 ! ! -2 -14 4 -8 ! False 3 -1
  link_object 29 31 32 1000BaseT 0 0 0 0 ! ! -28 2 4 12 ! False 3 -1
  link_object 30 31 2 "SM Fibre" 0 0 0 0 ! ! 4 -2 -6 18 ! False 3 -1
+ link_object 31 1 34 "MM Fibre" 0 0 0 0 ! ! 6 -20 -6 -4 ! False 3 -1
+ link_object 32 34 33 1000BaseT 0 0 0 0 ! ! 10 -2 10 -34 ! False 3 -1
 Link_Styles_table Type Format Colour Style Width Misc Angle Style2 Length Endcap Join Startcap Dashcap Transpcy Align Secondary_Style start_cap_type variant width height x y end_cap_type variant width height x y
  define_link 100baseT 0 &h808080& 1 1 9 0 0 0 0 0 0 0 255 False ! 0 0 0 0 0 0 0 0 0 0 0 0 0
  define_link 1000BaseT 0 &h9797FF& 1 1 9 0 0 0 0 0 0 0 255 False ! 0 0 0 0 0 0 0 0 0 0 0 0 0
