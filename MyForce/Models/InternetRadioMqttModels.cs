@@ -73,6 +73,15 @@ internal static class InternetRadioMqttTopics
 
 	// The UI republishes a soft-key activation (from touch or the HCD) so downstream mappings can react.
 	public const string SoftKeyCommandTopic = "myforce/console/vip/cmd/softkey";
+
+	// Siren Interface Controller command topics (§5.2 per-module cmd/<action>). The
+	// controller's instance id is "siren1"; the firmware subscribes to cmd/# and
+	// dispatches by the trailing action. "directional" drives the L/Center/R arrow
+	// relays (center energises both relays), "code" drives the interlocked Code1/2/3
+	// group (§ siren wiring spec).
+	public const string SirenDirectionalCommandTopic = "myforce/module/siren1/cmd/directional";
+
+	public const string SirenCodeCommandTopic = "myforce/module/siren1/cmd/code";
 }
 
 /// <summary>HCD-published hand grip mode (lights / radio / patrol).</summary>
@@ -89,6 +98,32 @@ internal sealed record SoftKeyCommandMessage(
 	string? Auth,
 	int Index,
 	string Mode);
+
+/// <summary>
+/// UI-published directional command for the Siren Interface Controller
+/// (myforce/module/siren1/cmd/directional, §5.2). Direction is one of
+/// off | left | center | right; "center" energises both directional relays at once.
+/// MsgId carries the explicit snake_case name (msg_id) the ESP32 firmware reads (§5.8.1).
+/// </summary>
+internal sealed record SirenDirectionalCommandMessage(
+	int V,
+	DateTimeOffset Ts,
+	[property: JsonPropertyName("msg_id")] string? MsgId,
+	string? Auth,
+	[property: JsonPropertyName("direction")] string Direction);
+
+/// <summary>
+/// UI-published siren-code command for the Siren Interface Controller
+/// (myforce/module/siren1/cmd/code, §5.2). Code is one of off | code1 | code2 | code3,
+/// the mutually-exclusive interlocked code group. MsgId carries the snake_case name
+/// (msg_id) the ESP32 firmware reads (§5.8.1).
+/// </summary>
+internal sealed record SirenCodeCommandMessage(
+	int V,
+	DateTimeOffset Ts,
+	[property: JsonPropertyName("msg_id")] string? MsgId,
+	string? Auth,
+	[property: JsonPropertyName("code")] string Code);
 
 /// <summary>
 /// Represents a UI request for the AP to start internet radio playback.

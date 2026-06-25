@@ -75,34 +75,59 @@ static const RelayBackend RELAY_BACKEND = RELAY_BACKEND_XL9535;  // siren ships 
 
 // ---------------------------------------------------------------------------
 // Siren relay channels & functions (§4.5). Channel index is the array position
-// + 1 (1-based on the bus). The array length defines RELAY_COUNT and bounds the
-// XL9535 channels used (channel N drives expander bit N-1; board exposes 16).
+// + 1 (1-based on the bus), matching the physical wiring spec:
 //
-// Tone functions (wail/yelp/hilo) are MUTUALLY EXCLUSIVE: they share one siren
-// amplifier, so energising one tone de-energises the others (the "siren mode"
-// group, §11.5 Siren flow). air_horn is momentary. The remaining lighting
-// outputs are independent toggles.
+//   Relay  1 -> DirectionalLeft  (also half of CenterOut)
+//   Relay  2 -> DirectionalRight (also half of CenterOut)
+//   Relay  3 -> Code1            }
+//   Relay  4 -> Code2            } mutually-exclusive siren-code group
+//   Relay  5 -> Code3            }
+//   Relay  6 -> Airhorn          (momentary)
+//   Relay  7 -> AlleyLeft        (toggle)
+//   Relay  8 -> AlleyRight       (toggle)
+//   Relay  9 -> Takedown         (toggle)
+//   Relay 10 -> PA               (toggle)
+//   Relay 11 -> Cruise           (toggle)
+//
+// The DIRECTIONAL "centre" position is NOT its own relay: it is the Left and
+// Right relays energised together (see applyDirectional()). The Code1/2/3 lines
+// share one siren amplifier, so energising one code de-energises the others
+// (interlock, see applyCodeMode()). The array length defines RELAY_COUNT and
+// bounds the XL9535 channels used (channel N drives expander bit N-1; board
+// exposes 16).
 // ---------------------------------------------------------------------------
 static const char* g_relayFunctions[] = {
-  "wail",       // tone  (interlocked)  - channel 1
-  "yelp",       // tone  (interlocked)  - channel 2
-  "hilo",       // tone  (interlocked)  - channel 3  (hi-lo / phaser)
-  "air_horn",   // momentary horn       - channel 4
-  "lightbar",   // toggle               - channel 5
-  "takedown",   // toggle               - channel 6
-  "flood",      // toggle               - channel 7
-  "aux"         // toggle               - channel 8
+  "directional_left",    // 1  - DirectionalLeft  / CenterOut half
+  "directional_right",   // 2  - DirectionalRight / CenterOut half
+  "code1",               // 3  - Code1  (interlocked)
+  "code2",               // 4  - Code2  (interlocked)
+  "code3",               // 5  - Code3  (interlocked)
+  "airhorn",             // 6  - Airhorn (momentary)
+  "alley_left",          // 7  - AlleyLeft
+  "alley_right",         // 8  - AlleyRight
+  "takedown",            // 9  - Takedown
+  "pa",                  // 10 - PA
+  "cruise"               // 11 - Cruise
 };
 static const uint8_t RELAY_COUNT = sizeof(g_relayFunctions) / sizeof(g_relayFunctions[0]);
 
-// Relay channel pins, parallel to g_relayFunctions; ONLY used by the GPIO backend
-// (ignored for the XL9535 board). Avoid strapping/boot pins (0, 2, 12, 15).
-static const uint8_t g_relayPins[] = { 13, 14, 27, 16, 17, 4, 5, 25 };
+// Relay channel pins, used ONLY by the GPIO bench-test backend (ignored for the
+// XL9535 board). This list may be SHORTER than RELAY_COUNT: the ESP32 + W5500
+// cannot spare 11 safe GPIOs, so the GPIO backend only drives the channels for
+// which a pin exists here; the XL9535 board is required for the full mapping.
+// Avoid strapping/boot pins (0, 2, 12, 15) and the W5500 SPI pins.
+static const uint8_t g_relayPins[]   = { 13, 14, 27, 16, 17, 4, 5, 25 };
+static const uint8_t RELAY_PIN_COUNT = sizeof(g_relayPins) / sizeof(g_relayPins[0]);
 
-// The mutually-exclusive tone functions. Selecting one tone clears the others so
-// the single siren amplifier is never driven by two tone lines at once.
-static const char* g_toneFunctions[] = { "wail", "yelp", "hilo" };
-static const uint8_t TONE_COUNT = sizeof(g_toneFunctions) / sizeof(g_toneFunctions[0]);
+// The mutually-exclusive siren-code functions. Selecting one code clears the
+// others so the single siren amplifier is never driven by two code lines at once.
+static const char* g_codeFunctions[] = { "code1", "code2", "code3" };
+static const uint8_t CODE_COUNT = sizeof(g_codeFunctions) / sizeof(g_codeFunctions[0]);
+
+// The two directional relays whose combination encodes the directional position:
+// left only, right only, or both (= centre-out). Resolved once at boot.
+static const char* DIRECTIONAL_LEFT_FUNCTION  = "directional_left";
+static const char* DIRECTIONAL_RIGHT_FUNCTION = "directional_right";
 
 // ---------------------------------------------------------------------------
 // Digital inputs (read with internal pull-ups where the pin supports them).
@@ -119,7 +144,7 @@ static const uint8_t INPUT_COUNT = sizeof(g_inputPins) / sizeof(g_inputPins[0]);
 // horn ring a report-only input handled entirely in the UI/AP.
 static const bool   HORN_RING_LOCAL_DRIVE = true;
 static const uint8_t HORN_RING_INPUT_INDEX = 0;       // index into g_inputPins/g_inputFunctions
-static const char*   HORN_RING_RELAY_FUNCTION = "air_horn";
+static const char*   HORN_RING_RELAY_FUNCTION = "airhorn";
 
 // ---------------------------------------------------------------------------
 // XL9535-K16V5 16-channel I2C relay board (only used by RELAY_BACKEND_XL9535).
@@ -230,8 +255,9 @@ void setRelay(uint8_t channel, bool energised) {
     if (energised) { g_xlOutputShadow |= mask; }
     else           { g_xlOutputShadow &= ~mask; }
     xlPushOutputs();
-  } else {
-    // Direct GPIO drive, honouring the opto board's active-high/low wiring.
+  } else if (idx < RELAY_PIN_COUNT) {
+    // Direct GPIO drive, honouring the opto board's active-high/low wiring. Only
+    // channels that have a pin in g_relayPins are physically driven in this mode.
     bool level = (RELAY_LOGIC == RELAY_ACTIVE_LOW) ? !energised : energised;
     digitalWrite(g_relayPins[idx], level ? HIGH : LOW);
   }
@@ -249,58 +275,90 @@ uint8_t channelForFunction(const char* function) {
   return 0;
 }
 
-// True if the given 1-based channel is one of the mutually-exclusive tone lines.
-bool isToneChannel(uint8_t channel) {
+// True if the given 1-based channel is one of the mutually-exclusive code lines.
+bool isCodeChannel(uint8_t channel) {
   if (channel < 1 || channel > RELAY_COUNT) {
     return false;
   }
   const char* fn = g_relayFunctions[channel - 1];
-  for (uint8_t i = 0; i < TONE_COUNT; i++) {
-    if (strcmp(fn, g_toneFunctions[i]) == 0) {
+  for (uint8_t i = 0; i < CODE_COUNT; i++) {
+    if (strcmp(fn, g_codeFunctions[i]) == 0) {
       return true;
     }
   }
   return false;
 }
 
-// De-energise every tone channel except the one given (0 = clear all tones).
-// Implements the single-amplifier interlock so two tones never sound together.
-void clearOtherTones(uint8_t keepChannel) {
-  for (uint8_t i = 0; i < TONE_COUNT; i++) {
-    uint8_t ch = channelForFunction(g_toneFunctions[i]);
+// De-energise every code channel except the one given (0 = clear all codes).
+// Implements the single-amplifier interlock so two codes never sound together.
+void clearOtherCodes(uint8_t keepChannel) {
+  for (uint8_t i = 0; i < CODE_COUNT; i++) {
+    uint8_t ch = channelForFunction(g_codeFunctions[i]);
     if (ch != 0 && ch != keepChannel) {
-      g_pulseExpiry[ch - 1] = 0;    // selecting a tone cancels any pulse on the others
+      g_pulseExpiry[ch - 1] = 0;    // selecting a code cancels any pulse on the others
       setRelay(ch, false);
     }
   }
 }
 
-// Return the name of the currently active tone, or "off" if none is energised.
-const char* activeToneName() {
-  for (uint8_t i = 0; i < TONE_COUNT; i++) {
-    uint8_t ch = channelForFunction(g_toneFunctions[i]);
+// Return the name of the currently active code, or "off" if none is energised.
+const char* activeCodeName() {
+  for (uint8_t i = 0; i < CODE_COUNT; i++) {
+    uint8_t ch = channelForFunction(g_codeFunctions[i]);
     if (ch != 0 && g_relayState[ch - 1]) {
-      return g_toneFunctions[i];
+      return g_codeFunctions[i];
     }
   }
   return "off";
 }
 
-// Apply a siren tone mode (§11.5). "off"/"none" silences all tones; any tone
-// function name selects that tone and interlocks the others off. Returns false
-// if the mode is not a known tone (or "off").
-bool applyToneMode(const char* mode) {
-  if (strcmp(mode, "off") == 0 || strcmp(mode, "none") == 0) {
-    clearOtherTones(0);   // clear every tone
+// Apply a siren code (§11.5). "off"/"none" silences all codes; "code1".."code3"
+// selects that code and interlocks the others off. Returns false if the value
+// is not a known code (or "off").
+bool applyCodeMode(const char* code) {
+  if (strcmp(code, "off") == 0 || strcmp(code, "none") == 0) {
+    clearOtherCodes(0);   // clear every code
     return true;
   }
-  uint8_t ch = channelForFunction(mode);
-  if (ch == 0 || !isToneChannel(ch)) {
-    return false;         // not a tone function
+  uint8_t ch = channelForFunction(code);
+  if (ch == 0 || !isCodeChannel(ch)) {
+    return false;         // not a code function
   }
-  clearOtherTones(ch);    // interlock the others off first
+  clearOtherCodes(ch);    // interlock the others off first
   g_pulseExpiry[ch - 1] = 0;
-  setRelay(ch, true);     // then energise the requested tone
+  setRelay(ch, true);     // then energise the requested code
+  return true;
+}
+
+// Report the directional position from the two directional relays: "left" =
+// left only, "right" = right only, "center" = BOTH energised together, "off" =
+// neither (per the wiring spec: centre-out drives Left and Right at once).
+const char* activeDirectionalName() {
+  uint8_t leftCh  = channelForFunction(DIRECTIONAL_LEFT_FUNCTION);
+  uint8_t rightCh = channelForFunction(DIRECTIONAL_RIGHT_FUNCTION);
+  bool left  = (leftCh  != 0) && g_relayState[leftCh  - 1];
+  bool right = (rightCh != 0) && g_relayState[rightCh - 1];
+  if (left && right) { return "center"; }
+  if (left)          { return "left";   }
+  if (right)         { return "right";  }
+  return "off";
+}
+
+// Apply a directional position (§ wiring spec). "left"/"right" drive a single
+// relay; "center"/"centre" drive BOTH directional relays together; "off"/"none"
+// release both. Returns false for an unknown direction.
+bool applyDirectional(const char* dir) {
+  bool left, right;
+  if (strcmp(dir, "left") == 0)                                      { left = true;  right = false; }
+  else if (strcmp(dir, "right") == 0)                                { left = false; right = true;  }
+  else if (strcmp(dir, "center") == 0 || strcmp(dir, "centre") == 0) { left = true;  right = true;  }
+  else if (strcmp(dir, "off") == 0 || strcmp(dir, "none") == 0)      { left = false; right = false; }
+  else { return false; }
+
+  uint8_t leftCh  = channelForFunction(DIRECTIONAL_LEFT_FUNCTION);
+  uint8_t rightCh = channelForFunction(DIRECTIONAL_RIGHT_FUNCTION);
+  if (leftCh  != 0) { g_pulseExpiry[leftCh  - 1] = 0; setRelay(leftCh,  left);  }
+  if (rightCh != 0) { g_pulseExpiry[rightCh - 1] = 0; setRelay(rightCh, right); }
   return true;
 }
 
@@ -368,33 +426,41 @@ void publishRegistry() {
     JsonObject f = fns.add<JsonObject>();
     f["name"]    = g_relayFunctions[i];
     f["channel"] = i + 1;
-    f["tone"]    = isToneChannel(i + 1);   // flags the interlocked siren-tone group
+    f["code"]    = isCodeChannel(i + 1);   // flags the interlocked siren-code group
   }
-  // The mutually-exclusive tone modes the UI offers as a single selector (§11.5).
-  JsonArray modes = caps["tone_modes"].to<JsonArray>();
-  modes.add("off");
-  for (uint8_t i = 0; i < TONE_COUNT; i++) {
-    modes.add(g_toneFunctions[i]);
+  // The mutually-exclusive siren codes the UI offers as a single selector (§11.5).
+  JsonArray codes = caps["code_modes"].to<JsonArray>();
+  codes.add("off");
+  for (uint8_t i = 0; i < CODE_COUNT; i++) {
+    codes.add(g_codeFunctions[i]);
   }
+  // The directional positions; "center" energises both directional relays at once.
+  JsonArray dirs = caps["directional_modes"].to<JsonArray>();
+  dirs.add("off");
+  dirs.add("left");
+  dirs.add("center");
+  dirs.add("right");
   // Supported operating actions on cmd/<action>.
   JsonArray acts = caps["actions"].to<JsonArray>();
-  acts.add("set");     // { channel|function, state: on|off }
-  acts.add("pulse");   // { channel|function, ms } (e.g. a timed air-horn blast)
-  acts.add("mode");    // { mode: off|wail|yelp|hilo } (interlocked tone selector)
+  acts.add("set");          // { channel|function, state: on|off }
+  acts.add("pulse");        // { channel|function, ms } (e.g. a timed airhorn blast)
+  acts.add("code");         // { code: off|code1|code2|code3 } (interlocked code selector)
+  acts.add("directional");  // { direction: off|left|center|right } (center = both relays)
 
-  char buf[640];
+  char buf[768];
   size_t n = serializeJson(doc, buf, sizeof(buf));
   g_mqttClient.publish(g_topicRegistry, (const uint8_t*)buf, n, true);  // retained
 }
 
 // Publish the retained runtime state: every relay and input channel plus the
-// current interlocked tone selection (§5.2 state).
+// current interlocked code + directional selection (§5.2 state).
 void publishState() {
   JsonDocument doc;
   doc["v"]  = PAYLOAD_VERSION;
   doc["ts"] = "";
   doc["id"] = MODULE_ID;
-  doc["tone_mode"] = activeToneName();   // convenience summary of the tone group
+  doc["code_mode"]   = activeCodeName();         // convenience summary of the code group
+  doc["directional"] = activeDirectionalName();  // off | left | center | right
 
   JsonArray relays = doc["relays"].to<JsonArray>();
   for (uint8_t i = 0; i < RELAY_COUNT; i++) {
@@ -463,9 +529,9 @@ void handleCommand(const char* action, const char* fullTopic,
     else { publishAck(fullTopic, msgId, "rejected", "state_must_be_on_or_off"); return; }
 
     g_pulseExpiry[ch - 1] = 0;   // an explicit set cancels any active pulse
-    // Energising a tone line interlocks the other tones off (single amplifier, §11.5).
-    if (energised && isToneChannel(ch)) {
-      clearOtherTones(ch);
+    // Energising a code line interlocks the other codes off (single amplifier, §11.5).
+    if (energised && isCodeChannel(ch)) {
+      clearOtherCodes(ch);
     }
     setRelay(ch, energised);
     publishAck(fullTopic, msgId, "ok", nullptr);
@@ -487,8 +553,8 @@ void handleCommand(const char* action, const char* fullTopic,
       publishAck(fullTopic, msgId, "rejected", "ms_must_be_positive");
       return;
     }
-    if (isToneChannel(ch)) {
-      clearOtherTones(ch);   // a pulsed tone still interlocks the others off
+    if (isCodeChannel(ch)) {
+      clearOtherCodes(ch);   // a pulsed code still interlocks the others off
     }
     setRelay(ch, true);
     g_pulseExpiry[ch - 1] = millis() + (unsigned long)ms;  // serviced in loop()
@@ -497,16 +563,34 @@ void handleCommand(const char* action, const char* fullTopic,
     return;
   }
 
-  // --- Operating command: mode (interlocked tone selector, §11.5) -------
-  if (strcmp(action, "mode") == 0) {
-    // { mode: "off"|"wail"|"yelp"|"hilo" } , one call sets the whole tone group.
-    const char* mode = doc["mode"] | "";
-    if (mode[0] == '\0') {
-      publishAck(fullTopic, msgId, "rejected", "mode_required");
+  // --- Operating command: code (interlocked siren-code selector, §11.5) -
+  if (strcmp(action, "code") == 0) {
+    // { code: "off"|"code1"|"code2"|"code3" } , one call sets the whole code group.
+    const char* code = doc["code"] | "";
+    if (code[0] == '\0') {
+      publishAck(fullTopic, msgId, "rejected", "code_required");
       return;
     }
-    if (!applyToneMode(mode)) {
-      publishAck(fullTopic, msgId, "rejected", "unknown_mode");
+    if (!applyCodeMode(code)) {
+      publishAck(fullTopic, msgId, "rejected", "unknown_code");
+      return;
+    }
+    publishAck(fullTopic, msgId, "ok", nullptr);
+    publishState();
+    return;
+  }
+
+  // --- Operating command: directional (left/center/right, § wiring spec) -
+  if (strcmp(action, "directional") == 0) {
+    // { direction: "off"|"left"|"center"|"right" }. "center" energises BOTH the
+    // left and right directional relays at the same time.
+    const char* dir = doc["direction"] | "";
+    if (dir[0] == '\0') {
+      publishAck(fullTopic, msgId, "rejected", "direction_required");
+      return;
+    }
+    if (!applyDirectional(dir)) {
+      publishAck(fullTopic, msgId, "rejected", "unknown_direction");
       return;
     }
     publishAck(fullTopic, msgId, "ok", nullptr);
@@ -673,7 +757,8 @@ void setup() {
   if (RELAY_BACKEND == RELAY_BACKEND_XL9535) {
     xlBegin();
   } else {
-    for (uint8_t i = 0; i < RELAY_COUNT; i++) {
+    // GPIO bench-test backend only drives the channels that have a pin defined.
+    for (uint8_t i = 0; i < RELAY_PIN_COUNT; i++) {
       pinMode(g_relayPins[i], OUTPUT);
     }
   }

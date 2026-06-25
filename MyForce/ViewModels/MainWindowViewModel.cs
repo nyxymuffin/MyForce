@@ -1162,6 +1162,11 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 			};
 
 			RaiseDirectionalStateChanged();
+
+			// Drive the physical arrow/traffic-advisor relays on the Siren Interface
+			// Controller. "center" energises both directional relays at once (§ siren
+			// wiring spec); the UI writes to the system only via MQTT commands (§3.9.3).
+			PublishSirenDirectionalCommand(value);
 		}
 	}
 
@@ -1186,6 +1191,11 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 			};
 
 			RaiseAlertCodeStateChanged();
+
+			// Drive the interlocked Code1/2/3 relays on the Siren Interface Controller
+			// (the firmware de-energises the other codes automatically). UI writes to
+			// the system only via MQTT commands (§3.9.3).
+			PublishSirenCodeCommand(value);
 		}
 	}
 
@@ -2562,6 +2572,44 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 		PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IsDirectionalLeftSelected)));
 		PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IsDirectionalCenterOutSelected)));
 		PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IsDirectionalRightSelected)));
+	}
+
+	// Publishes the selected directional position to the Siren Interface Controller.
+	// The firmware maps "center" to both directional relays energised at once (§ siren
+	// wiring spec). Fire-and-forget operating command (no admin auth, §4.6).
+	private void PublishSirenDirectionalCommand(DirectionalMode directional)
+	{
+		var direction = directional switch
+		{
+			DirectionalMode.Off => "off",
+			DirectionalMode.Left => "left",
+			DirectionalMode.CenterOut => "center",
+			DirectionalMode.Right => "right",
+			_ => "off",
+		};
+
+		var envelope = CreateCommandEnvelope(isAdminCommand: false, includeMessageId: false);
+		var command = new SirenDirectionalCommandMessage(envelope.V, envelope.Ts, envelope.MsgId, envelope.Auth, direction);
+		_ = PublishCommandAsync(InternetRadioMqttTopics.SirenDirectionalCommandTopic, command);
+	}
+
+	// Publishes the selected siren code to the Siren Interface Controller. The
+	// firmware interlocks the Code1/2/3 group (selecting one clears the others).
+	// Fire-and-forget operating command (no admin auth, §4.6).
+	private void PublishSirenCodeCommand(AlertCodeMode alertCode)
+	{
+		var code = alertCode switch
+		{
+			AlertCodeMode.Off => "off",
+			AlertCodeMode.Code1 => "code1",
+			AlertCodeMode.Code2 => "code2",
+			AlertCodeMode.Code3 => "code3",
+			_ => "off",
+		};
+
+		var envelope = CreateCommandEnvelope(isAdminCommand: false, includeMessageId: false);
+		var command = new SirenCodeCommandMessage(envelope.V, envelope.Ts, envelope.MsgId, envelope.Auth, code);
+		_ = PublishCommandAsync(InternetRadioMqttTopics.SirenCodeCommandTopic, command);
 	}
 
 	private void RaiseAlertCodeStateChanged()
