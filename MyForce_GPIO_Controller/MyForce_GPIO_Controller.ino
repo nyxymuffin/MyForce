@@ -22,7 +22,7 @@
 #define PIN_W5500_SCK   18   // VSPI SCK  -> W5500 SCLK
 #define PIN_W5500_MISO  19   // VSPI MISO -> W5500 MISO
 #define PIN_W5500_MOSI  23   // VSPI MOSI -> W5500 MOSI
-#define PIN_W5500_CS     5   // Chip select -> W5500 SCS
+#define PIN_W5500_CS    33   // Chip select -> W5500 SCS
 #define PIN_W5500_RST   26   // Hardware reset -> W5500 RSTn (optional)
 
 // ---------------------------------------------------------------------------
@@ -36,7 +36,7 @@ static byte g_macAddress[] = { 0xDE, 0xAD, 0xBE, 0xEF, 0xFE, 0x01 };
 // NOTE: 10.4.32.0 is normally a network address. Verify this is the actual
 // broker host; change here if it should be e.g. 10.4.32.1.
 // ---------------------------------------------------------------------------
-static IPAddress      g_brokerAddress(10, 4, 32, 0);   // MQTT broker IPv4
+static IPAddress      g_brokerAddress(10, 43, 2, 2);   // MQTT broker IPv4
 static const uint16_t MQTT_BROKER_PORT = 1883;         // Unencrypted (project default)
 
 // ---------------------------------------------------------------------------
