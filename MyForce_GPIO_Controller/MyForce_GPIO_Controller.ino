@@ -10,11 +10,13 @@
 //   - "Ethernet"     (Wiznet W5100/W5200/W5500 driver)
 //   - "PubSubClient" by Nick O'Leary  (MQTT client)
 //   - "ArduinoJson"  by Benoit Blanchon (v7+, JSON payloads, §5.8)
+//   - "Wire"         (Arduino core I2C, only used by the XL9535 relay backend)
 
 #include <SPI.h>
 #include <Ethernet.h>
 #include <PubSubClient.h>
 #include <ArduinoJson.h>
+#include <Wire.h>   // I2C master for the XL9535-K16V5 relay backend
 
 // ---------------------------------------------------------------------------
 // SPI pin mapping (ESP32 DevKit V1 -> W5500 Lite, VSPI bus)
@@ -63,17 +65,58 @@ enum RelayLogic {
 };
 static const RelayLogic RELAY_LOGIC = RELAY_ACTIVE_LOW;
 
+// ---------------------------------------------------------------------------
+// Relay output backend (§3.2). The controller can drive its relay channels
+// either through direct ESP32 GPIO pins or through an XL9535-K16V5 16-channel
+// I2C relay board. The wire protocol (MQTT registry/state/cmd) is identical
+// for both, only the physical drive differs, selected here at compile time.
+// ---------------------------------------------------------------------------
+enum RelayBackend {
+  RELAY_BACKEND_GPIO   = 0,   // direct ESP32 GPIO pins via digitalWrite()
+  RELAY_BACKEND_XL9535 = 1    // XL9535-K16V5 16-channel I2C relay board
+};
+static const RelayBackend RELAY_BACKEND = RELAY_BACKEND_GPIO;  // existing wiring default
+
 // Relay channel pins (channel index is the array position + 1, i.e. 1-based on the bus).
+// Only used when RELAY_BACKEND == RELAY_BACKEND_GPIO; ignored for the XL9535 board.
 static const uint8_t g_relayPins[]  = { 13, 14, 27, 16 };
 // Input channel pins (read with internal pull-ups; index is position + 1).
-static const uint8_t g_inputPins[]  = { 32, 33, 34, 35 };  // 34/35 are input-only, no pull-up
+static const uint8_t g_inputPins[]  = { 32, 39, 34, 35 };  // 34/35/39 are input-only, no pull-up
 
-static const uint8_t RELAY_COUNT = sizeof(g_relayPins) / sizeof(g_relayPins[0]);
+// Human-facing relay function names, parallel to g_relayPins (§4.5). The array
+// length defines RELAY_COUNT, so it also bounds the XL9535 channels used
+// (channel N drives expander bit N-1; the board exposes up to 16).
+static const char* g_relayFunctions[] = { "beacon", "floodlight", "horn", "aux" };
+
+static const uint8_t RELAY_COUNT = sizeof(g_relayFunctions) / sizeof(g_relayFunctions[0]);
 static const uint8_t INPUT_COUNT = sizeof(g_inputPins) / sizeof(g_inputPins[0]);
 
-// Human-facing relay function names, parallel to g_relayPins (§4.5). The UI
-// renders these as the assignable/triggerable outputs.
-static const char* g_relayFunctions[] = { "beacon", "floodlight", "horn", "aux" };
+// ---------------------------------------------------------------------------
+// XL9535-K16V5 16-channel I2C relay board (only used by RELAY_BACKEND_XL9535).
+// The XL9535 is a 16-bit I2C I/O expander (PCA9555-compatible register map):
+// two 8-bit ports drive the 16 relays. The board is ACTIVE HIGH, a 1 bit
+// energises the relay coil. Default 7-bit I2C address is 0x20 (A0/A1/A2 open).
+// ESP32 default I2C pins: SDA = GPIO21, SCL = GPIO22 (clear of the W5500 VSPI
+// bus on 18/19/23/33/26).
+// ---------------------------------------------------------------------------
+static const uint8_t XL9535_I2C_ADDR = 0x20;   // A0/A1/A2 jumpers all open
+static const uint8_t PIN_XL9535_SDA  = 21;     // I2C data  -> board SDA
+static const uint8_t PIN_XL9535_SCL  = 22;     // I2C clock -> board SCL
+
+// XL9535 / PCA9555 register addresses (named to avoid magic numbers).
+enum Xl9535Reg {
+  XL9535_INPUT_PORT0  = 0x00,   // relays 1-8  read-back
+  XL9535_INPUT_PORT1  = 0x01,   // relays 9-16 read-back
+  XL9535_OUTPUT_PORT0 = 0x02,   // relays 1-8  output latch
+  XL9535_OUTPUT_PORT1 = 0x03,   // relays 9-16 output latch
+  XL9535_CONFIG_PORT0 = 0x06,   // relays 1-8  direction (0 = output)
+  XL9535_CONFIG_PORT1 = 0x07    // relays 9-16 direction (0 = output)
+};
+
+// Shadow of the 16 output bits (bit n = relay channel n+1, 1 = energised).
+// We keep the full word locally and push both ports so a single-channel change
+// never disturbs the others.
+uint16_t g_xlOutputShadow = 0x0000;
 
 // Last-published relay/input state, so we only emit on change.
 bool g_relayState[RELAY_COUNT];
@@ -114,15 +157,55 @@ unsigned long g_lastInputPoll        = 0;
 // Helpers
 // ===========================================================================
 
+// --- XL9535 I2C relay backend -------------------------------------------------
+
+// Write a single 8-bit register on the XL9535 expander.
+void xlWriteReg(uint8_t reg, uint8_t value) {
+  Wire.beginTransmission(XL9535_I2C_ADDR);
+  Wire.write(reg);
+  Wire.write(value);
+  Wire.endTransmission();
+}
+
+// Push the 16-bit output shadow to both XL9535 output ports.
+void xlPushOutputs() {
+  xlWriteReg(XL9535_OUTPUT_PORT0, (uint8_t)(g_xlOutputShadow & 0xFF));   // relays 1-8
+  xlWriteReg(XL9535_OUTPUT_PORT1, (uint8_t)(g_xlOutputShadow >> 8));     // relays 9-16
+}
+
+// Bring the XL9535 up: start I2C, drive all relays de-energised, then set both
+// ports to outputs. Outputs are written BEFORE configuring direction so no
+// relay glitches on (the latch holds 0 = de-energised, board is active high).
+void xlBegin() {
+  Wire.begin(PIN_XL9535_SDA, PIN_XL9535_SCL);
+  g_xlOutputShadow = 0x0000;        // all off
+  xlPushOutputs();
+  xlWriteReg(XL9535_CONFIG_PORT0, 0x00);  // port 0 pins = outputs
+  xlWriteReg(XL9535_CONFIG_PORT1, 0x00);  // port 1 pins = outputs
+}
+
 // Drive one relay channel (1-based) to energised/de-energised, honouring the
-// active-high/low wiring. Updates the cached state.
+// active-high/low wiring. Updates the cached state. Routes to the selected
+// backend: direct GPIO or the XL9535 I2C board.
 void setRelay(uint8_t channel, bool energised) {
   if (channel < 1 || channel > RELAY_COUNT) {
     return;  // out of range, ignored (the command path reports rejected)
   }
   uint8_t idx = channel - 1;
-  bool level = (RELAY_LOGIC == RELAY_ACTIVE_LOW) ? !energised : energised;
-  digitalWrite(g_relayPins[idx], level ? HIGH : LOW);
+
+  if (RELAY_BACKEND == RELAY_BACKEND_XL9535) {
+    // The XL9535-K16V5 board is active high (bit = 1 energises the relay), so
+    // we map energised directly to the shadow bit and push the change.
+    uint16_t mask = (uint16_t)1 << idx;
+    if (energised) { g_xlOutputShadow |= mask; }
+    else           { g_xlOutputShadow &= ~mask; }
+    xlPushOutputs();
+  } else {
+    // Direct GPIO drive, honouring the opto board's active-high/low wiring.
+    bool level = (RELAY_LOGIC == RELAY_ACTIVE_LOW) ? !energised : energised;
+    digitalWrite(g_relayPins[idx], level ? HIGH : LOW);
+  }
+
   g_relayState[idx] = energised;
 }
 
@@ -191,6 +274,9 @@ void publishRegistry() {
   JsonObject caps = doc["capabilities"].to<JsonObject>();
   caps["relay_channels"] = RELAY_COUNT;
   caps["input_channels"] = INPUT_COUNT;
+  // Which physical relay backend is driving the channels (§3.2), so the UI/admin
+  // surface can show the hardware in use without any UI change (§4.5).
+  caps["relay_backend"] = (RELAY_BACKEND == RELAY_BACKEND_XL9535) ? "xl9535_k16v5" : "esp32_gpio";
   // Named relay functions the UI can assign/trigger (§4.5).
   JsonArray fns = caps["relay_functions"].to<JsonArray>();
   for (uint8_t i = 0; i < RELAY_COUNT; i++) {
@@ -448,9 +534,18 @@ void setup() {
   Serial.println();
   Serial.println("MyForce GPIO Relay Controller starting.");
 
+  // Bring the relay backend up first so every channel is de-energised before
+  // anything else can command it (§3.2). The XL9535 board needs its I2C bus and
+  // port-direction set up; the direct-GPIO backend just needs its pins as OUTPUT.
+  if (RELAY_BACKEND == RELAY_BACKEND_XL9535) {
+    xlBegin();
+  } else {
+    for (uint8_t i = 0; i < RELAY_COUNT; i++) {
+      pinMode(g_relayPins[i], OUTPUT);
+    }
+  }
   // Initialise relay outputs to de-energised before anything else.
   for (uint8_t i = 0; i < RELAY_COUNT; i++) {
-    pinMode(g_relayPins[i], OUTPUT);
     g_relayState[i]  = false;
     g_pulseExpiry[i] = 0;
     setRelay(i + 1, false);
