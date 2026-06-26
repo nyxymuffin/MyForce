@@ -10,9 +10,10 @@
   <Project Path="MyForce/MyForce_UI.csproj" />
   <Project Path="MyForce_Audio_Processor/MyForce_Audio_Processor.csproj" Id="b3fe1804-14a7-4e1d-b02c-08e82614d16a" />
   <Project Path="MyForce_CarInterface/MyForce_CarInterface.csproj" Id="5dfd1248-0595-4c32-b6e8-65606c39d91f" />
+  <!-- ESP32/Arduino firmware (.ino wrapped in vcxproj): kept in the solution for editing, but excluded
+       from the build (Build="false") so dotnet build does not try to load the C++ toolset (MSB4278). -->
   <Project Path="MyForce_GPIO_Controller/MyForce_GPIO_Controller.vcxproj" Id="47a9d19a-7a9a-42b8-a727-eb3649e061c4">
-    <Platform Solution="*|ARM" Project="x64" />
-    <Platform Solution="*|ARM64" Project="x64" />
+    <Build Solution="*|*" Project="false" />
   </Project>
   <Project Path="MyForce_RadioModule_Barrett/MyForce_RadioModule_Barrett.csproj" />
   <Project Path="MyForce_RadioModule_Harris/MyForce_RadioModule_Harris.csproj" />
@@ -20,7 +21,6 @@
   <Project Path="MyForce_RadioModule_MotorolaMtm5400/MyForce_RadioModule_MotorolaMtm5400.csproj" />
   <Project Path="MyForce_RadioModule_MotorolaXpr/MyForce_RadioModule_MotorolaXpr.csproj" />
   <Project Path="MyForce_Siren_Controller/MyForce_Siren_Controller.vcxproj" Id="8eb8bd19-faed-4f5d-bcbc-73a710ea6435">
-    <Platform Solution="*|ARM" Project="x64" />
-    <Platform Solution="*|ARM64" Project="x64" />
+    <Build Solution="*|*" Project="false" />
   </Project>
 </Solution>
