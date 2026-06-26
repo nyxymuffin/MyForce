@@ -244,7 +244,7 @@ uint8_t xlWriteReg(uint8_t reg, uint8_t value) {
 // Push the 16-bit output shadow to both XL9535 output ports. On any write error,
 // do ONE clean peripheral reset and retry so a transient glitch self-heals without
 // hammering the driver.
-void xlPushOutputs() {
+uint8_t xlPushOutputs() {
 	uint8_t s0 = xlWriteReg(XL9535_OUTPUT_PORT0, (uint8_t)(g_xlOutputShadow & 0xFF));   // relays 1-8
 	uint8_t s1 = xlWriteReg(XL9535_OUTPUT_PORT1, (uint8_t)(g_xlOutputShadow >> 8));     // relays 9-16
 	if (s0 != 0 || s1 != 0) {
@@ -252,9 +252,10 @@ void xlPushOutputs() {
 			Serial.println("[I2C] output write failed; resetting peripheral and retrying once.");
 		}
 		i2cReset();
-		xlWriteReg(XL9535_OUTPUT_PORT0, (uint8_t)(g_xlOutputShadow & 0xFF));
-		xlWriteReg(XL9535_OUTPUT_PORT1, (uint8_t)(g_xlOutputShadow >> 8));
+		s0 = xlWriteReg(XL9535_OUTPUT_PORT0, (uint8_t)(g_xlOutputShadow & 0xFF));
+		s1 = xlWriteReg(XL9535_OUTPUT_PORT1, (uint8_t)(g_xlOutputShadow >> 8));
 	}
+	return (s0 != 0) ? s0 : s1;   // 0 = both writes succeeded
 }
 
 // Bring the XL9535 up: start I2C clean, scan the bus for diagnostics, drive all
@@ -311,9 +312,25 @@ void setRelay(uint8_t channel, bool energised) {
 	uint16_t mask = (uint16_t)1 << idx;
 	if (energised) { g_xlOutputShadow |= mask; }
 	else { g_xlOutputShadow &= ~mask; }
-	xlPushOutputs();
+	uint8_t writeStatus = xlPushOutputs();
 
 	g_relayState[idx] = energised;
+
+	// LOG: per-relay actuation result. write=ok means the output register really
+	// updated, so if the relay still does not click the problem is on the relay-driver
+	// / coil-power side, not the I2C bus.
+	if (LOG_VERBOSE) {
+		Serial.print("[RELAY] ch=");
+		Serial.print(channel);
+		Serial.print(" (");
+		Serial.print(g_relayFunctions[idx]);
+		Serial.print(") energised=");
+		Serial.print(energised ? 1 : 0);
+		Serial.print(" shadow=0x");
+		Serial.print(g_xlOutputShadow, HEX);
+		Serial.print(" write=");
+		Serial.println(writeStatus == 0 ? "ok" : "FAIL");
+	}
 }
 
 // Resolve a relay "function" name (§4.5) to its 1-based channel, or 0 if unknown.
