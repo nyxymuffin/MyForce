@@ -38,7 +38,7 @@ static byte g_macAddress[] = { 0xDE, 0xAD, 0xBE, 0xEF, 0xFE, 0x01 };
 // NOTE: 10.4.32.0 is normally a network address. Verify this is the actual
 // broker host; change here if it should be e.g. 10.4.32.1.
 // ---------------------------------------------------------------------------
-static IPAddress      g_brokerAddress(10, 43, 2, 2);   // MQTT broker IPv4
+static IPAddress      g_brokerAddress(10, 43, 2, 220);   // MQTT broker IPv4
 static const uint16_t MQTT_BROKER_PORT = 1883;         // Unencrypted (project default)
 
 // ---------------------------------------------------------------------------
