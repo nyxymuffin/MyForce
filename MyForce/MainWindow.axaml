@@ -1125,9 +1125,10 @@
                                             <StackPanel Grid.Column="0" VerticalAlignment="Top" Spacing="6">
                                                 <TextBlock Classes="white" FontSize="20" Text="{Binding RadioPageTitle}" />
                                                 <TextBlock Classes="white" FontSize="16" Text="{Binding SelectedRadioChannelLabel}" />
-                                                <TextBlock Classes="white" FontSize="16" Text="AREA:" />
-                                                <TextBlock Classes="white" FontSize="16" Text="DIV:" />
-                                                <TextBlock Classes="white" FontSize="16" Text="{Binding MasterVolumeDisplay}" />
+                                                <!-- RX RID: the radio id received on the current channel (radios that support radio ID). -->
+                                                <TextBlock Classes="white" FontSize="16" Text="{Binding RxRidDisplay}" />
+                                                <!-- VOL is the currently selected radio's volume (same value shown next to E-911). -->
+                                                <TextBlock Classes="white" FontSize="16" Text="{Binding CurrentTalkRadioVolume, StringFormat='VOL: {0}'}" />
                                             </StackPanel>
                                             <StackPanel Grid.Column="1" VerticalAlignment="Bottom" HorizontalAlignment="Center" Spacing="4">
                                                 <Border Width="34" Height="150" Background="#202020" BorderBrush="#555555" BorderThickness="1">
