@@ -137,7 +137,12 @@ internal sealed class AudioProcessorCoordinator : IAsyncDisposable
 		_mixerState = AudioMixerState.CreateDefault(_audioFramework.ChannelStrips);
 		_routingState = AudioProcessorRoutingState.CreateDefault(_registry.RadioIds, ResolveInitialSpeakerDeviceId());
 		_audioMatrixEngine = new AudioMatrixEngine(_mixerState.CurrentSnapshot, _routingState.CurrentSnapshot);
-		_radioModuleHostManager = new RadioModuleHostManager(_registry.Radios, _pluginCatalog.Modules, AudioProcessorLog.Write);
+		// When a hosted RM reports its channel list (§3.11), re-publish that radio's retained channels topic.
+		_radioModuleHostManager = new RadioModuleHostManager(
+			_registry.Radios,
+			_pluginCatalog.Modules,
+			AudioProcessorLog.Write,
+			radioId => _ = PublishRadioChannelsAsync(radioId));
 
 		// Phase 1 real-time engine (§3.6): build the fixed source/sink topology, open a backend,
 		// and wire the built-in keying/detect primitives and the TX state machine to it.
@@ -371,9 +376,11 @@ internal sealed class RadioModuleHostManager : IAsyncDisposable
 	private readonly IReadOnlyList<RadioRuntimeDefinition> _radios;
 	private readonly IReadOnlyList<DiscoveredRadioModule> _discoveredModules;
 	private readonly Action<string, string> _log;
+	// Forwarded to each host so a module's ReportChannels re-publishes module/<id>/channels (§3.11).
+	private readonly Action<RadioId>? _onChannelsReported;
 	private readonly List<HostedRadioModule> _hostedModules = [];
 
-	public RadioModuleHostManager(IReadOnlyList<RadioRuntimeDefinition> radios, IReadOnlyList<DiscoveredRadioModule> discoveredModules, Action<string, string> log)
+	public RadioModuleHostManager(IReadOnlyList<RadioRuntimeDefinition> radios, IReadOnlyList<DiscoveredRadioModule> discoveredModules, Action<string, string> log, Action<RadioId>? onChannelsReported = null)
 	{
 		ArgumentNullException.ThrowIfNull(radios);
 		ArgumentNullException.ThrowIfNull(discoveredModules);
@@ -382,6 +389,7 @@ internal sealed class RadioModuleHostManager : IAsyncDisposable
 		_radios = radios;
 		_discoveredModules = discoveredModules;
 		_log = log;
+		_onChannelsReported = onChannelsReported;
 	}
 
 	public async Task StartAsync(CancellationToken cancellationToken)
@@ -395,7 +403,7 @@ internal sealed class RadioModuleHostManager : IAsyncDisposable
 				continue;
 			}
 
-			var host = new RadioModuleHost(radio.Id, _log);
+			var host = new RadioModuleHost(radio.Id, _log, _onChannelsReported);
 			var module = discoveredModule.Factory.Create(host);
 			// Pass only the RM-owned settings section as a JsonElement per the reconciled contract (§3.7.7).
 			var applyResult = await module.ApplyConfigAsync(radio.Config.Settings.Deserialize<JsonElement>(), cancellationToken).ConfigureAwait(false);
@@ -427,6 +435,13 @@ internal sealed class RadioModuleHostManager : IAsyncDisposable
 		return _hostedModules.FirstOrDefault(module => module.RadioId == radioId)?.Host.LastReport;
 	}
 
+	/// <summary>The last channel list a hosted module reported for a radio (§3.11), or null if none.</summary>
+	public IReadOnlyList<ChannelInfo>? GetReportedChannels(RadioId radioId)
+	{
+		ArgumentNullException.ThrowIfNull(radioId);
+		return _hostedModules.FirstOrDefault(module => module.RadioId == radioId)?.Host.ReportedChannels;
+	}
+
 	public async ValueTask DisposeAsync()
 	{
 		foreach (var hostedModule in _hostedModules.AsEnumerable().Reverse())
@@ -451,13 +466,17 @@ internal sealed record HostedRadioModule(RadioId RadioId, DiscoveredRadioModule 
 internal sealed class RadioModuleHost : IModuleHost
 {
 	private readonly Action<string, string> _log;
+	// Invoked when the module reports a new channel list, so the coordinator can re-publish
+	// module/<id>/channels (§3.11/§5.3). May be called from a module thread.
+	private readonly Action<RadioId>? _onChannelsReported;
 
-	public RadioModuleHost(RadioId radioId, Action<string, string> log)
+	public RadioModuleHost(RadioId radioId, Action<string, string> log, Action<RadioId>? onChannelsReported = null)
 	{
 		ArgumentNullException.ThrowIfNull(radioId);
 		ArgumentNullException.ThrowIfNull(log);
 		RadioId = radioId;
 		_log = log;
+		_onChannelsReported = onChannelsReported;
 	}
 
 	public RadioId RadioId { get; }
@@ -472,11 +491,25 @@ internal sealed class RadioModuleHost : IModuleHost
 
 	public RadioStateReport? LastReport => _lastReport;
 
+	// Last channel list the module reported (§3.11), published on module/<id>/channels. volatile: may be
+	// set from a module thread.
+	private volatile IReadOnlyList<ChannelInfo>? _reportedChannels;
+
+	public IReadOnlyList<ChannelInfo>? ReportedChannels => _reportedChannels;
+
 	public void ReportState(RadioStateReport state)
 	{
 		ArgumentNullException.ThrowIfNull(state);
 		_lastReport = state;
 		_log("module", $"Radio module '{RadioId.Value}' reported state.");
+	}
+
+	public void ReportChannels(IReadOnlyList<ChannelInfo> channels)
+	{
+		ArgumentNullException.ThrowIfNull(channels);
+		_reportedChannels = channels;
+		_log("module", $"Radio module '{RadioId.Value}' reported {channels.Count} channel(s).");
+		_onChannelsReported?.Invoke(RadioId);
 	}
 
 	public void ReportDetect(bool rxActive)
@@ -1314,6 +1347,22 @@ internal sealed record PersistedBridgeMember(
 			cancellationToken: CancellationToken.None).ConfigureAwait(false);
 	}
 
+	/// <summary>Publishes a radio's retained channel list (RM-reported list preferred, else static/manual, §3.11/§5.3).</summary>
+	private async Task PublishRadioChannelsAsync(RadioId radioId)
+	{
+		var radio = _registry.Radios.FirstOrDefault(radio => radio.Id == radioId);
+		if (radio is null)
+		{
+			return;
+		}
+
+		await _mqttRuntime.PublishAsync(
+			_topics.ModuleChannelsTopic(radioId),
+			AudioProcessorJson.Serialize(ModuleChannelsPayload.Create(radio, _radioModuleHostManager.GetReportedChannels(radioId))),
+			retain: true,
+			cancellationToken: CancellationToken.None).ConfigureAwait(false);
+	}
+
 	/// <summary>
 	/// Writes a radio's accepted instance config into the System Config Store (§4.2). The full
 	/// declared topology is re-serialized so other radios' definitions are preserved; on the next
@@ -2075,10 +2124,10 @@ internal sealed record PersistedBridgeMember(
 				retain: true,
 				cancellationToken: cancellationToken).ConfigureAwait(false);
 
-			// Effective channel list for the UI's CHANNELS picker (§5.3/§3.11).
+			// Effective channel list for the UI's CHANNELS picker (RM-reported preferred, §5.3/§3.11).
 			await _mqttRuntime.PublishAsync(
 				_topics.ModuleChannelsTopic(radio.Id),
-				AudioProcessorJson.Serialize(ModuleChannelsPayload.Create(radio)),
+				AudioProcessorJson.Serialize(ModuleChannelsPayload.Create(radio, _radioModuleHostManager.GetReportedChannels(radio.Id))),
 				retain: true,
 				cancellationToken: cancellationToken).ConfigureAwait(false);
 		}
@@ -3778,9 +3827,22 @@ internal sealed record ModuleConfigSpecPayload(int V, DateTimeOffset Ts, string 
 // Retained per-radio channel list (§5.3/§3.11): the effective channels the UI reads for its picker.
 internal sealed record ModuleChannelsPayload(int V, DateTimeOffset Ts, string Id, IReadOnlyList<ChannelEntryPayload> Channels)
 {
-	public static ModuleChannelsPayload Create(RadioRuntimeDefinition radio)
+	public static ModuleChannelsPayload Create(RadioRuntimeDefinition radio, IReadOnlyList<ChannelInfo>? reportedChannels = null)
 	{
 		ArgumentNullException.ThrowIfNull(radio);
+
+		// A channel list pulled by the RM from the radio (§3.11, "module" source) is authoritative; fall
+		// back to the static/manual list only until the RM reports.
+		if (reportedChannels is { Count: > 0 })
+		{
+			var fromRm = reportedChannels
+				.Select((channel, position) => new ChannelEntryPayload(
+					channel.Index > 0 ? channel.Index : position + 1,
+					string.IsNullOrWhiteSpace(channel.Label) ? $"CH {(channel.Index > 0 ? channel.Index : position + 1)}" : channel.Label!))
+				.ToArray();
+			return new ModuleChannelsPayload(1, DateTimeOffset.UtcNow, radio.Id.Value, fromRm);
+		}
+
 		return new ModuleChannelsPayload(1, DateTimeOffset.UtcNow, radio.Id.Value, BuildChannels(radio));
 	}
 

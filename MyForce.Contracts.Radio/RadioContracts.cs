@@ -26,7 +26,8 @@ namespace MyForce.Contracts.Radio;
 public static class RadioContract
 {
 	// v2: added module function buttons + console-scoped menus (§3.10, framework v2.8).
-	public const int Version = 2;
+	// v3: added IModuleHost.ReportChannels so RMs can pull/report their channel list (§3.11/§5.3).
+	public const int Version = 3;
 }
 
 /// <summary>
@@ -95,6 +96,16 @@ public interface IModuleHost
 
 	/// <summary>Push state the RM knows; the AP merges rx/tx and publishes §5.8.5 (§3.7.3).</summary>
 	void ReportState(RadioStateReport state);
+
+	/// <summary>
+	/// Report the radio's effective channel list (§3.11): the RM pulls it from the radio (or codeplug)
+	/// and the AP publishes it retained on module/&lt;id&gt;/channels (§5.3) for the UI's channel picker.
+	/// Call on StartAsync and again whenever the list changes (zone change / reprogram). Default no-op so
+	/// a host built against an older contract is non-fatal.
+	/// </summary>
+	void ReportChannels(IReadOnlyList<ChannelInfo> channels)
+	{
+	}
 
 	/// <summary>Push Call Detect when the radio's detect method is "rm"; ignored otherwise (§3.6.8).</summary>
 	void ReportDetect(bool rxActive);

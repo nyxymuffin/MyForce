@@ -105,6 +105,10 @@ public sealed class Barrett2050Module : IRadioModule, IKeyingProvider
 			_host.Log(LogLevel.Warning, $"Barrett 2050: could not enable RS232 control: {ex.Message}");
 		}
 
+		// Pull the channel list from the radio once at startup and report it (§3.11). Best effort: a radio
+		// that does not answer IDL just leaves the list empty until the operator runs channel_info.
+		await ReportChannelsAsync(cancellationToken).ConfigureAwait(false);
+
 		_pollTask = Task.Run(() => PollLoopAsync(_lifetime.Token), CancellationToken.None);
 		_host.Log(LogLevel.Info, $"Barrett 2050 module started ({_comPort ?? "shared CAT port"}).");
 	}
@@ -258,10 +262,9 @@ public sealed class Barrett2050Module : IRadioModule, IKeyingProvider
 				return await ExecuteAsync(start ? "XN1" : "XN0", cancellationToken).ConfigureAwait(false);
 
 			case "channel_info":
-				// Return all channel use labels (IDL): collect the multi-line reply and emit it.
-				var raw = await _link.SendCollectAsync("IDL", TimeSpan.FromSeconds(1.5), cancellationToken).ConfigureAwait(false);
-				var labels = ParseChannelLabels(raw);
-				_host.EmitEvent("channel_labels", new JsonObject { ["labels"] = new JsonArray([.. labels.Select(label => (JsonNode?)label)]) });
+				// Return all channel use labels (IDL): collect the multi-line reply, emit it, and report the
+				// channel list to the AP so the UI's channel picker is populated (§3.11).
+				await ReportChannelsAsync(cancellationToken).ConfigureAwait(false);
 				return OperationResult.Ok();
 
 			default:
@@ -448,6 +451,37 @@ public sealed class Barrett2050Module : IRadioModule, IKeyingProvider
 			Signal: null,
 			Ready: true,
 			Scan: scanning));
+	}
+
+	// Pull the channel list from the radio (IDL = all channel use labels) and report it to the AP, which
+	// publishes it on module/<id>/channels for the UI's channel picker (§3.11). Also emits a channel_labels
+	// advisory event for any listeners. Channels are numbered 1..N in IDL reply order.
+	private async Task ReportChannelsAsync(CancellationToken cancellationToken)
+	{
+		if (_link is null)
+		{
+			return;
+		}
+
+		string raw;
+		try
+		{
+			raw = await _link.SendCollectAsync("IDL", TimeSpan.FromSeconds(1.5), cancellationToken).ConfigureAwait(false);
+		}
+		catch (Exception ex) when (ex is IOException or TimeoutException or InvalidOperationException)
+		{
+			_host.Log(LogLevel.Debug, $"Barrett 2050: could not pull channel list (IDL): {ex.Message}");
+			return;
+		}
+
+		var labels = ParseChannelLabels(raw);
+		if (labels.Count == 0)
+		{
+			return;
+		}
+
+		_host.EmitEvent("channel_labels", new JsonObject { ["labels"] = new JsonArray([.. labels.Select(label => (JsonNode?)label)]) });
+		_host.ReportChannels([.. labels.Select((label, index) => new ChannelInfo(index + 1, label))]);
 	}
 
 	// ── Helpers ───────────────────────────────────────────────────────────────────────────
