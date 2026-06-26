@@ -1204,10 +1204,12 @@
                                                 <Border Grid.Column="0" Classes="buttonFrame" PointerPressed="OnRadioSelectPressed">
                                                     <Viewbox Stretch="Uniform"><TextBlock Classes="white" TextAlignment="Center" VerticalAlignment="Center" Text="SELECT" /></Viewbox>
                                                 </Border>
-                                                <Border Grid.Column="1" Classes="buttonFrame" PointerPressed="OnRadioListenPressed">
-                                                    <Viewbox Stretch="Uniform"><TextBlock Classes="white" TextAlignment="Center" VerticalAlignment="Center" Text="LISTEN" /></Viewbox>
+                                                <!-- LISTEN toggles RX monitor mute for the viewed radio; label/border reflect state. -->
+                                                <Border Grid.Column="1" Classes="buttonFrame" BorderBrush="{Binding RadioListenBrush}" PointerPressed="OnRadioListenPressed">
+                                                    <Viewbox Stretch="Uniform"><TextBlock Classes="white" TextAlignment="Center" VerticalAlignment="Center" Text="{Binding RadioListenButtonText}" /></Viewbox>
                                                 </Border>
-                                                <Border Grid.Column="2" Classes="buttonFrame" PointerPressed="OnRadioTalkPressed">
+                                                <!-- TALK designates the viewed radio as the single talk radio; border glows when it is. -->
+                                                <Border Grid.Column="2" Classes="buttonFrame" BorderBrush="{Binding RadioTalkBrush}" PointerPressed="OnRadioTalkPressed">
                                                     <Viewbox Stretch="Uniform"><TextBlock Classes="white" TextAlignment="Center" VerticalAlignment="Center" Text="TALK" /></Viewbox>
                                                 </Border>
                                             </Grid>

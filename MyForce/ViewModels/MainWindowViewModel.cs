@@ -545,9 +545,12 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 
 	private string _date = string.Empty;
 
-	private string _currentTalkRadio = "APX7500 V/8";
+	// The operator-designated talk radio (the single radio future PTT triggers will key). Resolved to the
+	// first declared radio on startup; "---" until any radio is declared. Multiple radios can be "listened"
+	// to (RX monitor) at once, but only one is the talk radio at a time.
+	private string _currentTalkRadio = "---";
 
-	private string _currentRadioChannel = "CT OPS 800";
+	private string _currentRadioChannel = string.Empty;
 
 	// Stores the current alert light and siren status shown in the status panel.
 	private string _alertLightSiren = "OFF";
@@ -594,25 +597,31 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 
 	private int _internetStationViewportStartIndex;
 
-	private string _radio1ChannelName = "CT OPS 800";
+	// Patrol "Radio Current Channel List": one slot per declared radio (positional RADIO 1..6); a slot with
+	// no declared radio reads "NOT USED" rather than filler data.
+	private const string RadioSlotNotUsed = "NOT USED";
 
-	private string _radio2ChannelName = "CT OPS V";
+	private string _radio1ChannelName = RadioSlotNotUsed;
 
-	private string _radio3ChannelName = "TXT MAIN";
+	private string _radio2ChannelName = RadioSlotNotUsed;
 
-	private string _radio4ChannelName = "CT ALE M";
+	private string _radio3ChannelName = RadioSlotNotUsed;
 
-	private string _radio5ChannelName = "$CMD_1";
+	private string _radio4ChannelName = RadioSlotNotUsed;
 
-	private string _radio6ChannelName = "ABIA TWR";
+	private string _radio5ChannelName = RadioSlotNotUsed;
 
-	private string _proximityChannel1 = "CT OPS 800";
+	private string _radio6ChannelName = RadioSlotNotUsed;
 
-	private string _proximityChannel2 = "DFW TAC1";
+	// Patrol PROXIMITY LIST slots start blank; they fill only once channel centers are configured and
+	// ranked by distance (no filler data).
+	private string _proximityChannel1 = string.Empty;
 
-	private string _proximityChannel3 = "$CMD_1";
+	private string _proximityChannel2 = string.Empty;
 
-	private string _proximityChannel4 = "DFW_TWR_E";
+	private string _proximityChannel3 = string.Empty;
+
+	private string _proximityChannel4 = string.Empty;
 
 	private string _mqttStatus = "OFFLINE";
 
@@ -2881,12 +2890,16 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 	private void ApplyModuleRadioStateSpec(ModuleRadioStateSpecMessage state)
 	{
 		ArgumentNullException.ThrowIfNull(state);
-		if (state.Channel?.Label is not null)
+
+		// The RADIO page channel only reflects the radio it is currently viewing, not whichever radio
+		// happened to report state (the talk radio is operator-designated via the TALK button, not the
+		// last reporter).
+		var isSelectedRadio = string.Equals(state.Id, _selectedRadioId, StringComparison.OrdinalIgnoreCase);
+		if (isSelectedRadio && state.Channel?.Label is not null)
 		{
 			CurrentRadioChannel = state.Channel.Label;
 		}
 
-		CurrentTalkRadio = state.Id;
 		CurSelChExt1 = state.RxActive ? "RX ACTIVE" : "RX IDLE";
 		CurSelChExt2 = state.TxActive ? $"TX ACTIVE / {state.TxSource ?? "manual"}" : "TX IDLE";
 		CurSelChExt3 = state.Signal?.RssiDbm is null ? string.Empty : $"RSSI {state.Signal.RssiDbm} dBm";
@@ -2898,6 +2911,10 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 		{
 			_radioChannelLabels[state.Id] = state.Channel.Label;
 			PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(SelectedRadioChannelLabel)));
+			// A new channel label feeds the patrol list, the picker, and the talk-radio display.
+			RebuildPatrolRadioChannelList();
+			RebuildRadioSelectionItems();
+			RefreshTalkRadioDisplay();
 		}
 
 		// No live audio-level feed yet, so map RSSI (~ -120..-40 dBm) onto the 0-100 VU
@@ -2928,7 +2945,111 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 		ArgumentNullException.ThrowIfNull(state);
 		RadioRuntimeEntries = state.Radios ?? Array.Empty<RadioRuntimeEntryMessage>();
 		RebuildRadioFunctionButtons();   // a registry update may add/replace declared buttons
+		RefreshDeclaredRadioState();     // default selection/talk radio + patrol lists track the declared set
 		RaiseAdminNetworkStateChanged();
+	}
+
+	// Re-derive everything that depends on the declared radio set: the default radio-1 selection and talk
+	// radio (so reboots land on radio 1), the patrol "RADIO n" channel list (NOT USED for empty slots), and
+	// the RADIO-page picker. Called whenever the declared radios or their channels change.
+	private void RefreshDeclaredRadioState()
+	{
+		EnsureDefaultRadioSelection();
+		RebuildPatrolRadioChannelList();
+		RebuildRadioSelectionItems();
+		RefreshTalkRadioDisplay();
+	}
+
+	// On startup (and whenever the current selection/talk radio is no longer declared) fall back to the
+	// first declared radio, so the RADIO page and TALK RADIO both default to "radio 1" after a reboot.
+	private void EnsureDefaultRadioSelection()
+	{
+		var firstRadio = RadioRuntimeEntries.FirstOrDefault();
+		if (firstRadio is null)
+		{
+			// No declared radios: clear the selection and talk radio so nothing shows filler data.
+			_selectedRadioId = string.Empty;
+			_selectedRadioDisplayName = "---";
+			_talkRadioId = string.Empty;
+			CurrentRadioChannel = string.Empty;
+			PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(RadioPageTitle)));
+			PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(ChannelSelectionRadioTitle)));
+			PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(ActiveRadioScanLabel)));
+			RaiseSelectedRadioTalkListenChanged();
+			return;
+		}
+
+		if (string.IsNullOrWhiteSpace(_selectedRadioId)
+			|| !RadioRuntimeEntries.Any(radio => string.Equals(radio.RadioId, _selectedRadioId, StringComparison.OrdinalIgnoreCase)))
+		{
+			_selectedRadioId = firstRadio.RadioId;
+			_selectedRadioDisplayName = string.IsNullOrWhiteSpace(firstRadio.DisplayName) ? firstRadio.RadioId : firstRadio.DisplayName;
+			CurrentRadioChannel = ResolveRadioChannel(firstRadio.RadioId, firstRadio.TypeId);
+			PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(RadioPageTitle)));
+			PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(ChannelSelectionRadioTitle)));
+			PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(ActiveRadioScanLabel)));
+		}
+
+		// The talk radio defaults to radio 1 and only changes via the TALK button; reset if it vanished.
+		if (string.IsNullOrWhiteSpace(_talkRadioId)
+			|| !RadioRuntimeEntries.Any(radio => string.Equals(radio.RadioId, _talkRadioId, StringComparison.OrdinalIgnoreCase)))
+		{
+			_talkRadioId = firstRadio.RadioId;
+		}
+
+		RaiseSelectedRadioTalkListenChanged();
+	}
+
+	// Fill the six positional patrol radio slots from the declared radios; slots without a declared radio
+	// read "NOT USED" (no filler data).
+	private void RebuildPatrolRadioChannelList()
+	{
+		Radio1ChannelName = PatrolRadioSlotLabel(0);
+		Radio2ChannelName = PatrolRadioSlotLabel(1);
+		Radio3ChannelName = PatrolRadioSlotLabel(2);
+		Radio4ChannelName = PatrolRadioSlotLabel(3);
+		Radio5ChannelName = PatrolRadioSlotLabel(4);
+		Radio6ChannelName = PatrolRadioSlotLabel(5);
+	}
+
+	// The label for one positional patrol radio slot: the declared radio's current channel, or NOT USED.
+	private string PatrolRadioSlotLabel(int index)
+	{
+		if (index >= RadioRuntimeEntries.Count)
+		{
+			return RadioSlotNotUsed;
+		}
+
+		var radio = RadioRuntimeEntries[index];
+		return ResolveRadioChannel(radio.RadioId, radio.TypeId);
+	}
+
+	// Resolve a radio's current channel: the live label if one has been reported, else the 4W resource's
+	// static "channel1", else a placeholder until the radio reports.
+	private string ResolveRadioChannel(string radioId, string typeId)
+	{
+		if (_radioChannelLabels.TryGetValue(radioId, out var label) && !string.IsNullOrWhiteSpace(label))
+		{
+			return label;
+		}
+
+		return string.Equals(typeId, FourWireResourceTypeId, StringComparison.OrdinalIgnoreCase)
+			? FourWireStaticChannel
+			: "---";
+	}
+
+	// "TALK RADIO: <alias> <channel>" for the designated talk radio (or "---" when none is declared).
+	private void RefreshTalkRadioDisplay()
+	{
+		var talkRadio = RadioRuntimeEntries.FirstOrDefault(radio => string.Equals(radio.RadioId, _talkRadioId, StringComparison.OrdinalIgnoreCase));
+		if (talkRadio is null)
+		{
+			CurrentTalkRadio = "---";
+			return;
+		}
+
+		var alias = string.IsNullOrWhiteSpace(talkRadio.DisplayName) ? talkRadio.RadioId : talkRadio.DisplayName;
+		CurrentTalkRadio = $"{alias} {ResolveRadioChannel(talkRadio.RadioId, talkRadio.TypeId)}";
 	}
 
 	/// <summary>
@@ -3660,6 +3781,19 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 	private IReadOnlyList<RadioSelectionItem> _radioSelectionItems = Array.Empty<RadioSelectionItem>();
 	private readonly Dictionary<string, string> _radioChannelLabels = new(StringComparer.OrdinalIgnoreCase);
 
+	// The single operator-designated talk radio (TALK button); future PTT triggers key this one.
+	private string _talkRadioId = string.Empty;
+
+	// Radios whose RX monitor is muted (LISTEN button toggles membership). Multiple radios can be listened
+	// to at once, so this tracks the muted exceptions rather than a single selection.
+	private readonly HashSet<string> _mutedRadioIds = new(StringComparer.OrdinalIgnoreCase);
+
+	// 4-Wire radio resources have no live channel concept, so they show a single static channel. The AP
+	// reports its label from the operator-editable "channel1_alias" setting (default "4W"); this is the
+	// fallback shown before the AP's retained state has arrived.
+	private const string FourWireResourceTypeId = "4w_resource";
+	private const string FourWireStaticChannel = "4W";
+
 	// Header title, e.g. "RADIO 1: XTL5000".
 	public string RadioPageTitle => $"RADIO 1: {_selectedRadioDisplayName}";
 
@@ -3752,13 +3886,78 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 		_selectedRadioId = radioId;
 		var match = RadioRuntimeEntries.FirstOrDefault(radio => string.Equals(radio.RadioId, radioId, StringComparison.OrdinalIgnoreCase));
 		_selectedRadioDisplayName = string.IsNullOrWhiteSpace(match?.DisplayName) ? radioId : match!.DisplayName;
+		// Show the newly selected radio's current channel (4W resources fall back to their static channel1).
+		CurrentRadioChannel = ResolveRadioChannel(radioId, match?.TypeId ?? string.Empty);
 		PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(RadioPageTitle)));
 		PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(ChannelSelectionRadioTitle)));
 		PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(ActiveRadioScanLabel)));
+		// The TALK/LISTEN buttons reflect the now-viewed radio's talk-radio / mute state.
+		RaiseSelectedRadioTalkListenChanged();
 		IsRadioScanActive = false;   // scan state is per-radio; reset on selection
 		RebuildRadioFunctionButtons();
 		PublishConsoleSelect(radioId);
 		IsRadioSelectionOverlayVisible = false;
+	}
+
+	// TALK button (RADIO page): designate the currently-viewed radio as THE talk radio. Only one radio is
+	// the talk radio at a time (the one future PTT triggers will key); selecting a new one replaces it.
+	public void DesignateSelectedAsTalkRadio()
+	{
+		if (string.IsNullOrWhiteSpace(_selectedRadioId))
+		{
+			return;
+		}
+
+		_talkRadioId = _selectedRadioId;
+		RefreshTalkRadioDisplay();
+		PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IsSelectedRadioTalkRadio)));
+		PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(RadioTalkBrush)));
+	}
+
+	// LISTEN button (RADIO page): toggle the RX monitor mute for the currently-viewed radio. Several radios
+	// may be listened to at once, so this flips just this radio's muted state.
+	public void ToggleSelectedRadioListen()
+	{
+		if (string.IsNullOrWhiteSpace(_selectedRadioId))
+		{
+			return;
+		}
+
+		if (!_mutedRadioIds.Remove(_selectedRadioId))
+		{
+			_mutedRadioIds.Add(_selectedRadioId);
+		}
+
+		PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(RadioListenButtonText)));
+		PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(RadioListenBrush)));
+	}
+
+	// True when the viewed radio is the designated talk radio (drives the TALK button highlight).
+	public bool IsSelectedRadioTalkRadio =>
+		!string.IsNullOrWhiteSpace(_selectedRadioId)
+		&& string.Equals(_selectedRadioId, _talkRadioId, StringComparison.OrdinalIgnoreCase);
+
+	// True when the viewed radio's RX monitor is muted (LISTEN off).
+	public bool IsSelectedRadioMuted =>
+		!string.IsNullOrWhiteSpace(_selectedRadioId) && _mutedRadioIds.Contains(_selectedRadioId);
+
+	// LISTEN button label flips to MUTED when the viewed radio's RX monitor is muted.
+	public string RadioListenButtonText => IsSelectedRadioMuted ? "MUTED" : "LISTEN";
+
+	// TALK button glows active green (Code1) when the viewed radio is the talk radio.
+	public IBrush RadioTalkBrush => IsSelectedRadioTalkRadio ? Brushes.LimeGreen : Brushes.Gray;
+
+	// LISTEN button dims when muted so the operator can see at a glance it is not being monitored.
+	public IBrush RadioListenBrush => IsSelectedRadioMuted ? Brushes.Gray : Brushes.LimeGreen;
+
+	// Re-raise the TALK/LISTEN button bindings after the viewed radio (or its talk/mute state) changes.
+	private void RaiseSelectedRadioTalkListenChanged()
+	{
+		PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IsSelectedRadioTalkRadio)));
+		PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(RadioTalkBrush)));
+		PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IsSelectedRadioMuted)));
+		PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(RadioListenButtonText)));
+		PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(RadioListenBrush)));
 	}
 
 	// CHANNELS button (replaces MONITOR): open the channel-selection page for the radio.
@@ -3782,7 +3981,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 			.Select(radio => new RadioSelectionItem(
 				radio.RadioId,
 				string.IsNullOrWhiteSpace(radio.DisplayName) ? radio.RadioId : radio.DisplayName,
-				_radioChannelLabels.TryGetValue(radio.RadioId, out var channel) ? channel : "---",
+				ResolveRadioChannel(radio.RadioId, radio.TypeId),
 				this))
 			.ToArray();
 	}

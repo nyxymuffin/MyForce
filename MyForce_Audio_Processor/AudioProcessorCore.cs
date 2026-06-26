@@ -238,12 +238,27 @@ internal sealed record ModuleRadioStateSpecPayload(
 			RxActive: rxActive,                       // Call Detect from the VOX primitive (§3.6.8)
 			TxActive: isTxActive,
 			TxSource: isManualTx ? "manual" : bridgeTxActive ? "bridge" : "idle",
-			// Merge what the module last reported (channel/zone/mode/signal/scan), §3.7.3 / §5.8.5.
-			Channel: report?.Channel,
+			// Merge what the module last reported (channel/zone/mode/signal/scan), §3.7.3 / §5.8.5. A 4W
+			// resource has no RM to report a channel, so it gets a single static channel whose label is the
+			// operator-editable "channel1_alias" setting (default "4W", §3.11).
+			Channel: report?.Channel ?? ResolveResourceStaticChannel(radio),
 			Zone: report?.Zone,
 			Mode: report?.Mode,
 			Signal: report?.Signal,
 			Scan: report?.Scan);
+	}
+
+	// The 4W radio resource's single static channel (index 1), labelled from its "channel1_alias" setting.
+	// Returns null for any radio that is not a 4W resource so other radios keep reporting no channel.
+	private static ChannelInfo? ResolveResourceStaticChannel(RadioRuntimeDefinition radio)
+	{
+		if (!string.Equals(radio.TypeId, "4w_resource", StringComparison.OrdinalIgnoreCase))
+		{
+			return null;
+		}
+
+		var alias = (radio.Config.Settings as JsonObject)?["channel1_alias"]?.GetValue<string>();
+		return new ChannelInfo(1, string.IsNullOrWhiteSpace(alias) ? "4W" : alias);
 	}
 }
 
@@ -2497,11 +2512,15 @@ internal sealed class AudioProcessorRegistry
 
 	private static string CreateResourceSettingsSchema()
 	{
+		// §3.11: a 4W resource has a single static channel; its display label is operator-editable here
+		// (defaults to "4W"). Exposed as a normal settings field so the schema-driven admin renders it.
 		return """
 		{
 		  "$schema": "https://json-schema.org/draft/2020-12/schema",
 		  "type": "object",
-		  "properties": {},
+		  "properties": {
+		    "channel1_alias": { "type": "string", "title": "Channel 1 alias", "default": "4W" }
+		  },
 		  "additionalProperties": false
 		}
 		""";

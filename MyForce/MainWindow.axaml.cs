@@ -374,9 +374,13 @@ public partial class MainWindow : Window
 
 	// RADIO page secondary controls. These depend on per-radio plugin support (channel
 	// stepping, scan, geo-area, nuisance delete, ext audio) and are placeholders for now.
-	private void OnRadioListenPressed(object? sender, PointerPressedEventArgs e) { }
+	// LISTEN button: toggle the RX monitor mute for the radio currently shown on the RADIO page.
+	private void OnRadioListenPressed(object? sender, PointerPressedEventArgs e)
+		=> _viewModel.ToggleSelectedRadioListen();
 
-	private void OnRadioTalkPressed(object? sender, PointerPressedEventArgs e) { }
+	// TALK button: designate the radio currently shown on the RADIO page as the single talk radio.
+	private void OnRadioTalkPressed(object? sender, PointerPressedEventArgs e)
+		=> _viewModel.DesignateSelectedAsTalkRadio();
 
 	private void OnRadioChannelUpPressed(object? sender, PointerPressedEventArgs e) { }
 
