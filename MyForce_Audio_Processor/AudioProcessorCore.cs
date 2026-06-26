@@ -1385,6 +1385,32 @@ internal sealed record PersistedBridgeMember(
 			cancellationToken: CancellationToken.None).ConfigureAwait(false);
 	}
 
+	/// <summary>
+	/// Publishes the radio runtime + service registry filtered to the currently-declared radios (the live
+	/// engine still holds removed radios until restart, but the UI view should track add/remove now, §4.4).
+	/// </summary>
+	private async Task PublishDeclaredRadioViewAsync(IReadOnlyList<PersistedRadioDefinition> definitions)
+	{
+		var declaredIds = new HashSet<string>(definitions.Select(static d => d.RadioId), StringComparer.OrdinalIgnoreCase);
+		var visibleRadios = _registry.Radios
+			.Where(radio => declaredIds.Contains(radio.Id.Value) || radio.Kind == RadioRuntimeKind.Resource)
+			.ToArray()
+			.AsReadOnly();
+		var view = new AudioProcessorRegistry(visibleRadios, _registry.Bridges);
+
+		await _mqttRuntime.PublishAsync(
+			_topics.RadioRuntimeTopic,
+			AudioProcessorJson.Serialize(RadioRuntimePayload.Create(view, _txStateMachine)),
+			retain: true,
+			cancellationToken: CancellationToken.None).ConfigureAwait(false);
+
+		await _mqttRuntime.PublishAsync(
+			_topics.ServiceRegistryTopic,
+			AudioProcessorJson.Serialize(ServiceRegistryPayload.Create(view)),
+			retain: true,
+			cancellationToken: CancellationToken.None).ConfigureAwait(false);
+	}
+
 	/// <summary>Publishes a radio's retained channel list (RM-reported list preferred, else static/manual, §3.11/§5.3).</summary>
 	private async Task PublishRadioChannelsAsync(RadioId radioId)
 	{
@@ -1446,7 +1472,10 @@ internal sealed record PersistedBridgeMember(
 			try
 			{
 				var stored = JsonSerializer.Deserialize<List<PersistedRadioDefinition>>(json, PersistedTopologySerializerOptions);
-				if (stored is { Count: > 0 })
+				// Return the stored list verbatim, even when EMPTY: an empty list is the intentional result
+				// of removing every radio. Reseeding from the live registry on Count==0 was re-adding the
+				// just-removed radios (they persist in the live registry until the next AP restart).
+				if (stored is not null)
 				{
 					return stored;
 				}
@@ -1457,6 +1486,8 @@ internal sealed record PersistedBridgeMember(
 			}
 		}
 
+		// Only reached on the very first write (no stored json yet) or unreadable json: seed from the live
+		// registry so an initial edit does not drop the starter topology.
 		return _registry.Radios
 			.Select(radio => new PersistedRadioDefinition(
 				radio.Id.Value,
@@ -1568,6 +1599,11 @@ internal sealed record PersistedBridgeMember(
 			retain: true,
 			cancellationToken: CancellationToken.None).ConfigureAwait(false);
 
+		// Re-publish the radio runtime + service registry filtered to the radios that are STILL declared, so a
+		// removed radio disappears from the RADIO RUNTIME / picker immediately instead of lingering until the
+		// next AP restart (the live engine retains it, but the UI-facing view reflects the new topology).
+		await PublishDeclaredRadioViewAsync(definitions).ConfigureAwait(false);
+
 		// A freshly added radio is not live-hydrated until the next AP restart, but its config_schema is
 		// static (from the plugin factory). Publish the new instance's retained registry/config so the
 		// admin "EDIT CONFIG" button can render and persist its settings immediately (§4.4).
@@ -1675,15 +1711,20 @@ internal sealed record PersistedBridgeMember(
 	private async Task ClearStaleRadioRetainedTopicsAsync()
 	{
 		var liveRadioIds = new HashSet<string>(_registry.Radios.Select(static radio => radio.Id.Value), StringComparer.OrdinalIgnoreCase);
-		foreach (var definition in _persistedTopology.RadioDefinitions)
-		{
-			if (string.IsNullOrWhiteSpace(definition.RadioId) || liveRadioIds.Contains(definition.RadioId))
-			{
-				continue;
-			}
 
-			AudioProcessorLog.Write("config", $"Clearing stale retained topics for unloaded radio '{definition.RadioId}' (type '{definition.TypeId}', no plugin).");
-			await ClearModuleRetainedTopicsAsync(definition.RadioId).ConfigureAwait(false);
+		// Stale ids to clear: persisted radios whose plugin is missing, plus the legacy auto-declared
+		// type-id radios (e.g. "barrett_2050") that earlier builds created per discovered plugin and which
+		// no longer exist now that plugins are addable-only.
+		var staleIds = _persistedTopology.RadioDefinitions
+			.Select(static definition => definition.RadioId)
+			.Concat(_pluginCatalog.Modules.Select(static module => module.TypeId))
+			.Where(id => !string.IsNullOrWhiteSpace(id) && !liveRadioIds.Contains(id))
+			.Distinct(StringComparer.OrdinalIgnoreCase);
+
+		foreach (var id in staleIds)
+		{
+			AudioProcessorLog.Write("config", $"Clearing stale retained topics for radio '{id}' (not in the live registry).");
+			await ClearModuleRetainedTopicsAsync(id).ConfigureAwait(false);
 		}
 	}
 
@@ -2335,45 +2376,18 @@ internal sealed class AudioProcessorRegistry
 		ArgumentNullException.ThrowIfNull(discoveredModules);
 		ArgumentNullException.ThrowIfNull(log);
 
-		var radios = new List<RadioRuntimeDefinition>();
-
-		// Module radios are declared only for plugins that were actually discovered: the AP must
-		// report the status of the modules it has, not a fixed catalog of modules it might host.
-		foreach (var module in discoveredModules)
+		// Discovered RM plugins are ADDABLE types (advertised on sys/plugins), NOT auto-declared instances.
+		// Auto-declaring one radio per plugin created a phantom instance (id = type id, e.g. "barrett_2050")
+		// alongside the operator's real "radio.barrett_2050.1", so the starter topology now contains only the
+		// always-present built-in resources. The operator adds module radios explicitly via add_module (§4.4).
+		var radios = new List<RadioRuntimeDefinition>
 		{
-			radios.Add(CreateDiscoveredModuleRadio(module));
-		}
+			// The 4-wire resource is a built-in AP capability rather than a plugin, so it is always present.
+			CreateResourceRadio(id: "4w", typeId: "4w_resource", displayName: "4-Wire Resource"),
+		};
 
-		// The 4-wire resource is a built-in AP capability rather than a plugin, so it is always present.
-		radios.Add(CreateResourceRadio(id: "4w", typeId: "4w_resource", displayName: "4-Wire Resource"));
-
-		log("config", $"Built starter topology from {discoveredModules.Count} discovered module plugin(s) plus the built-in 4-wire resource.");
+		log("config", $"Built starter topology with the built-in 4-wire resource ({discoveredModules.Count} plugin type(s) are addable via sys/plugins).");
 		return new AudioProcessorRegistry(radios.AsReadOnly(), Array.Empty<BridgeDefinition>());
-	}
-
-	/// <summary>
-	/// Builds a declared module radio from a discovered plugin's advertised metadata.
-	/// </summary>
-	private static RadioRuntimeDefinition CreateDiscoveredModuleRadio(AudioProcessorCoordinator.DiscoveredRadioModule module)
-	{
-		ArgumentNullException.ThrowIfNull(module);
-
-		// talk_permit defaults to false (§3.7.8): without an RM reporting Ready, TX uses a fixed
-		// lead. A radio that needs a talk-permit opts in via config once its RM reports readiness.
-		var config = new RadioModuleInstanceConfig(
-			new KeyingConfig(SelectPreferredKeying(module.Capabilities), null, 120, 60, false),
-			new DetectConfig(SelectPreferredDetect(module.Capabilities), null),
-			new DeviceBindingConfig($"radio-{module.TypeId}"),
-			new JsonObject());
-
-		return CreateRadioDefinition(
-			new RadioId(module.TypeId),
-			module.TypeId,
-			module.DisplayName,
-			RadioRuntimeKind.Module,
-			module.Capabilities,
-			module.ConfigSchema,
-			config);
 	}
 
 	// Internal so the coordinator can build a single radio's runtime definition when a radio is added at

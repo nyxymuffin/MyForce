@@ -2786,6 +2786,14 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 		var payloadText = message.ConvertPayloadToString();
 		if (string.IsNullOrWhiteSpace(payloadText))
 		{
+			// A cleared (empty) retained topic means the module was removed (§4.4). Drop its System Status
+			// row so a deleted radio/controller does not linger as "online".
+			if (string.Equals(topicParts[3], "status", StringComparison.OrdinalIgnoreCase))
+			{
+				var clearedComponentId = MapModuleIdToComponentId(topicParts[2]);
+				Dispatcher.UIThread.Post(() => RemoveSystemComponentStatus(clearedComponentId));
+			}
+
 			return true;
 		}
 
@@ -5033,6 +5041,27 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 		}
 
 		SystemComponentStatuses = updatedStatuses;
+		RaiseAdminSystemStatusChanged();
+	}
+
+	// Remove a System Status row entirely (its module cleared its retained status, i.e. was removed). The
+	// local UI row is never removed.
+	private void RemoveSystemComponentStatus(string componentId)
+	{
+		if (string.IsNullOrWhiteSpace(componentId) || string.Equals(componentId, "ui", StringComparison.OrdinalIgnoreCase))
+		{
+			return;
+		}
+
+		var remaining = SystemComponentStatuses
+			.Where(component => !string.Equals(component.Id, componentId, StringComparison.OrdinalIgnoreCase))
+			.ToArray();
+		if (remaining.Length == SystemComponentStatuses.Count)
+		{
+			return;
+		}
+
+		SystemComponentStatuses = remaining;
 		RaiseAdminSystemStatusChanged();
 	}
 
