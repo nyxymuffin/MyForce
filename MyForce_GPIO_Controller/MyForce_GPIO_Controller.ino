@@ -198,10 +198,22 @@ uint8_t xlWriteReg(uint8_t reg, uint8_t value) {
 	return status;
 }
 
-// Push the 16-bit output shadow to both XL9535 output ports.
+// Push the 16-bit output shadow to both XL9535 output ports. If a write errors
+// (e.g. a transient bus glitch or a wedged bus), recover the bus and retry once so
+// the relay state is not silently lost.
 void xlPushOutputs() {
-	xlWriteReg(XL9535_OUTPUT_PORT0, (uint8_t)(g_xlOutputShadow & 0xFF));   // relays 1-8
-	xlWriteReg(XL9535_OUTPUT_PORT1, (uint8_t)(g_xlOutputShadow >> 8));     // relays 9-16
+	uint8_t s0 = xlWriteReg(XL9535_OUTPUT_PORT0, (uint8_t)(g_xlOutputShadow & 0xFF));   // relays 1-8
+	uint8_t s1 = xlWriteReg(XL9535_OUTPUT_PORT1, (uint8_t)(g_xlOutputShadow >> 8));     // relays 9-16
+	if (s0 != 0 || s1 != 0) {
+		if (LOG_VERBOSE) {
+			Serial.println("[I2C] output write failed; recovering bus and retrying.");
+		}
+		i2cBusRecover();
+		Wire.begin(PIN_XL9535_SDA, PIN_XL9535_SCL);
+		Wire.setClock(100000);
+		xlWriteReg(XL9535_OUTPUT_PORT0, (uint8_t)(g_xlOutputShadow & 0xFF));
+		xlWriteReg(XL9535_OUTPUT_PORT1, (uint8_t)(g_xlOutputShadow >> 8));
+	}
 }
 
 // Recover a wedged I2C bus: if the ESP32 reset mid-transaction (a re-flash or warm
@@ -228,6 +240,8 @@ void i2cBusRecover() {
 void xlBegin() {
 	i2cBusRecover();
 	Wire.begin(PIN_XL9535_SDA, PIN_XL9535_SCL);
+	Wire.setClock(100000);   // 100 kHz, conservative for longer/ribbon I2C runs
+	delay(5);                // let the bus settle after the manual recovery
 	g_xlOutputShadow = 0x0000;        // all off
 	xlPushOutputs();
 	xlWriteReg(XL9535_CONFIG_PORT0, 0x00);  // port 0 pins = outputs
