@@ -14,8 +14,49 @@
 //         %%%%%      %%%%
 //
 // Copyright (C) 2025-2026 NyxTel Wireless / Nyx Gallini
-
 //
+// MyForce Siren Interface Controller, ESP32 DevKit V1 + W5500 Lite firmware.
+// Drives the siren/lightbar via an XL9535-K16V5 16-channel I2C relay board.
+// External MQTT control-plane client (§3.2, §3.3, §5.2). All relay outputs are on
+// the I2C board, the ESP32 drives no relay pins directly.
+//
+// Libraries (Arduino Library Manager): Ethernet (W5500), PubSubClient, ArduinoJson
+// v7+, Wire (I2C for the XL9535 board).
+
+#include <SPI.h>
+#include <Ethernet.h>
+#include <PubSubClient.h>
+#include <ArduinoJson.h>
+#include <Wire.h>   // I2C master for the XL9535-K16V5 relay backend
+
+// ---------------------------------------------------------------------------
+// SPI pin mapping (ESP32 DevKit V1 -> W5500 Lite, VSPI bus)
+// ---------------------------------------------------------------------------
+#define PIN_W5500_SCK   18   // VSPI SCK  -> W5500 SCLK
+#define PIN_W5500_MISO  19   // VSPI MISO -> W5500 MISO
+#define PIN_W5500_MOSI  23   // VSPI MOSI -> W5500 MOSI
+#define PIN_W5500_CS    33   // Chip select -> W5500 SCS
+#define PIN_W5500_RST   26   // Hardware reset -> W5500 RSTn (optional)
+
+// ---------------------------------------------------------------------------
+// Network configuration. W5500 Lite has no on-board MAC, so supply a locally
+// administered one. The low byte differs from the GPIO controller so the two
+// ESP32s never collide on the LAN.
+// ---------------------------------------------------------------------------
+static byte g_macAddress[] = { 0xDE, 0xAD, 0xBE, 0xEF, 0xFE, 0x02 };
+
+// ---------------------------------------------------------------------------
+// MQTT broker configuration (project default: unencrypted 1883).
+// ---------------------------------------------------------------------------
+static IPAddress      g_brokerAddress(10, 43, 2, 220);   // MQTT broker IPv4
+static const uint16_t MQTT_BROKER_PORT = 1883;           // Unencrypted (project default)
+
+// ---------------------------------------------------------------------------
+// Module identity (§5.2). All topics are addressed by this instance <id>.
+// ---------------------------------------------------------------------------
+static const char* MODULE_ID   = "siren1";        // unique per controller on the bus
+static const char* MODULE_KIND = "external";      // radio_module | radio_resource | external
+static const char* MODULE_CAT  = "siren";         // radio | media | siren | scada | gpio
 static const int   PAYLOAD_VERSION = 1;           // envelope "v" (§5.8.1)
 
 // Admin credential for config-changing commands (§4.6). Dummy gate, not security.

@@ -1724,6 +1724,19 @@ internal sealed record PersistedBridgeMember(
 			AudioProcessorJson.Serialize(SystemDefinitionPayload.Create(_registry, _bridgeEngine.Definitions)),
 			retain: true,
 			cancellationToken: cancellationToken).ConfigureAwait(false);
+
+		// v3.0 resource lists that dynamic schema x-options resolve against (§3.9.5, §5.1).
+		await _mqttRuntime.PublishAsync(
+			_topics.SystemAudioDevicesTopic,
+			AudioProcessorJson.Serialize(SystemAudioDevicesPayload.Create(_audioFramework.Devices)),
+			retain: true,
+			cancellationToken: cancellationToken).ConfigureAwait(false);
+
+		await _mqttRuntime.PublishAsync(
+			_topics.SystemRelaySetsTopic,
+			AudioProcessorJson.Serialize(SystemRelaySetsPayload.Create(_persistedTopology.RelaySets)),
+			retain: true,
+			cancellationToken: cancellationToken).ConfigureAwait(false);
 	}
 
 	/// <summary>
@@ -2231,6 +2244,11 @@ internal sealed class AudioProcessorTopicFactory
 	public string SystemPluginsTopic => $"{SystemRootTopic}/plugins";
 
 	public string SystemDefinitionTopic => $"{SystemRootTopic}/definition";
+
+	// v3.0 resource lists for dynamic schema x-options pick-lists (§3.9.5, §5.1).
+	public string SystemAudioDevicesTopic => $"{SystemRootTopic}/audio_devices";
+
+	public string SystemRelaySetsTopic => $"{SystemRootTopic}/relay_sets";
 
 	public string ConsoleTxTopic => $"{ConsoleRootTopic}/tx";
 
@@ -3466,6 +3484,39 @@ internal sealed record AudioMixerStatePayload(IReadOnlyList<AudioMixerChannelPay
 }
 
 internal sealed record AudioDevicePayload(string DeviceId, string DisplayName, string Role, bool InputEnabled, bool OutputEnabled);
+
+/// <summary>One option for a dynamic schema pick-list (x-options): the stored value + display label.</summary>
+internal sealed record ResourceOptionPayload(string Value, string Label);
+
+/// <summary>
+/// myforce/sys/audio_devices (retained, §5.1): the capture + playback devices that
+/// device.rx_device / device.tx_device x-options resolve against (§3.7.8, §3.9.5).
+/// </summary>
+internal sealed record SystemAudioDevicesPayload(
+	IReadOnlyList<ResourceOptionPayload> Capture,
+	IReadOnlyList<ResourceOptionPayload> Playback)
+{
+	public static SystemAudioDevicesPayload Create(IReadOnlyList<AudioDevice> devices)
+	{
+		ArgumentNullException.ThrowIfNull(devices);
+		var capture = devices.Where(static d => d.InputEnabled).Select(static d => new ResourceOptionPayload(d.Id.Value, d.DisplayName)).ToArray();
+		var playback = devices.Where(static d => d.OutputEnabled).Select(static d => new ResourceOptionPayload(d.Id.Value, d.DisplayName)).ToArray();
+		return new SystemAudioDevicesPayload(capture, playback);
+	}
+}
+
+/// <summary>One relay-set option for the keying relay-set pick-list (§3.6.3).</summary>
+internal sealed record RelaySetOptionPayload(string Value, string Label, int Channels);
+
+/// <summary>myforce/sys/relay_sets (retained, §5.1): defined relay sets + channel counts.</summary>
+internal sealed record SystemRelaySetsPayload(IReadOnlyList<RelaySetOptionPayload> RelaySets)
+{
+	public static SystemRelaySetsPayload Create(IReadOnlyList<AudioProcessorCoordinator.RelaySetDefinition> relaySets)
+	{
+		ArgumentNullException.ThrowIfNull(relaySets);
+		return new SystemRelaySetsPayload(relaySets.Select(static r => new RelaySetOptionPayload(r.RelaySetId, r.RelaySetId, r.ChannelCount)).ToArray());
+	}
+}
 
 internal sealed record AudioBusPayload(string BusId, string DisplayName, string Direction, IReadOnlyList<string> ChannelIds);
 

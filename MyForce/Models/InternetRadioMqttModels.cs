@@ -63,6 +63,14 @@ internal static class InternetRadioMqttTopics
 	public const string SpeakerOutputCommandTopic = "myforce/ap/cmd/output-speaker";
 	public const string SystemPluginsTopic = "myforce/sys/plugins";
 	public const string SystemDefinitionTopic = "myforce/sys/definition";
+
+	// v3.0 radio-definition flow (§4.4, §5.1). Resource lists feed schema x-options pick-lists;
+	// the sys/cmd/* commands ask the AP (sole writer) to add/remove/alias an instance (admin-class).
+	public const string SystemAudioDevicesTopic = "myforce/sys/audio_devices";
+	public const string SystemRelaySetsTopic = "myforce/sys/relay_sets";
+	public const string AddModuleCommandTopic = "myforce/sys/cmd/add_module";
+	public const string RemoveModuleCommandTopic = "myforce/sys/cmd/remove_module";
+	public const string SetAliasCommandTopic = "myforce/sys/cmd/set_alias";
 	public const string ModuleTopicFilter = "myforce/module/+/+";
 	public const string ConsoleTxTopic = "myforce/console/tx";
 
@@ -106,6 +114,48 @@ internal static class InternetRadioMqttTopics
 	// to simulate a button press on the camera/DVR.
 	public const string GpioPulseCommandTopic = "myforce/module/gpio.relay1/cmd/pulse";
 }
+
+// ── v3.0 radio-definition flow (§4.4) ──
+
+/// <summary>One option for a dynamic schema x-options pick-list (value stored, label shown).</summary>
+public sealed record ResourceOptionMessage(string Value, string Label);
+
+/// <summary>myforce/sys/audio_devices (retained, §5.1): capture + playback device pick-lists.</summary>
+internal sealed record SystemAudioDevicesMessage(
+	IReadOnlyList<ResourceOptionMessage>? Capture,
+	IReadOnlyList<ResourceOptionMessage>? Playback);
+
+/// <summary>One relay-set option with its channel count (§3.6.3).</summary>
+public sealed record RelaySetOptionMessage(string Value, string Label, int Channels);
+
+/// <summary>myforce/sys/relay_sets (retained, §5.1): defined relay sets for the keying pick-list.</summary>
+internal sealed record SystemRelaySetsMessage(IReadOnlyList<RelaySetOptionMessage>? RelaySets);
+
+/// <summary>UI → AP create-instance command (myforce/sys/cmd/add_module, §4.4). Admin-class.</summary>
+internal sealed record AddModuleCommandMessage(
+	int V,
+	DateTimeOffset Ts,
+	[property: JsonPropertyName("msg_id")] string? MsgId,
+	string? Auth,
+	[property: JsonPropertyName("type_id")] string TypeId,
+	string? Alias);
+
+/// <summary>UI → AP remove-instance command (myforce/sys/cmd/remove_module, §4.4). Admin-class.</summary>
+internal sealed record RemoveModuleCommandMessage(
+	int V,
+	DateTimeOffset Ts,
+	[property: JsonPropertyName("msg_id")] string? MsgId,
+	string? Auth,
+	[property: JsonPropertyName("id")] string Id);
+
+/// <summary>UI → AP set-alias command (myforce/sys/cmd/set_alias, §4.4). Admin-class.</summary>
+internal sealed record SetAliasCommandMessage(
+	int V,
+	DateTimeOffset Ts,
+	[property: JsonPropertyName("msg_id")] string? MsgId,
+	string? Auth,
+	[property: JsonPropertyName("id")] string Id,
+	string Alias);
 
 /// <summary>HCD-published hand grip mode (lights / radio / patrol).</summary>
 internal sealed record HcdModeMessage(string? Mode);
