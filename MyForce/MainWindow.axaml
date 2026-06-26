@@ -342,8 +342,17 @@
                           ColumnDefinitions="86,86,88"
                           ColumnSpacing="6"
                           VerticalAlignment="Bottom">
-                        <!-- Camera Start Rec Button -->
-                        <Border Grid.Column="0" Classes="buttonFrame" Width="86" Height="93" PointerPressed="OnCameraRecordPressed">
+                        <!-- Camera Start Rec Button. Momentary: flashes the active highlight on
+                             press (IsCameraRecordActive) to confirm the GPIO pulse was sent. -->
+                        <Border Grid.Column="0" Classes="buttonFrame" Width="86" Height="93" PointerPressed="OnCameraRecordPressed" IsVisible="{Binding !IsCameraRecordActive}">
+                            <Viewbox Stretch="Uniform">
+                                <TextBlock Classes="white"
+                                           TextAlignment="Center"
+                                           VerticalAlignment="Center"
+                                           Text="REC" />
+                            </Viewbox>
+                        </Border>
+                        <Border Grid.Column="0" Classes="buttonFrame active" Width="86" Height="93" PointerPressed="OnCameraRecordPressed" IsVisible="{Binding IsCameraRecordActive}">
                             <Viewbox Stretch="Uniform">
                                 <TextBlock Classes="white"
                                            TextAlignment="Center"
@@ -352,7 +361,15 @@
                             </Viewbox>
                         </Border>
                         <!-- Camera Stop Rec Button -->
-                        <Border Grid.Column="1" Classes="buttonFrame" Width="86" Height="93" PointerPressed="OnCameraStopPressed">
+                        <Border Grid.Column="1" Classes="buttonFrame" Width="86" Height="93" PointerPressed="OnCameraStopPressed" IsVisible="{Binding !IsCameraStopActive}">
+                            <Viewbox Stretch="Uniform">
+                                <TextBlock Classes="white"
+                                           TextAlignment="Center"
+                                           VerticalAlignment="Center"
+                                           Text="STOP" />
+                            </Viewbox>
+                        </Border>
+                        <Border Grid.Column="1" Classes="buttonFrame active" Width="86" Height="93" PointerPressed="OnCameraStopPressed" IsVisible="{Binding IsCameraStopActive}">
                             <Viewbox Stretch="Uniform">
                                 <TextBlock Classes="white"
                                            TextAlignment="Center"
@@ -361,7 +378,15 @@
                             </Viewbox>
                         </Border>
                         <!-- Front Camera Auto Zoom -->
-                        <Border Grid.Column="2" Classes="buttonFrame" Width="88" Height="93" PointerPressed="OnCameraAutoZoomPressed">
+                        <Border Grid.Column="2" Classes="buttonFrame" Width="88" Height="93" PointerPressed="OnCameraAutoZoomPressed" IsVisible="{Binding !IsCameraAutoZoomActive}">
+                            <Viewbox Stretch="Uniform">
+                                <TextBlock Classes="white"
+                                           TextAlignment="Center"
+                                           VerticalAlignment="Center"
+                                           Text="AUTOZ" />
+                            </Viewbox>
+                        </Border>
+                        <Border Grid.Column="2" Classes="buttonFrame active" Width="88" Height="93" PointerPressed="OnCameraAutoZoomPressed" IsVisible="{Binding IsCameraAutoZoomActive}">
                             <Viewbox Stretch="Uniform">
                                 <TextBlock Classes="white"
                                            TextAlignment="Center"

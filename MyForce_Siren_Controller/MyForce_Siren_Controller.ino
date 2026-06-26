@@ -15,48 +15,7 @@
 //
 // Copyright (C) 2025-2026 NyxTel Wireless / Nyx Gallini
 
-// MyForce Siren Interface Controller, ESP32 DevKit V1 + W5500 Lite firmware.
-// Drives the siren/lightbar via an XL9535-K16V5 16-channel I2C relay board.
-// External MQTT control-plane client (§3.2, §3.3, §5.2). All relay outputs are on
-// the I2C board, the ESP32 drives no relay pins directly.
 //
-// Libraries (Arduino Library Manager): Ethernet (W5500), PubSubClient, ArduinoJson
-// v7+, Wire (I2C for the XL9535 board).
-
-#include <SPI.h>
-#include <Ethernet.h>
-#include <PubSubClient.h>
-#include <ArduinoJson.h>
-#include <Wire.h>   // I2C master for the XL9535-K16V5 relay backend
-
-// ---------------------------------------------------------------------------
-// SPI pin mapping (ESP32 DevKit V1 -> W5500 Lite, VSPI bus)
-// ---------------------------------------------------------------------------
-#define PIN_W5500_SCK   18   // VSPI SCK  -> W5500 SCLK
-#define PIN_W5500_MISO  19   // VSPI MISO -> W5500 MISO
-#define PIN_W5500_MOSI  23   // VSPI MOSI -> W5500 MOSI
-#define PIN_W5500_CS    33   // Chip select -> W5500 SCS
-#define PIN_W5500_RST   26   // Hardware reset -> W5500 RSTn (optional)
-
-// ---------------------------------------------------------------------------
-// Network configuration. W5500 Lite has no on-board MAC, so supply a locally
-// administered one. The low byte differs from the GPIO controller so the two
-// ESP32s never collide on the LAN.
-// ---------------------------------------------------------------------------
-static byte g_macAddress[] = { 0xDE, 0xAD, 0xBE, 0xEF, 0xFE, 0x02 };
-
-// ---------------------------------------------------------------------------
-// MQTT broker configuration (project default: unencrypted 1883).
-// ---------------------------------------------------------------------------
-static IPAddress      g_brokerAddress(10, 43, 2, 220);   // MQTT broker IPv4
-static const uint16_t MQTT_BROKER_PORT = 1883;           // Unencrypted (project default)
-
-// ---------------------------------------------------------------------------
-// Module identity (§5.2). All topics are addressed by this instance <id>.
-// ---------------------------------------------------------------------------
-static const char* MODULE_ID   = "siren1";        // unique per controller on the bus
-static const char* MODULE_KIND = "external";      // radio_module | radio_resource | external
-static const char* MODULE_CAT  = "siren";         // radio | media | siren | scada | gpio
 static const int   PAYLOAD_VERSION = 1;           // envelope "v" (§5.8.1)
 
 // Admin credential for config-changing commands (§4.6). Dummy gate, not security.
@@ -213,7 +172,7 @@ unsigned long g_lastStatusLog = 0;     // periodic connection heartbeat to seria
 
 // Verbose serial logging for field diagnostics: every inbound MQTT message, command
 // dispatch, relay/I2C writes, and a periodic connection heartbeat. Set false to quieten.
-static const bool          LOG_VERBOSE = true;
+static const bool          LOG_VERBOSE = false;
 static const unsigned long STATUS_LOG_INTERVAL = 5000;   // ms between heartbeat lines
 
 // ===========================================================================
@@ -893,6 +852,7 @@ bool mqttReconnect() {
 		publishRegistry();                    // self-describe (§4.5)
 		publishState();                       // current relay/input snapshot
 		bool subOk = g_mqttClient.subscribe(g_topicCmdSub, 1);  // all commands, QoS 1
+
 		// LOG: confirm we are actually subscribed to the command wildcard. If this
 		// says FAILED, no commands will ever arrive.
 		Serial.print("Subscribed to ");
@@ -913,6 +873,7 @@ bool mqttReconnect() {
 void setup() {
 	Serial.begin(115200);
 	delay(100);
+
 	// In verbose mode, pause so the serial monitor (which reopens the port a moment
 	// after the reset-on-connect) catches the boot scan and self-test output.
 	if (LOG_VERBOSE) {
@@ -987,6 +948,7 @@ void loop() {
 	// the ESP32 has an IP, a live MQTT link, and the relay board responding on I2C.
 	if (LOG_VERBOSE && millis() - g_lastStatusLog >= STATUS_LOG_INTERVAL) {
 		g_lastStatusLog = millis();
+
 		// Probe the relay board so the heartbeat shows whether it ACKs at 0x20 (the
 		// boot I2C scan scrolls past before the serial monitor reattaches on reset).
 		Wire.beginTransmission(XL9535_I2C_ADDR);

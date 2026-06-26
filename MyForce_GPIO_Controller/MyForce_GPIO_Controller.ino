@@ -17,6 +17,8 @@
 
 //
 
+//
+
 #include <SPI.h>
 #include <Ethernet.h>
 #include <PubSubClient.h>
@@ -165,7 +167,7 @@ unsigned long g_lastStatusLog = 0;     // periodic connection heartbeat to seria
 
 // Verbose serial logging for field diagnostics: every inbound MQTT message, command
 // dispatch, relay/I2C writes, and a periodic connection heartbeat. Set false to quieten.
-static const bool          LOG_VERBOSE = true;
+static const bool          LOG_VERBOSE = false;
 static const unsigned long STATUS_LOG_INTERVAL = 5000;   // ms between heartbeat lines
 
 // ===========================================================================
@@ -680,6 +682,7 @@ bool mqttReconnect() {
 		publishRegistry();                    // self-describe (§4.5)
 		publishState();                       // current relay/input snapshot
 		bool subOk = g_mqttClient.subscribe(g_topicCmdSub, 1);  // all commands, QoS 1
+
 		// LOG: confirm we are actually subscribed to the command wildcard. If this
 		// says FAILED, no commands will ever arrive.
 		Serial.print("Subscribed to ");
@@ -700,6 +703,7 @@ bool mqttReconnect() {
 void setup() {
 	Serial.begin(115200);
 	delay(100);
+
 	// In verbose mode, pause so the serial monitor (which reopens the port a moment
 	// after the reset-on-connect) catches the boot scan and self-test output.
 	if (LOG_VERBOSE) {
@@ -774,6 +778,7 @@ void loop() {
 	// the ESP32 has an IP, a live MQTT link, and the relay board responding on I2C.
 	if (LOG_VERBOSE && millis() - g_lastStatusLog >= STATUS_LOG_INTERVAL) {
 		g_lastStatusLog = millis();
+
 		// Probe the relay board so the heartbeat shows whether it ACKs at 0x20 (the
 		// boot I2C scan scrolls past before the serial monitor reattaches on reset).
 		Wire.beginTransmission(XL9535_I2C_ADDR);

@@ -174,6 +174,11 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 	// camera/DVR to register a button press, short enough to feel instant.
 	private const int CameraTriggerPulseMs = 300;
 
+	// How long a camera button shows its press-flash highlight, confirming the press
+	// registered and the GPIO pulse was published. Slightly longer than the pulse so
+	// it is clearly visible.
+	private const int CameraFeedbackFlashMs = 450;
+
 	private static readonly TimeSpan ComponentHeartbeatTimeout = TimeSpan.FromSeconds(15);
 
 	private const int InternetStationViewportSize = 6;
@@ -2630,14 +2635,59 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 		_ = PublishCommandAsync(InternetRadioMqttTopics.SirenCodeCommandTopic, command);
 	}
 
-	// Camera REC button: pulse the GPIO controller's camera_record relay.
-	public void TriggerCameraRecord() => PublishGpioRelayPulse("camera_record");
+	// Camera REC button: pulse the GPIO controller's camera_record relay, flashing
+	// the button so the operator gets immediate confirmation the press registered.
+	public void TriggerCameraRecord()
+	{
+		PublishGpioRelayPulse("camera_record");
+		_ = FlashCameraButtonAsync(active => IsCameraRecordActive = active);
+	}
 
 	// Camera STOP button: pulse the GPIO controller's camera_stop relay.
-	public void TriggerCameraStop() => PublishGpioRelayPulse("camera_stop");
+	public void TriggerCameraStop()
+	{
+		PublishGpioRelayPulse("camera_stop");
+		_ = FlashCameraButtonAsync(active => IsCameraStopActive = active);
+	}
 
 	// Camera AUTOZ button: pulse the GPIO controller's cam_autozoom relay.
-	public void TriggerCameraAutoZoom() => PublishGpioRelayPulse("cam_autozoom");
+	public void TriggerCameraAutoZoom()
+	{
+		PublishGpioRelayPulse("cam_autozoom");
+		_ = FlashCameraButtonAsync(active => IsCameraAutoZoomActive = active);
+	}
+
+	// Briefly lights a momentary camera button's active highlight as press feedback,
+	// then clears it. The clear runs on the UI thread so the binding updates safely.
+	private static async Task FlashCameraButtonAsync(Action<bool> setActive)
+	{
+		setActive(true);
+		await Task.Delay(CameraFeedbackFlashMs).ConfigureAwait(false);
+		await Dispatcher.UIThread.InvokeAsync(() => setActive(false));
+	}
+
+	// Press-flash state for the momentary camera buttons (REC / STOP / AUTOZ). True for
+	// CameraFeedbackFlashMs after a press so the button shows the active highlight.
+	private bool _isCameraRecordActive;
+	public bool IsCameraRecordActive
+	{
+		get => _isCameraRecordActive;
+		private set => SetProperty(ref _isCameraRecordActive, value);
+	}
+
+	private bool _isCameraStopActive;
+	public bool IsCameraStopActive
+	{
+		get => _isCameraStopActive;
+		private set => SetProperty(ref _isCameraStopActive, value);
+	}
+
+	private bool _isCameraAutoZoomActive;
+	public bool IsCameraAutoZoomActive
+	{
+		get => _isCameraAutoZoomActive;
+		private set => SetProperty(ref _isCameraAutoZoomActive, value);
+	}
 
 	// Publishes a momentary pulse to a named GPIO controller relay. The firmware
 	// energises the relay then auto-releases it after CameraTriggerPulseMs, simulating
