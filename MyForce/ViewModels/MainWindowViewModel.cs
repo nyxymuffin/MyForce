@@ -2806,26 +2806,55 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 	// --- L/S page: scene lights (toggle) + air horn (momentary) -----------------
 	// Each drives a Siren Interface Controller relay via cmd/set { function, state }.
 
+	// Scene-light status colors: the SCENE "LA / TD / RA" abbreviations go green while
+	// their light is active (§ L/S status panel).
+	private static readonly IBrush SceneActiveBrush = new SolidColorBrush(Color.Parse("#1CFF1C"));
+
 	private bool _isLeftAlleyActive;
 	public bool IsLeftAlleyActive
 	{
 		get => _isLeftAlleyActive;
-		private set => SetProperty(ref _isLeftAlleyActive, value);
+		private set
+		{
+			if (SetProperty(ref _isLeftAlleyActive, value))
+			{
+				PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(LeftAlleyStatusBrush)));
+			}
+		}
 	}
 
 	private bool _isTakeDownActive;
 	public bool IsTakeDownActive
 	{
 		get => _isTakeDownActive;
-		private set => SetProperty(ref _isTakeDownActive, value);
+		private set
+		{
+			if (SetProperty(ref _isTakeDownActive, value))
+			{
+				PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(TakeDownStatusBrush)));
+			}
+		}
 	}
 
 	private bool _isRightAlleyActive;
 	public bool IsRightAlleyActive
 	{
 		get => _isRightAlleyActive;
-		private set => SetProperty(ref _isRightAlleyActive, value);
+		private set
+		{
+			if (SetProperty(ref _isRightAlleyActive, value))
+			{
+				PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(RightAlleyStatusBrush)));
+			}
+		}
 	}
+
+	// Green when the matching scene light is active, white otherwise.
+	public IBrush LeftAlleyStatusBrush => IsLeftAlleyActive ? SceneActiveBrush : Brushes.White;
+
+	public IBrush TakeDownStatusBrush => IsTakeDownActive ? SceneActiveBrush : Brushes.White;
+
+	public IBrush RightAlleyStatusBrush => IsRightAlleyActive ? SceneActiveBrush : Brushes.White;
 
 	private bool _isAirHornActive;
 	public bool IsAirHornActive

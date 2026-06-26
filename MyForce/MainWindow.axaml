@@ -285,10 +285,15 @@
                                    Height="31"
                                    FontSize="18"
                                    Text="{Binding DirectionalStatus, StringFormat='DIRECTIONAL :  {0}'}" />
-                        <TextBlock Classes="white"
-                                   Height="31"
-                                   FontSize="18"
-                                   Text="SCENE :  LA / TD / RA" />
+                        <!-- SCENE status: each abbreviation goes green while its scene light is active. -->
+                        <StackPanel Orientation="Horizontal" Height="31" Spacing="0">
+                            <TextBlock Classes="white" FontSize="18" VerticalAlignment="Center" Text="SCENE :  " />
+                            <TextBlock Classes="white" FontSize="18" VerticalAlignment="Center" Foreground="{Binding LeftAlleyStatusBrush}" Text="LA" />
+                            <TextBlock Classes="white" FontSize="18" VerticalAlignment="Center" Text=" / " />
+                            <TextBlock Classes="white" FontSize="18" VerticalAlignment="Center" Foreground="{Binding TakeDownStatusBrush}" Text="TD" />
+                            <TextBlock Classes="white" FontSize="18" VerticalAlignment="Center" Text=" / " />
+                            <TextBlock Classes="white" FontSize="18" VerticalAlignment="Center" Foreground="{Binding RightAlleyStatusBrush}" Text="RA" />
+                        </StackPanel>
                         <Grid Height="31"
                               ColumnDefinitions="Auto,*"
                               ColumnSpacing="4">
