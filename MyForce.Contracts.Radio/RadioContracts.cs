@@ -213,8 +213,10 @@ public sealed record DetectConfig(
 
 /// <summary>
 /// Describes the AP soundcard binding for a radio that does not provide audio through an ARM.
+/// v3.0 (§3.7.8) splits the binding into separate capture (rx) and playback (tx) devices, which may
+/// name the same card or two different cards. Soundcard is retained for back-compat / single-card use.
 /// </summary>
-public sealed record DeviceBindingConfig(string? Soundcard);
+public sealed record DeviceBindingConfig(string? Soundcard, string? RxDevice = null, string? TxDevice = null);
 
 /// <summary>
 /// Combines the AP-owned common radio config sections with RM-owned settings.
@@ -402,14 +404,17 @@ public static class RadioModuleSchemaBuilder
 
 	private static JsonObject BuildDeviceSchema()
 	{
+		// v3.0 (§3.7.8): separate capture (rx) and playback (tx) bindings, each a dynamic pick-list
+		// (x-options) resolved against the AP's published audio-device list (§3.9.5).
 		return new JsonObject
 		{
 			["type"] = "object",
 			["properties"] = new JsonObject
 			{
-				["soundcard"] = new JsonObject { ["type"] = "string" }
+				["rx_device"] = new JsonObject { ["type"] = "string", ["title"] = "RX soundcard (capture)", ["x-options"] = "audio_devices.capture" },
+				["tx_device"] = new JsonObject { ["type"] = "string", ["title"] = "TX soundcard (playback)", ["x-options"] = "audio_devices.playback" }
 			},
-			["required"] = new JsonArray("soundcard")
+			["required"] = new JsonArray("rx_device", "tx_device")
 		};
 	}
 

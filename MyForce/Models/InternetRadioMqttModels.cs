@@ -71,6 +71,9 @@ internal static class InternetRadioMqttTopics
 	public const string AddModuleCommandTopic = "myforce/sys/cmd/add_module";
 	public const string RemoveModuleCommandTopic = "myforce/sys/cmd/remove_module";
 	public const string SetAliasCommandTopic = "myforce/sys/cmd/set_alias";
+
+	// Per-module config edit (§3.9.5/§4.4): the schema-driven editor publishes the full config here.
+	public static string ModuleConfigCommandTopic(string id) => $"myforce/module/{id}/cmd/config";
 	public const string ModuleTopicFilter = "myforce/module/+/+";
 	public const string ConsoleTxTopic = "myforce/console/tx";
 
@@ -167,6 +170,15 @@ internal sealed record SetAliasCommandMessage(
 	string? Auth,
 	[property: JsonPropertyName("id")] string Id,
 	string Alias);
+
+/// <summary>UI → AP per-module config edit (module/&lt;id&gt;/cmd/config, §3.9.5/§4.4). Admin-class.</summary>
+internal sealed record ModuleConfigCommandMessage(
+	int V,
+	DateTimeOffset Ts,
+	[property: JsonPropertyName("msg_id")] string? MsgId,
+	string? Auth,
+	[property: JsonPropertyName("id")] string Id,
+	System.Text.Json.Nodes.JsonObject Config);
 
 /// <summary>HCD-published hand grip mode (lights / radio / patrol).</summary>
 internal sealed record HcdModeMessage(string? Mode);

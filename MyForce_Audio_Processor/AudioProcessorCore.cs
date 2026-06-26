@@ -802,12 +802,11 @@ internal sealed record PersistedBridgeMember(
 				return true;
 			}
 
-			// Persist the accepted config to the System Config Store and mirror it back retained
-			// (§4.2/§4.4). The RM-owned settings section is the new truth on the next boot; live
-			// re-apply of disruptive common-section changes is deferred (§3.6.9).
-			var acceptedSettings = command.Config["settings"] as JsonObject ?? command.Config;
-			var mergedConfig = radio.Config with { Settings = (JsonObject)acceptedSettings.DeepClone() };
-			PersistRadioInstanceConfig(radio, mergedConfig.Settings);
+			// Merge the submitted config (keying/detect/device/settings, any subset) onto the current
+			// config and persist ALL of it, so soundcard/keying/detect/settings survive a reboot and
+			// nothing has to be reconfigured after restart (§3.7.8/§4.2/§4.4).
+			var mergedConfig = AudioProcessorRegistry.InstanceConfigFromJson(command.Config.ToJsonString(), radio.Config);
+			PersistRadioInstanceConfig(radio, mergedConfig);
 			AudioProcessorLog.Write("config", $"Persisted config for module '{moduleId}' to the System Config Store.");
 			await _mqttRuntime.PublishAsync(
 				_topics.ModuleConfigTopic(radio.Id),
@@ -1247,18 +1246,20 @@ internal sealed record PersistedBridgeMember(
 	/// declared topology is re-serialized so other radios' definitions are preserved; on the next
 	/// boot the store rehydrates this config as the truth.
 	/// </summary>
-	private void PersistRadioInstanceConfig(RadioRuntimeDefinition radio, JsonObject settings)
+	private void PersistRadioInstanceConfig(RadioRuntimeDefinition radio, RadioModuleInstanceConfig config)
 	{
 		ArgumentNullException.ThrowIfNull(radio);
-		ArgumentNullException.ThrowIfNull(settings);
+		ArgumentNullException.ThrowIfNull(config);
 
 		var definitions = LoadPersistedRadioDefinitionsForWrite();
+		// Persist the FULL instance config (keying/detect/device/settings), so every operator-set
+		// value survives a reboot and is re-hydrated by CreateInstanceConfig (§4.2/§4.4).
 		var updated = new PersistedRadioDefinition(
 			radio.Id.Value,
 			radio.TypeId,
 			radio.DisplayName,
 			radio.Kind.ToString(),
-			settings.ToJsonString());
+			AudioProcessorRegistry.InstanceConfigToJson(config).ToJsonString());
 
 		var existingIndex = definitions.FindIndex(definition => string.Equals(definition.RadioId, radio.Id.Value, StringComparison.OrdinalIgnoreCase));
 		if (existingIndex >= 0)
@@ -2129,12 +2130,179 @@ internal sealed class AudioProcessorRegistry
 		ArgumentNullException.ThrowIfNull(definition);
 		ArgumentNullException.ThrowIfNull(capabilities);
 
-		var settings = DeserializeSettings(definition.InstanceConfigJson);
-		return new RadioModuleInstanceConfig(
+		// Defaults used for any section the persisted config does not carry (or first boot).
+		var defaults = new RadioModuleInstanceConfig(
 			new KeyingConfig(SelectPreferredKeying(capabilities), null, 120, 60, false),
 			new DetectConfig(SelectPreferredDetect(capabilities), null),
 			new DeviceBindingConfig($"radio-{definition.RadioId}"),
-			settings);
+			[]);
+		return InstanceConfigFromJson(definition.InstanceConfigJson, defaults);
+	}
+
+	// Serialise the full instance config to the persisted/canonical JSON shape (snake_case keys that
+	// match the instance schema field names, §3.7.8) so the editor round-trips cleanly.
+	public static JsonObject InstanceConfigToJson(RadioModuleInstanceConfig config)
+	{
+		var keying = new JsonObject
+		{
+			["method"] = config.Keying.Method.ToString().ToLowerInvariant(),
+			["ptt_lead_ms"] = config.Keying.PttLeadMs,
+			["ptt_tail_ms"] = config.Keying.PttTailMs,
+			["talk_permit"] = config.Keying.TalkPermit,
+		};
+		if (config.Keying.Relay is { } relay)
+		{
+			keying["relay"] = new JsonObject { ["relay_set"] = relay.RelaySet, ["channel"] = relay.Channel };
+		}
+
+		var detect = new JsonObject { ["method"] = config.Detect.Method.ToString().ToLowerInvariant() };
+		if (config.Detect.Vox is { } vox)
+		{
+			detect["vox"] = new JsonObject { ["threshold_db"] = vox.ThresholdDb, ["attack_ms"] = vox.AttackMs, ["hang_ms"] = vox.HangMs };
+		}
+
+		var device = new JsonObject
+		{
+			["soundcard"] = config.Device?.Soundcard,
+			["rx_device"] = config.Device?.RxDevice,
+			["tx_device"] = config.Device?.TxDevice,
+		};
+
+		return new JsonObject
+		{
+			["keying"] = keying,
+			["detect"] = detect,
+			["device"] = device,
+			["settings"] = (JsonObject)((config.Settings as JsonNode)?.DeepClone() ?? new JsonObject()),
+		};
+	}
+
+	// Rebuild the typed config from persisted/submitted JSON, falling back to defaults per section.
+	// Back-compat: an older store that held ONLY the settings object is treated as settings-only.
+	public static RadioModuleInstanceConfig InstanceConfigFromJson(string? json, RadioModuleInstanceConfig defaults)
+	{
+		if (string.IsNullOrWhiteSpace(json))
+		{
+			return defaults;
+		}
+
+		JsonObject? root;
+		try
+		{
+			root = JsonNode.Parse(json) as JsonObject;
+		}
+		catch (JsonException)
+		{
+			return defaults;
+		}
+
+		if (root is null)
+		{
+			return defaults;
+		}
+
+		if (!root.ContainsKey("keying") && !root.ContainsKey("detect") && !root.ContainsKey("device") && !root.ContainsKey("settings"))
+		{
+			// Legacy settings-only store.
+			return defaults with { Settings = root };
+		}
+
+		var settings = root["settings"] as JsonObject ?? defaults.Settings;
+
+		var keying = defaults.Keying;
+		if (root["keying"] is JsonObject keyingNode)
+		{
+			var relay = defaults.Keying.Relay;
+			if (keyingNode["relay"] is JsonObject relayNode)
+			{
+				relay = new RelayBinding(
+					ReadString(relayNode["relay_set"]) ?? relay?.RelaySet ?? "RS-1",
+					ReadInt(relayNode["channel"], relay?.Channel ?? 1));
+			}
+
+			keying = new KeyingConfig(
+				Enum.TryParse<KeyingMethod>(ReadString(keyingNode["method"]), true, out var keyMethod) ? keyMethod : defaults.Keying.Method,
+				relay,
+				ReadInt(keyingNode["ptt_lead_ms"], defaults.Keying.PttLeadMs),
+				ReadInt(keyingNode["ptt_tail_ms"], defaults.Keying.PttTailMs),
+				ReadBool(keyingNode["talk_permit"], defaults.Keying.TalkPermit));
+		}
+
+		var detect = defaults.Detect;
+		if (root["detect"] is JsonObject detectNode)
+		{
+			var vox = defaults.Detect.Vox;
+			if (detectNode["vox"] is JsonObject voxNode)
+			{
+				vox = new VoxConfig(
+					ReadDouble(voxNode["threshold_db"], vox?.ThresholdDb ?? -40),
+					ReadInt(voxNode["attack_ms"], vox?.AttackMs ?? 10),
+					ReadInt(voxNode["hang_ms"], vox?.HangMs ?? 250));
+			}
+
+			detect = new DetectConfig(
+				Enum.TryParse<DetectMethod>(ReadString(detectNode["method"]), true, out var detMethod) ? detMethod : defaults.Detect.Method,
+				vox);
+		}
+
+		var device = defaults.Device;
+		if (root["device"] is JsonObject deviceNode)
+		{
+			device = new DeviceBindingConfig(
+				ReadString(deviceNode["soundcard"]) ?? defaults.Device?.Soundcard,
+				ReadString(deviceNode["rx_device"]) ?? defaults.Device?.RxDevice,
+				ReadString(deviceNode["tx_device"]) ?? defaults.Device?.TxDevice);
+		}
+
+		return new RadioModuleInstanceConfig(keying, detect, device, settings);
+	}
+
+	private static string? ReadString(JsonNode? node)
+	{
+		try
+		{
+			return node?.GetValue<string>();
+		}
+		catch (Exception ex) when (ex is InvalidOperationException or FormatException)
+		{
+			return node?.ToString();
+		}
+	}
+
+	private static int ReadInt(JsonNode? node, int fallback)
+	{
+		try
+		{
+			return node is null ? fallback : (int)node.GetValue<double>();
+		}
+		catch (Exception ex) when (ex is InvalidOperationException or FormatException)
+		{
+			return fallback;
+		}
+	}
+
+	private static double ReadDouble(JsonNode? node, double fallback)
+	{
+		try
+		{
+			return node is null ? fallback : node.GetValue<double>();
+		}
+		catch (Exception ex) when (ex is InvalidOperationException or FormatException)
+		{
+			return fallback;
+		}
+	}
+
+	private static bool ReadBool(JsonNode? node, bool fallback)
+	{
+		try
+		{
+			return node?.GetValue<bool>() ?? fallback;
+		}
+		catch (Exception ex) when (ex is InvalidOperationException or FormatException)
+		{
+			return fallback;
+		}
 	}
 
 	private static JsonObject DeserializeSettings(string? json)
@@ -3502,7 +3670,7 @@ internal sealed record RadioInstanceConfigPayload(
 		return new RadioInstanceConfigPayload(
 			KeyingConfigPayload.Create(config.Keying),
 			DetectConfigPayload.Create(config.Detect),
-			config.Device is null ? null : new DeviceBindingPayload(config.Device.Soundcard),
+			config.Device is null ? null : new DeviceBindingPayload(config.Device.Soundcard, config.Device.RxDevice, config.Device.TxDevice),
 			(JsonObject)config.Settings.DeepClone());
 	}
 }
@@ -3525,7 +3693,10 @@ internal sealed record DetectConfigPayload(string Method, VoxConfig? Vox)
 	}
 }
 
-internal sealed record DeviceBindingPayload(string? Soundcard);
+internal sealed record DeviceBindingPayload(
+	string? Soundcard,
+	[property: JsonPropertyName("rx_device")] string? RxDevice = null,
+	[property: JsonPropertyName("tx_device")] string? TxDevice = null);
 
 internal sealed record RadioTxStatePayload(
 	string Phase,

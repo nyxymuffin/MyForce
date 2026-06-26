@@ -1327,6 +1327,46 @@
                             </Border>
                         </Border>
 
+                        <!-- Schema-driven config editor (§3.9.5): renders the radio's config_schema as
+                             widgets, with device/relay/x-options pick-lists sourced from the retained
+                             sys/audio_devices + sys/relay_sets resource lists. -->
+                        <Border Width="916" Height="637" IsVisible="{Binding IsRadioConfigEditorVisible}" Background="#CC000000" Padding="40">
+                            <Border Classes="panel" Padding="16">
+                                <Grid RowDefinitions="40,*,56" RowSpacing="12">
+                                    <TextBlock Classes="white" FontSize="24" Text="{Binding EditingRadioTitle}" />
+                                    <ScrollViewer Grid.Row="1" HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto">
+                                        <StackPanel Spacing="6">
+                                            <TextBlock Classes="white" FontSize="14" IsVisible="{Binding !HasRadioConfigFields}" Text="This radio published no editable config schema yet." />
+                                            <ItemsControl ItemsSource="{Binding RadioConfigFields}">
+                                                <ItemsControl.ItemTemplate>
+                                                    <DataTemplate x:DataType="viewModels:ConfigFieldItem">
+                                                        <Grid ColumnDefinitions="240,*" ColumnSpacing="10" Margin="0,0,0,6">
+                                                            <TextBlock Grid.Column="0" Classes="white" FontSize="13" VerticalAlignment="Center" TextWrapping="Wrap" Text="{Binding Title}" />
+                                                            <TextBox Grid.Column="1" FontSize="13" IsVisible="{Binding IsTextOrNumber}" Text="{Binding StringValue, Mode=TwoWay}" />
+                                                            <CheckBox Grid.Column="1" IsVisible="{Binding IsBool}" IsChecked="{Binding BoolValue, Mode=TwoWay}" />
+                                                            <ComboBox Grid.Column="1" HorizontalAlignment="Stretch" IsVisible="{Binding IsChoice}" ItemsSource="{Binding Choices}" SelectedValue="{Binding SelectedValue, Mode=TwoWay}" SelectedValueBinding="{Binding Value}">
+                                                                <ComboBox.ItemTemplate>
+                                                                    <DataTemplate x:DataType="models:ResourceOptionMessage"><TextBlock Text="{Binding Label}" /></DataTemplate>
+                                                                </ComboBox.ItemTemplate>
+                                                            </ComboBox>
+                                                        </Grid>
+                                                    </DataTemplate>
+                                                </ItemsControl.ItemTemplate>
+                                            </ItemsControl>
+                                        </StackPanel>
+                                    </ScrollViewer>
+                                    <Grid Grid.Row="2" ColumnDefinitions="*,160,160" ColumnSpacing="10">
+                                        <Border Grid.Column="1" Classes="buttonFrame active" PointerPressed="OnSaveRadioConfigPressed">
+                                            <Viewbox Stretch="Uniform"><TextBlock Classes="white" TextAlignment="Center" VerticalAlignment="Center" Text="SAVE" /></Viewbox>
+                                        </Border>
+                                        <Border Grid.Column="2" Classes="buttonFrame" PointerPressed="OnCancelRadioConfigPressed">
+                                            <Viewbox Stretch="Uniform"><TextBlock Classes="white" TextAlignment="Center" VerticalAlignment="Center" Text="CANCEL" /></Viewbox>
+                                        </Border>
+                                    </Grid>
+                                </Grid>
+                            </Border>
+                        </Border>
+
                         <!-- Channel-selection overlay (CHANNELS, replaces MONITOR). The channel list
                              source is radio-type / plugin specific and is not wired yet. -->
                         <Border Width="916" Height="637" IsVisible="{Binding IsChannelSelectionOverlayVisible}" Background="#CC000000" Padding="40">
@@ -2318,12 +2358,17 @@
                                                                     <StackPanel Spacing="6">
                                                                         <TextBlock Classes="white" FontSize="11" Text="{Binding RadioId, StringFormat='ID: {0}'}" />
                                                                         <TextBlock Classes="white" FontSize="11" Text="{Binding TypeId, StringFormat='TYPE: {0}'}" />
-                                                                        <Grid ColumnDefinitions="*,Auto,Auto" ColumnSpacing="6">
+                                                                        <Grid ColumnDefinitions="*,Auto" ColumnSpacing="6">
                                                                             <TextBox Grid.Column="0" FontSize="13" VerticalAlignment="Center" Text="{Binding AliasInput, Mode=TwoWay}" Watermark="Alias" />
                                                                             <Border Grid.Column="1" Classes="buttonFrame" Width="70" Height="34" PointerPressed="OnSetRadioAliasPressed">
                                                                                 <Viewbox Stretch="Uniform" Margin="3"><TextBlock Classes="white" TextAlignment="Center" VerticalAlignment="Center" Text="SET" /></Viewbox>
                                                                             </Border>
-                                                                            <Border Grid.Column="2" Classes="buttonFrame" Width="90" Height="34" PointerPressed="OnRemoveRadioPressed">
+                                                                        </Grid>
+                                                                        <Grid ColumnDefinitions="*,*" ColumnSpacing="6">
+                                                                            <Border Grid.Column="0" Classes="buttonFrame active" Height="34" PointerPressed="OnEditRadioConfigPressed">
+                                                                                <Viewbox Stretch="Uniform" Margin="3"><TextBlock Classes="white" TextAlignment="Center" VerticalAlignment="Center" Text="EDIT CONFIG" /></Viewbox>
+                                                                            </Border>
+                                                                            <Border Grid.Column="1" Classes="buttonFrame" Height="34" PointerPressed="OnRemoveRadioPressed">
                                                                                 <Viewbox Stretch="Uniform" Margin="3"><TextBlock Classes="white" TextAlignment="Center" VerticalAlignment="Center" Text="REMOVE" /></Viewbox>
                                                                             </Border>
                                                                         </Grid>

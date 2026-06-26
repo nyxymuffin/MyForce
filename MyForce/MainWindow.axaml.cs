@@ -434,6 +434,21 @@ public partial class MainWindow : Window
 		}
 	}
 
+	// Schema-driven config editor (§3.9.5): open for the pressed radio, save, or cancel.
+	private void OnEditRadioConfigPressed(object? sender, PointerPressedEventArgs e)
+	{
+		if (sender is Control { DataContext: RadioAdminItem radio })
+		{
+			_viewModel.OpenRadioConfigEditor(radio.RadioId);
+		}
+	}
+
+	private void OnSaveRadioConfigPressed(object? sender, PointerPressedEventArgs e)
+		=> _viewModel.SaveRadioConfig();
+
+	private void OnCancelRadioConfigPressed(object? sender, PointerPressedEventArgs e)
+		=> _viewModel.CancelRadioConfigEditor();
+
 	private void OnRadioNuisPressed(object? sender, PointerPressedEventArgs e) { }
 
 	// EXT AUDIO (radio page + patrol): toggle the siren ext_audio relay (pulses green).

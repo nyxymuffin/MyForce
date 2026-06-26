@@ -23,6 +23,7 @@ using System.IO;
 using System.Linq;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Threading;
 using System.Threading.Tasks;
 using Avalonia.Media;
@@ -366,6 +367,108 @@ public sealed class RadioAdminItem : INotifyPropertyChanged
 	public void SaveAlias() => _owner.SetRadioAlias(RadioId, AliasInput);
 
 	public void Remove() => _owner.RemoveRadio(RadioId);
+
+	public event PropertyChangedEventHandler? PropertyChanged;
+}
+
+/// <summary>The widget kind a schema field renders as (§3.9.5 JSON-Schema-to-widget mapping).</summary>
+public enum ConfigFieldKind
+{
+	Text,
+	Number,
+	Bool,
+	Choice,
+}
+
+/// <summary>
+/// One editable field in the schema-driven radio config editor (§3.9.5). Carries its dotted config
+/// path (e.g. "device.rx_device"), the widget kind, choice options (enum or x-options pick-list), and
+/// the live value. ToNode() serialises the edited value back into the config tree.
+/// </summary>
+public sealed class ConfigFieldItem : INotifyPropertyChanged
+{
+	private string _stringValue = string.Empty;
+	private bool _boolValue;
+
+	public ConfigFieldItem(string path, string title, ConfigFieldKind kind, IReadOnlyList<ResourceOptionMessage>? choices = null)
+	{
+		Path = path;
+		Title = title;
+		Kind = kind;
+		Choices = choices ?? Array.Empty<ResourceOptionMessage>();
+	}
+
+	public string Path { get; }
+
+	public string Title { get; }
+
+	public ConfigFieldKind Kind { get; }
+
+	public IReadOnlyList<ResourceOptionMessage> Choices { get; }
+
+	// Widget-visibility helpers for the DataTemplate (one row renders exactly one control).
+	public bool IsText => Kind == ConfigFieldKind.Text;
+
+	public bool IsNumber => Kind == ConfigFieldKind.Number;
+
+	public bool IsBool => Kind == ConfigFieldKind.Bool;
+
+	public bool IsChoice => Kind == ConfigFieldKind.Choice;
+
+	public bool IsTextOrNumber => IsText || IsNumber;
+
+	public string StringValue
+	{
+		get => _stringValue;
+		set
+		{
+			if (!string.Equals(_stringValue, value, StringComparison.Ordinal))
+			{
+				_stringValue = value ?? string.Empty;
+				PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(StringValue)));
+				PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(SelectedValue)));
+			}
+		}
+	}
+
+	public bool BoolValue
+	{
+		get => _boolValue;
+		set
+		{
+			if (_boolValue != value)
+			{
+				_boolValue = value;
+				PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(BoolValue)));
+			}
+		}
+	}
+
+	/// <summary>The selected choice's stored value, two-way bound to the ComboBox SelectedValue.</summary>
+	public string SelectedValue
+	{
+		get => _stringValue;
+		set => StringValue = value ?? string.Empty;
+	}
+
+	/// <summary>Serialises the current value to the JSON node the config tree expects for this field.</summary>
+	public JsonNode? ToNode()
+	{
+		switch (Kind)
+		{
+			case ConfigFieldKind.Bool:
+				return JsonValue.Create(_boolValue);
+			case ConfigFieldKind.Number:
+				if (long.TryParse(_stringValue, out var l))
+				{
+					return JsonValue.Create(l);
+				}
+
+				return double.TryParse(_stringValue, out var d) ? JsonValue.Create(d) : JsonValue.Create(0);
+			default:
+				return JsonValue.Create(_stringValue);
+		}
+	}
 
 	public event PropertyChangedEventHandler? PropertyChanged;
 }
@@ -1337,6 +1440,245 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 		PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(HasRadioAdminItems)));
 	}
 
+	// --- Schema-driven config editor (§3.9.5) -----------------------------------
+	// Renders a radio's config_schema as widgets, resolving x-options/device pick-lists against the
+	// retained resource lists (sys/audio_devices, sys/relay_sets), prefilled from its current config.
+
+	private readonly Dictionary<string, JsonElement> _radioSchemas = new(StringComparer.OrdinalIgnoreCase);
+	private readonly Dictionary<string, JsonElement> _radioConfigs = new(StringComparer.OrdinalIgnoreCase);
+	private IReadOnlyList<ResourceOptionMessage> _captureDevices = Array.Empty<ResourceOptionMessage>();
+	private IReadOnlyList<ResourceOptionMessage> _playbackDevices = Array.Empty<ResourceOptionMessage>();
+	private IReadOnlyList<ResourceOptionMessage> _relaySetOptions = Array.Empty<ResourceOptionMessage>();
+
+	private bool _isRadioConfigEditorVisible;
+	private string _editingRadioId = string.Empty;
+	private string _editingRadioTitle = string.Empty;
+	private IReadOnlyList<ConfigFieldItem> _radioConfigFields = Array.Empty<ConfigFieldItem>();
+
+	public bool IsRadioConfigEditorVisible
+	{
+		get => _isRadioConfigEditorVisible;
+		private set => SetProperty(ref _isRadioConfigEditorVisible, value);
+	}
+
+	public string EditingRadioTitle
+	{
+		get => _editingRadioTitle;
+		private set => SetProperty(ref _editingRadioTitle, value);
+	}
+
+	public IReadOnlyList<ConfigFieldItem> RadioConfigFields
+	{
+		get => _radioConfigFields;
+		private set => SetProperty(ref _radioConfigFields, value);
+	}
+
+	public bool HasRadioConfigFields => RadioConfigFields.Count > 0;
+
+	// Resource lists feeding the x-options / device pick-lists (sys/audio_devices, sys/relay_sets).
+	private void ApplyAudioDevices(SystemAudioDevicesMessage devices)
+	{
+		_captureDevices = devices.Capture ?? Array.Empty<ResourceOptionMessage>();
+		_playbackDevices = devices.Playback ?? Array.Empty<ResourceOptionMessage>();
+	}
+
+	private void ApplyRelaySets(SystemRelaySetsMessage relaySets)
+		=> _relaySetOptions = (relaySets.RelaySets ?? Array.Empty<RelaySetOptionMessage>())
+			.Select(set => new ResourceOptionMessage(set.Value, $"{set.Label} ({set.Channels} ch)")).ToArray();
+
+	// Open the editor for a radio: parse its schema + current config into editable fields.
+	public void OpenRadioConfigEditor(string radioId)
+	{
+		if (string.IsNullOrWhiteSpace(radioId) || !_radioSchemas.TryGetValue(radioId, out var schema))
+		{
+			MqttCommandFeedback = $"No config schema available for '{radioId}' yet.";
+			return;
+		}
+
+		_editingRadioId = radioId;
+		EditingRadioTitle = $"CONFIGURE: {radioId}";
+		_radioConfigs.TryGetValue(radioId, out var config);
+		RadioConfigFields = BuildConfigFields(schema, _radioConfigs.ContainsKey(radioId) ? config : (JsonElement?)null);
+		PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(HasRadioConfigFields)));
+		IsRadioConfigEditorVisible = true;
+	}
+
+	public void CancelRadioConfigEditor() => IsRadioConfigEditorVisible = false;
+
+	// Save: rebuild the nested config object from the field values and publish cmd/config (admin-class).
+	public void SaveRadioConfig()
+	{
+		if (string.IsNullOrWhiteSpace(_editingRadioId))
+		{
+			return;
+		}
+
+		var config = new JsonObject();
+		foreach (var field in RadioConfigFields)
+		{
+			SetJsonByPath(config, field.Path, field.ToNode());
+		}
+
+		var envelope = CreateCommandEnvelope(isAdminCommand: true, includeMessageId: true);
+		var command = new ModuleConfigCommandMessage(envelope.V, envelope.Ts, envelope.MsgId, envelope.Auth, _editingRadioId, config);
+		_ = PublishCommandAsync(InternetRadioMqttTopics.ModuleConfigCommandTopic(_editingRadioId), command);
+		IsRadioConfigEditorVisible = false;
+	}
+
+	// Walk the schema's object properties into a flat list of dotted-path fields (§3.9.5).
+	private IReadOnlyList<ConfigFieldItem> BuildConfigFields(JsonElement schema, JsonElement? currentConfig)
+	{
+		var fields = new List<ConfigFieldItem>();
+		WalkSchema(schema, string.Empty, currentConfig, fields);
+		return fields;
+	}
+
+	private void WalkSchema(JsonElement schema, string prefix, JsonElement? config, List<ConfigFieldItem> fields)
+	{
+		if (schema.ValueKind != JsonValueKind.Object || !schema.TryGetProperty("properties", out var properties) || properties.ValueKind != JsonValueKind.Object)
+		{
+			return;
+		}
+
+		foreach (var property in properties.EnumerateObject())
+		{
+			var path = string.IsNullOrEmpty(prefix) ? property.Name : $"{prefix}.{property.Name}";
+			var fieldSchema = property.Value;
+			var type = fieldSchema.TryGetProperty("type", out var typeElement) && typeElement.ValueKind == JsonValueKind.String ? typeElement.GetString() : null;
+
+			// Nested object -> recurse so the path stays dotted (e.g. "device.rx_device").
+			if (string.Equals(type, "object", StringComparison.OrdinalIgnoreCase))
+			{
+				WalkSchema(fieldSchema, path, config, fields);
+				continue;
+			}
+
+			var title = fieldSchema.TryGetProperty("title", out var titleElement) && titleElement.ValueKind == JsonValueKind.String
+				? titleElement.GetString()!
+				: path;
+			var currentValue = ResolveConfigValue(config, path);
+
+			// x-options (or a known device/relay leaf) -> dynamic pick-list resolved at runtime.
+			var resourceChoices = ResolvePickListChoices(fieldSchema, property.Name);
+			if (resourceChoices is not null)
+			{
+				fields.Add(new ConfigFieldItem(path, title, ConfigFieldKind.Choice, resourceChoices)
+				{
+					StringValue = currentValue?.ToString() ?? string.Empty,
+				});
+				continue;
+			}
+
+			// enum -> static pick-list.
+			if (fieldSchema.TryGetProperty("enum", out var enumElement) && enumElement.ValueKind == JsonValueKind.Array)
+			{
+				var choices = enumElement.EnumerateArray()
+					.Select(item => item.ToString())
+					.Select(value => new ResourceOptionMessage(value, value))
+					.ToArray();
+				fields.Add(new ConfigFieldItem(path, title, ConfigFieldKind.Choice, choices)
+				{
+					StringValue = currentValue?.ToString() ?? string.Empty,
+				});
+				continue;
+			}
+
+			switch (type)
+			{
+				case "boolean":
+					fields.Add(new ConfigFieldItem(path, title, ConfigFieldKind.Bool)
+					{
+						BoolValue = currentValue?.ValueKind == JsonValueKind.True,
+					});
+					break;
+				case "integer":
+				case "number":
+					fields.Add(new ConfigFieldItem(path, title, ConfigFieldKind.Number)
+					{
+						StringValue = currentValue?.ToString() ?? string.Empty,
+					});
+					break;
+				default:
+					fields.Add(new ConfigFieldItem(path, title, ConfigFieldKind.Text)
+					{
+						StringValue = currentValue?.ToString() ?? string.Empty,
+					});
+					break;
+			}
+		}
+	}
+
+	// Resolve a field's pick-list options from x-options or a well-known device/relay leaf name.
+	private IReadOnlyList<ResourceOptionMessage>? ResolvePickListChoices(JsonElement fieldSchema, string leafName)
+	{
+		string? resource = null;
+		if (fieldSchema.TryGetProperty("x-options", out var xOptions) && xOptions.ValueKind == JsonValueKind.String)
+		{
+			resource = xOptions.GetString();
+		}
+
+		// Map by resource hint or by the v3.0 device/relay leaf names (§3.7.8) so pick-lists work even
+		// before schemas declare x-options.
+		var key = resource ?? leafName;
+		if (key.Contains("relay", StringComparison.OrdinalIgnoreCase))
+		{
+			return _relaySetOptions;
+		}
+
+		if (key.Contains("rx_device", StringComparison.OrdinalIgnoreCase) || key.Contains("capture", StringComparison.OrdinalIgnoreCase))
+		{
+			return _captureDevices;
+		}
+
+		if (key.Contains("tx_device", StringComparison.OrdinalIgnoreCase) || key.Contains("playback", StringComparison.OrdinalIgnoreCase) || string.Equals(leafName, "soundcard", StringComparison.OrdinalIgnoreCase))
+		{
+			return _playbackDevices;
+		}
+
+		return null;
+	}
+
+	// Read the current value at a dotted path from the radio's config JSON, or null if absent.
+	private static JsonElement? ResolveConfigValue(JsonElement? config, string path)
+	{
+		if (config is not JsonElement element || element.ValueKind != JsonValueKind.Object)
+		{
+			return null;
+		}
+
+		var current = element;
+		foreach (var segment in path.Split('.'))
+		{
+			if (current.ValueKind != JsonValueKind.Object || !current.TryGetProperty(segment, out var next))
+			{
+				return null;
+			}
+
+			current = next;
+		}
+
+		return current;
+	}
+
+	// Write a value into a nested JsonObject by dotted path, creating intermediate objects as needed.
+	private static void SetJsonByPath(JsonObject root, string path, JsonNode? value)
+	{
+		var segments = path.Split('.');
+		var current = root;
+		for (var i = 0; i < segments.Length - 1; i++)
+		{
+			if (current[segments[i]] is not JsonObject child)
+			{
+				child = new JsonObject();
+				current[segments[i]] = child;
+			}
+
+			current = child;
+		}
+
+		current[segments[^1]] = value;
+	}
+
 	public string AdminSchemaSummary => AdminSchemaModules.Count == 0
 		? "Waiting for module registry schemas."
 		: $"SCHEMA MODULES: {AdminSchemaModules.Count}  FIELDS: {AdminSchemaModules.Sum(static module => module.FieldPaths.Count)}";
@@ -2093,6 +2435,8 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 		await _mqttConnectionService.ConnectAsync(settings).ConfigureAwait(false);
 		await _mqttConnectionService.SubscribeAsync(InternetRadioMqttTopics.SystemPluginsTopic).ConfigureAwait(false);
 		await _mqttConnectionService.SubscribeAsync(InternetRadioMqttTopics.SystemDefinitionTopic).ConfigureAwait(false);
+		await _mqttConnectionService.SubscribeAsync(InternetRadioMqttTopics.SystemAudioDevicesTopic).ConfigureAwait(false);
+		await _mqttConnectionService.SubscribeAsync(InternetRadioMqttTopics.SystemRelaySetsTopic).ConfigureAwait(false);
 		await _mqttConnectionService.SubscribeAsync(InternetRadioMqttTopics.ModuleTopicFilter).ConfigureAwait(false);
 		await _mqttConnectionService.SubscribeAsync(InternetRadioMqttTopics.ConsoleTxTopic).ConfigureAwait(false);
 		await _mqttConnectionService.SubscribeAsync(InternetRadioMqttTopics.HcdModeTopicFilter).ConfigureAwait(false);
@@ -2190,6 +2534,30 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 			}
 
 			Dispatcher.UIThread.Post(() => ApplySystemDefinition(definition));
+			return;
+		}
+
+		if (string.Equals(message.Topic, InternetRadioMqttTopics.SystemAudioDevicesTopic, StringComparison.OrdinalIgnoreCase))
+		{
+			var payload = message.ConvertPayloadToString();
+			var devices = string.IsNullOrWhiteSpace(payload) ? null : JsonSerializer.Deserialize<SystemAudioDevicesMessage>(payload, MqttJsonSerializerOptions);
+			if (devices is not null)
+			{
+				Dispatcher.UIThread.Post(() => ApplyAudioDevices(devices));
+			}
+
+			return;
+		}
+
+		if (string.Equals(message.Topic, InternetRadioMqttTopics.SystemRelaySetsTopic, StringComparison.OrdinalIgnoreCase))
+		{
+			var payload = message.ConvertPayloadToString();
+			var relaySets = string.IsNullOrWhiteSpace(payload) ? null : JsonSerializer.Deserialize<SystemRelaySetsMessage>(payload, MqttJsonSerializerOptions);
+			if (relaySets is not null)
+			{
+				Dispatcher.UIThread.Post(() => ApplyRelaySets(relaySets));
+			}
+
 			return;
 		}
 
@@ -2363,6 +2731,20 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 			return true;
 		}
 
+		// Keep the current instance config so the schema editor can prefill field values (§3.9.5).
+		if (string.Equals(topicClass, "config", StringComparison.OrdinalIgnoreCase))
+		{
+			var moduleId = topicParts[2];
+			using var document = JsonDocument.Parse(payloadText);
+			if (document.RootElement.TryGetProperty("config", out var configElement))
+			{
+				var clone = configElement.Clone();
+				Dispatcher.UIThread.Post(() => _radioConfigs[moduleId] = clone);
+			}
+
+			return true;
+		}
+
 		return true;
 	}
 
@@ -2396,6 +2778,8 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 	private void ApplyModuleRegistrySpec(ModuleRegistrySpecMessage registry)
 	{
 		ArgumentNullException.ThrowIfNull(registry);
+		// Keep the instance config schema so the schema-driven editor can render this radio (§3.9.5).
+		_radioSchemas[registry.Id] = registry.ConfigSchema.Clone();
 		var existing = AvailableRadioTypes.Where(entry => !string.Equals(entry.RadioId, registry.Id, StringComparison.OrdinalIgnoreCase));
 		AvailableRadioTypes = existing.Append(new RadioRegistryEntryMessage(
 			registry.Id,
