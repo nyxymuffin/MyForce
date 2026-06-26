@@ -161,6 +161,12 @@ PubSubClient   g_mqttClient(g_ethClient);
 unsigned long g_lastReconnectAttempt = 0;
 unsigned long g_lastStatePublish = 0;
 unsigned long g_lastInputPoll = 0;
+unsigned long g_lastStatusLog = 0;     // periodic connection heartbeat to serial
+
+// Verbose serial logging for field diagnostics: every inbound MQTT message, command
+// dispatch, relay/I2C writes, and a periodic connection heartbeat. Set false to quieten.
+static const bool          LOG_VERBOSE = true;
+static const unsigned long STATUS_LOG_INTERVAL = 5000;   // ms between heartbeat lines
 
 // ===========================================================================
 // Helpers
@@ -174,12 +180,22 @@ bool pinSupportsInternalPullup(uint8_t pin) {
 
 // --- XL9535 I2C relay backend -------------------------------------------------
 
-// Write a single 8-bit register on the XL9535 expander.
-void xlWriteReg(uint8_t reg, uint8_t value) {
+// Write a single 8-bit register on the XL9535 expander. Returns the Wire status
+// (0 = success); logs a line on any I2C error so a dead/wedged board is visible.
+uint8_t xlWriteReg(uint8_t reg, uint8_t value) {
 	Wire.beginTransmission(XL9535_I2C_ADDR);
 	Wire.write(reg);
 	Wire.write(value);
-	Wire.endTransmission();
+	uint8_t status = Wire.endTransmission();
+	if (status != 0 && LOG_VERBOSE) {
+		Serial.print("[I2C ERR] addr=0x");
+		Serial.print(XL9535_I2C_ADDR, HEX);
+		Serial.print(" reg=0x");
+		Serial.print(reg, HEX);
+		Serial.print(" endTransmission=");
+		Serial.println(status);   // 2 = addr NAK (board not responding), 3 = data NAK
+	}
+	return status;
 }
 
 // Push the 16-bit output shadow to both XL9535 output ports.
@@ -410,6 +426,20 @@ void handleCommand(const char* action, const char* fullTopic,
 	}
 	const char* msgId = doc["msg_id"] | "";  // may be empty
 
+	// LOG: show the dispatched action + key fields so we can see commands being acted on.
+	if (LOG_VERBOSE) {
+		Serial.print("[CMD] action=");
+		Serial.print(action);
+		Serial.print(" function=");
+		Serial.print(doc["function"] | "(none)");
+		Serial.print(" channel=");
+		Serial.print(doc["channel"] | -1);
+		Serial.print(" state=");
+		Serial.print(doc["state"] | "(none)");
+		Serial.print(" ms=");
+		Serial.println(doc["ms"] | -1);
+	}
+
 	// --- Operating commands (no admin auth) -------------------------------
 	if (strcmp(action, "set") == 0) {
 
@@ -475,6 +505,21 @@ void handleCommand(const char* action, const char* fullTopic,
 // mqttCallback, routes an inbound message to handleCommand by trailing action.
 // ---------------------------------------------------------------------------
 void mqttCallback(char* topic, byte* payload, unsigned int length) {
+
+	// LOG: print every inbound message so the serial monitor shows exactly what the
+	// broker delivers. If nothing prints here on a button press, the message is not
+	// reaching this ESP32 (broker/subscription/topic problem, not a relay problem).
+	if (LOG_VERBOSE) {
+		Serial.print("[MQTT RX] topic=");
+		Serial.print(topic);
+		Serial.print(" len=");
+		Serial.print(length);
+		Serial.print(" payload=");
+		for (unsigned int i = 0; i < length && i < 220; i++) {
+			Serial.write(payload[i]);
+		}
+		Serial.println();
+	}
 
 	// Topic shape: myforce/module/<id>/cmd/<action>. Extract <action>.
 	const char* marker = strstr(topic, "/cmd/");
@@ -580,7 +625,13 @@ bool mqttReconnect() {
 		publishStatus(true);                  // birth (§5.2)
 		publishRegistry();                    // self-describe (§4.5)
 		publishState();                       // current relay/input snapshot
-		g_mqttClient.subscribe(g_topicCmdSub, 1);  // all commands, QoS 1
+		bool subOk = g_mqttClient.subscribe(g_topicCmdSub, 1);  // all commands, QoS 1
+		// LOG: confirm we are actually subscribed to the command wildcard. If this
+		// says FAILED, no commands will ever arrive.
+		Serial.print("Subscribed to ");
+		Serial.print(g_topicCmdSub);
+		Serial.print(" -> ");
+		Serial.println(subOk ? "ok" : "FAILED");
 		return true;
 	}
 
@@ -659,6 +710,18 @@ void setup() {
 // ===========================================================================
 void loop() {
 	Ethernet.maintain();   // renew DHCP lease (non-blocking)
+
+	// LOG: periodic connection heartbeat so the serial monitor always shows whether
+	// the ESP32 has an IP and a live MQTT link, even when idle.
+	if (LOG_VERBOSE && millis() - g_lastStatusLog >= STATUS_LOG_INTERVAL) {
+		g_lastStatusLog = millis();
+		Serial.print("[STATUS] ip=");
+		Serial.print(Ethernet.localIP());
+		Serial.print(" mqtt=");
+		Serial.print(g_mqttClient.connected() ? "connected" : "DISCONNECTED");
+		Serial.print(" state=");        // PubSubClient state: 0 = connected, negatives = errors
+		Serial.println(g_mqttClient.state());
+	}
 
 	if (!g_mqttClient.connected()) {
 		unsigned long now = millis();
