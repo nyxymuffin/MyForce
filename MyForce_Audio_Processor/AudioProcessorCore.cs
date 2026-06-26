@@ -169,6 +169,7 @@ internal sealed class AudioProcessorCoordinator : IAsyncDisposable
 		await _mqttRuntime.SubscribeAsync(_topics.AllModuleCommandsTopicFilter, cancellationToken).ConfigureAwait(false);
 		await _mqttRuntime.SubscribeAsync(_topics.AllBridgeCommandsTopicFilter, cancellationToken).ConfigureAwait(false);
 		await _mqttRuntime.SubscribeAsync(_topics.ConsolePttCommandTopicFilter, cancellationToken).ConfigureAwait(false);
+		await _mqttRuntime.SubscribeAsync(_topics.SystemCommandsTopicFilter, cancellationToken).ConfigureAwait(false);
 		await _radioModuleHostManager.StartAsync(cancellationToken).ConfigureAwait(false);
 
 		// Build the routing matrix and start the RT audio thread (§3.6.10 boot step 4), then begin
@@ -564,6 +565,7 @@ internal sealed record PersistedBridgeMember(
 		await _mqttRuntime.SubscribeAsync(_topics.AllModuleCommandsTopicFilter, cancellationToken).ConfigureAwait(false);
 		await _mqttRuntime.SubscribeAsync(_topics.AllBridgeCommandsTopicFilter, cancellationToken).ConfigureAwait(false);
 		await _mqttRuntime.SubscribeAsync(_topics.ConsolePttCommandTopicFilter, cancellationToken).ConfigureAwait(false);
+		await _mqttRuntime.SubscribeAsync(_topics.SystemCommandsTopicFilter, cancellationToken).ConfigureAwait(false);
 		await PublishHeartbeatAsync(cancellationToken).ConfigureAwait(false);
 	}
 
@@ -586,6 +588,14 @@ internal sealed record PersistedBridgeMember(
 		if (AudioProcessorTopicFactory.TryParseBridgeCommandTopic(topic, out var bridgeId, out var bridgeCommand))
 		{
 			await HandleBridgeCommandAsync(topic, bridgeId, bridgeCommand, args.ApplicationMessage.Payload).ConfigureAwait(false);
+			return;
+		}
+
+		if (string.Equals(topic, _topics.AddModuleCommandTopic, StringComparison.OrdinalIgnoreCase)
+			|| string.Equals(topic, _topics.RemoveModuleCommandTopic, StringComparison.OrdinalIgnoreCase)
+			|| string.Equals(topic, _topics.SetAliasCommandTopic, StringComparison.OrdinalIgnoreCase))
+		{
+			await HandleSystemDefinitionCommandAsync(topic, args.ApplicationMessage.Payload).ConfigureAwait(false);
 			return;
 		}
 
@@ -1294,6 +1304,132 @@ internal sealed record PersistedBridgeMember(
 				radio.Kind.ToString(),
 				radio.Config.Settings.ToJsonString()))
 			.ToList();
+	}
+
+	/// <summary>
+	/// Handles the v3.0 system-definition commands (§4.4): add_module / remove_module / set_alias.
+	/// The AP is the sole writer (§4.2): it validates admin, mutates the persisted radio definitions,
+	/// re-publishes the mirrored sys/definition, and acks. The added/removed instance's live hydration
+	/// or teardown takes effect on the next AP restart (the radio definition persists immediately).
+	/// </summary>
+	private async Task HandleSystemDefinitionCommandAsync(string topic, ReadOnlySequence<byte> payload)
+	{
+		var msgId = GetMessageId(payload);
+		if (!ValidateAdminCommand(payload, topic))
+		{
+			await PublishCommandAckAsync(topic, msgId, "rejected", "auth", "invalid_auth", "Admin authentication is required.").ConfigureAwait(false);
+			return;
+		}
+
+		var definitions = LoadPersistedRadioDefinitionsForWrite();
+		string? clearedModuleId = null;
+		string? field = null, code = null, message = null;
+		bool ok = false;
+
+		if (string.Equals(topic, _topics.SetAliasCommandTopic, StringComparison.OrdinalIgnoreCase))
+		{
+			var command = AudioProcessorJson.Deserialize<SetAliasCommand>(payload);
+			if (command is null || string.IsNullOrWhiteSpace(command.Id) || string.IsNullOrWhiteSpace(command.Alias))
+			{
+				(field, code, message) = ("alias", "invalid", "id and alias are required.");
+			}
+			else
+			{
+				var index = definitions.FindIndex(definition => string.Equals(definition.RadioId, command.Id, StringComparison.OrdinalIgnoreCase));
+				if (index < 0)
+				{
+					(field, code, message) = ("id", "not_found", $"No module '{command.Id}'.");
+				}
+				else
+				{
+					definitions[index] = definitions[index] with { DisplayName = command.Alias };
+					ok = true;
+				}
+			}
+		}
+		else if (string.Equals(topic, _topics.RemoveModuleCommandTopic, StringComparison.OrdinalIgnoreCase))
+		{
+			var command = AudioProcessorJson.Deserialize<RemoveModuleCommand>(payload);
+			if (command is null || string.IsNullOrWhiteSpace(command.Id))
+			{
+				(field, code, message) = ("id", "invalid", "id is required.");
+			}
+			else if (definitions.RemoveAll(definition => string.Equals(definition.RadioId, command.Id, StringComparison.OrdinalIgnoreCase)) == 0)
+			{
+				(field, code, message) = ("id", "not_found", $"No module '{command.Id}'.");
+			}
+			else
+			{
+				clearedModuleId = command.Id;
+				ok = true;
+			}
+		}
+		else // add_module
+		{
+			var command = AudioProcessorJson.Deserialize<AddModuleCommand>(payload);
+			if (command is null || string.IsNullOrWhiteSpace(command.TypeId))
+			{
+				(field, code, message) = ("type_id", "invalid", "type_id is required.");
+			}
+			else if (!_pluginCatalog.Modules.Any(module => string.Equals(module.TypeId, command.TypeId, StringComparison.OrdinalIgnoreCase)))
+			{
+				(field, code, message) = ("type_id", "unknown_type", $"No plugin type '{command.TypeId}' is loaded.");
+			}
+			else
+			{
+				var newId = GenerateRadioId(command.TypeId, definitions);
+				var alias = string.IsNullOrWhiteSpace(command.Alias) ? newId : command.Alias!;
+				// Seed empty settings; the operator completes config via cmd/config (§4.4: a radio may
+				// exist before it is fully configured). "{}" hydrates with the module/AP defaults.
+				definitions.Add(new PersistedRadioDefinition(newId, command.TypeId, alias, "Module", "{}"));
+				ok = true;
+			}
+		}
+
+		if (!ok)
+		{
+			await PublishCommandAckAsync(topic, msgId, "rejected", field, code, message).ConfigureAwait(false);
+			return;
+		}
+
+		_configStore.StoredConfig.RadioDefinitionsJson = JsonSerializer.Serialize(definitions, PersistedTopologySerializerOptions);
+
+		if (clearedModuleId is not null)
+		{
+			await ClearModuleRetainedTopicsAsync(clearedModuleId).ConfigureAwait(false);
+		}
+
+		await _mqttRuntime.PublishAsync(
+			_topics.SystemDefinitionTopic,
+			AudioProcessorJson.Serialize(SystemDefinitionPayload.CreateFromPersisted(definitions, _bridgeEngine.Definitions)),
+			retain: true,
+			cancellationToken: CancellationToken.None).ConfigureAwait(false);
+
+		await PublishCommandAckAsync(topic, msgId, "ok", null, null, null).ConfigureAwait(false);
+		AudioProcessorLog.Write("config", $"Applied {topic}; system definition persisted ({definitions.Count} module(s)). Instance hydration/teardown applies on next AP restart.");
+	}
+
+	/// <summary>Generates a unique instance id for a new module of the given type (§4.4).</summary>
+	private static string GenerateRadioId(string typeId, List<PersistedRadioDefinition> existing)
+	{
+		var prefix = $"radio.{typeId}";
+		for (int n = 1; ; n++)
+		{
+			var candidate = $"{prefix}.{n}";
+			if (!existing.Any(definition => string.Equals(definition.RadioId, candidate, StringComparison.OrdinalIgnoreCase)))
+			{
+				return candidate;
+			}
+		}
+	}
+
+	/// <summary>Clears a removed module's retained topics (registry/config/status/state) (§4.4).</summary>
+	private async Task ClearModuleRetainedTopicsAsync(string id)
+	{
+		foreach (var clearTopic in new[] { _topics.ModuleRegistryTopic(id), _topics.ModuleConfigTopic(id), _topics.ModuleStatusTopic(id), _topics.ModuleStateTopic(id) })
+		{
+			await _mqttRuntime.PublishAsync(clearTopic, string.Empty, retain: true, cancellationToken: CancellationToken.None).ConfigureAwait(false);
+		}
 	}
 
 	/// <summary>
@@ -2250,6 +2386,23 @@ internal sealed class AudioProcessorTopicFactory
 
 	public string SystemRelaySetsTopic => $"{SystemRootTopic}/relay_sets";
 
+	// v3.0 system-definition commands (§4.4) and their subscribe filter.
+	public string SystemCommandsTopicFilter => $"{SystemRootTopic}/cmd/#";
+
+	public string AddModuleCommandTopic => $"{SystemRootTopic}/cmd/add_module";
+
+	public string RemoveModuleCommandTopic => $"{SystemRootTopic}/cmd/remove_module";
+
+	public string SetAliasCommandTopic => $"{SystemRootTopic}/cmd/set_alias";
+
+	public string ModuleRegistryTopic(string id) => $"{ModuleRootTopic}/{id}/registry";
+
+	public string ModuleConfigTopic(string id) => $"{ModuleRootTopic}/{id}/config";
+
+	public string ModuleStatusTopic(string id) => $"{ModuleRootTopic}/{id}/status";
+
+	public string ModuleStateTopic(string id) => $"{ModuleRootTopic}/{id}/state";
+
 	public string ConsoleTxTopic => $"{ConsoleRootTopic}/tx";
 
 	public string MediaModuleId => "media.internet-radio";
@@ -3011,6 +3164,13 @@ internal sealed record AudioOutputConfigCommand(string DeviceId, string? CabinSp
 
 internal sealed record OutputSpeakerCommand(string DeviceId);
 
+// v3.0 system-definition commands (§4.4); field names match the UI's published payloads.
+internal sealed record AddModuleCommand([property: JsonPropertyName("type_id")] string TypeId, [property: JsonPropertyName("alias")] string? Alias);
+
+internal sealed record RemoveModuleCommand([property: JsonPropertyName("id")] string Id);
+
+internal sealed record SetAliasCommand([property: JsonPropertyName("id")] string Id, [property: JsonPropertyName("alias")] string Alias);
+
 internal sealed record InternetRadioPlayCommand(string StreamUrl, string DisplayName, string Genre, string Language);
 
 internal sealed record ModuleConfigCommandPayload(
@@ -3110,6 +3270,28 @@ internal sealed record SystemDefinitionPayload(
 				Alias: radio.DisplayName,
 				Category: "radio",
 				Required: radio.Kind == RadioRuntimeKind.Resource)).ToArray(),
+			bridges.Select(static bridge => new SystemDefinitionBridgePayload(bridge.Id.Value, bridge.Alias)).ToArray(),
+			[new SystemDefinitionConsolePayload("vip", "Vehicle Interface")]);
+	}
+
+	/// <summary>
+	/// Builds the definition from the persisted radio definitions (the store, §4.2) rather than the live
+	/// registry, so add/remove/alias edits mirror to sys/definition immediately even before re-hydration.
+	/// </summary>
+	public static SystemDefinitionPayload CreateFromPersisted(IReadOnlyList<AudioProcessorCoordinator.PersistedRadioDefinition> radios, IReadOnlyList<BridgeDefinition> bridges)
+	{
+		ArgumentNullException.ThrowIfNull(radios);
+		ArgumentNullException.ThrowIfNull(bridges);
+
+		return new SystemDefinitionPayload(
+			1,
+			DateTimeOffset.UtcNow,
+			radios.Select(static radio => new SystemDefinitionModulePayload(
+				Id: radio.RadioId,
+				TypeId: radio.TypeId,
+				Alias: radio.DisplayName,
+				Category: "radio",
+				Required: string.Equals(radio.Kind, "Resource", StringComparison.OrdinalIgnoreCase))).ToArray(),
 			bridges.Select(static bridge => new SystemDefinitionBridgePayload(bridge.Id.Value, bridge.Alias)).ToArray(),
 			[new SystemDefinitionConsolePayload("vip", "Vehicle Interface")]);
 	}

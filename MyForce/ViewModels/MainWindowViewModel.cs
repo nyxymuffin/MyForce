@@ -1905,7 +1905,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 	}
 
 	// PATROL screen volume buttons control the master output volume (the master sink level).
-	public string MasterVolumeDisplay => $"VOLUME: {_masterVolume}";
+	public string MasterVolumeDisplay => $"MASTER VOLUME: {_masterVolume}";
 
 	public void IncreaseMasterVolume()
 	{
