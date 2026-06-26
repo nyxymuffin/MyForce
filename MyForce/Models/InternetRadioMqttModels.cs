@@ -418,6 +418,8 @@ internal sealed record ModuleRadioStateSpecMessage(
 	ZoneInfoMessage? Zone,
 	string? Mode,
 	SignalInfoMessage? Signal,
+	// Whether the radio is scanning (module-reported, §5.8.5); null = unknown.
+	[property: JsonPropertyName("scan")] bool? Scan = null,
 	// Live per-button state keyed by button id (§3.10.1), e.g. active/enabled/label.
 	[property: JsonPropertyName("buttons")] IReadOnlyDictionary<string, FunctionButtonStateMessage>? Buttons = null);
 

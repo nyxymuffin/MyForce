@@ -215,9 +215,10 @@ internal sealed record ModuleRadioStateSpecPayload(
 	ChannelInfo? Channel,
 	ZoneInfo? Zone,
 	string? Mode,
-	SignalInfo? Signal)
+	SignalInfo? Signal,
+	[property: JsonPropertyName("scan")] bool? Scan = null)
 {
-	public static ModuleRadioStateSpecPayload Create(RadioRuntimeDefinition radio, RadioTxState state, bool rxActive, bool bridgeTxActive)
+	public static ModuleRadioStateSpecPayload Create(RadioRuntimeDefinition radio, RadioTxState state, bool rxActive, bool bridgeTxActive, RadioStateReport? report = null)
 	{
 		ArgumentNullException.ThrowIfNull(radio);
 		ArgumentNullException.ThrowIfNull(state);
@@ -232,10 +233,12 @@ internal sealed record ModuleRadioStateSpecPayload(
 			RxActive: rxActive,                       // Call Detect from the VOX primitive (§3.6.8)
 			TxActive: isTxActive,
 			TxSource: isManualTx ? "manual" : bridgeTxActive ? "bridge" : "idle",
-			Channel: null,
-			Zone: null,
-			Mode: null,
-			Signal: null);
+			// Merge what the module last reported (channel/zone/mode/signal/scan), §3.7.3 / §5.8.5.
+			Channel: report?.Channel,
+			Zone: report?.Zone,
+			Mode: report?.Mode,
+			Signal: report?.Signal,
+			Scan: report?.Scan);
 	}
 }
 
@@ -397,6 +400,13 @@ internal sealed class RadioModuleHostManager : IAsyncDisposable
 		return _hostedModules.FirstOrDefault(module => module.RadioId == radioId)?.Module;
 	}
 
+	/// <summary>The last state a hosted module reported for a radio (channel/scan/signal), or null.</summary>
+	public RadioStateReport? GetLastReport(RadioId radioId)
+	{
+		ArgumentNullException.ThrowIfNull(radioId);
+		return _hostedModules.FirstOrDefault(module => module.RadioId == radioId)?.Host.LastReport;
+	}
+
 	public async ValueTask DisposeAsync()
 	{
 		foreach (var hostedModule in _hostedModules.AsEnumerable().Reverse())
@@ -436,9 +446,16 @@ internal sealed class RadioModuleHost : IModuleHost
 
 	public float GetRxLevel() => 0f;
 
+	// Last state the module reported (channel, scan, signal, ...), merged into the published
+	// per-module state (§5.8.5). volatile: ReportState may be called from a module thread.
+	private volatile RadioStateReport? _lastReport;
+
+	public RadioStateReport? LastReport => _lastReport;
+
 	public void ReportState(RadioStateReport state)
 	{
 		ArgumentNullException.ThrowIfNull(state);
+		_lastReport = state;
 		_log("module", $"Radio module '{RadioId.Value}' reported state.");
 	}
 
@@ -1210,7 +1227,7 @@ internal sealed record PersistedBridgeMember(
 		var rxActive = _callDetectByRadio.TryGetValue(radioId.Value, out var detected) && detected;
 		await _mqttRuntime.PublishAsync(
 			_topics.ModuleStateTopic(radioId),
-			AudioProcessorJson.Serialize(ModuleRadioStateSpecPayload.Create(radio, _txStateMachine.GetState(radioId), rxActive, _bridgeEngine.IsRadioBridgeKeyed(radioId))),
+			AudioProcessorJson.Serialize(ModuleRadioStateSpecPayload.Create(radio, _txStateMachine.GetState(radioId), rxActive, _bridgeEngine.IsRadioBridgeKeyed(radioId), _radioModuleHostManager.GetLastReport(radioId))),
 			retain: true,
 			cancellationToken: CancellationToken.None).ConfigureAwait(false);
 	}
@@ -1742,7 +1759,7 @@ internal sealed record PersistedBridgeMember(
 
 			await _mqttRuntime.PublishAsync(
 				_topics.ModuleStateTopic(radio.Id),
-				AudioProcessorJson.Serialize(ModuleRadioStateSpecPayload.Create(radio, _txStateMachine.GetState(radio.Id), _callDetectByRadio.TryGetValue(radio.Id.Value, out var radioRxActive) && radioRxActive, _bridgeEngine.IsRadioBridgeKeyed(radio.Id))),
+				AudioProcessorJson.Serialize(ModuleRadioStateSpecPayload.Create(radio, _txStateMachine.GetState(radio.Id), _callDetectByRadio.TryGetValue(radio.Id.Value, out var radioRxActive) && radioRxActive, _bridgeEngine.IsRadioBridgeKeyed(radio.Id), _radioModuleHostManager.GetLastReport(radio.Id))),
 				retain: true,
 				cancellationToken: cancellationToken).ConfigureAwait(false);
 		}

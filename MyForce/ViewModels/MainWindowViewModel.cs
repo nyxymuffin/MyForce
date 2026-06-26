@@ -2393,6 +2393,12 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 		{
 			ApplyFunctionButtonState(state.Buttons);
 		}
+
+		// Reflect the radio's actual scan state on the SCAN buttons (module-reported via IS).
+		if (state.Scan is bool scanning && string.Equals(state.Id, _selectedRadioId, StringComparison.OrdinalIgnoreCase))
+		{
+			IsRadioScanActive = scanning;
+		}
 	}
 
 	/// <summary>
@@ -2982,7 +2988,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 	public bool AnySirenLightActive =>
 		SelectedDirectional != DirectionalMode.Off
 		|| SelectedAlertCode != AlertCodeMode.Off
-		|| IsLeftAlleyActive || IsTakeDownActive || IsRightAlleyActive || IsAirHornActive;
+		|| IsLeftAlleyActive || IsTakeDownActive || IsRightAlleyActive || IsAirHornActive || IsExtAudioActive;
 
 	// Drives the ~1 s lease tick (refresh + holder heartbeat while active).
 	private void OnSirenLeaseTick(object? sender, EventArgs e)

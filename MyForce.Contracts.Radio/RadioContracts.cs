@@ -243,7 +243,9 @@ public sealed record RadioStateReport(
 	ZoneInfo? Zone,
 	string? Mode,
 	SignalInfo? Signal,
-	bool? Ready);
+	bool? Ready,
+	// Whether the radio is currently scanning, when the radio reports it (null = unknown).
+	bool? Scan = null);
 
 /// <summary>
 /// Describes a channel identity reported by a radio module.

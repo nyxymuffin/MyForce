@@ -435,16 +435,19 @@ public sealed class Barrett2050Module : IRadioModule, IKeyingProvider
 		}
 
 		var label = await _link.SendAsync("IL", cancellationToken).ConfigureAwait(false);
-		if (channel != _lastChannel || !string.IsNullOrEmpty(label))
-		{
-			_lastChannel = channel;
-			_host.ReportState(new RadioStateReport(
-				Channel: new ChannelInfo(channel, string.IsNullOrWhiteSpace(label) ? null : label.Trim()),
-				Zone: null,
-				Mode: null,
-				Signal: null,
-				Ready: true));
-		}
+
+		// IS returns scan state: Y = scanning, N = not scanning.
+		var scanText = await _link.SendAsync("IS", cancellationToken).ConfigureAwait(false);
+		bool? scanning = scanText.Trim().ToUpperInvariant() switch { "Y" => true, "N" => false, _ => (bool?)null };
+
+		_lastChannel = channel;
+		_host.ReportState(new RadioStateReport(
+			Channel: new ChannelInfo(channel, string.IsNullOrWhiteSpace(label) ? null : label.Trim()),
+			Zone: null,
+			Mode: null,
+			Signal: null,
+			Ready: true,
+			Scan: scanning));
 	}
 
 	// ── Helpers ───────────────────────────────────────────────────────────────────────────
