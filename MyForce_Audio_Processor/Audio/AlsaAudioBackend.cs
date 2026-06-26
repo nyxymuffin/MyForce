@@ -159,6 +159,35 @@ internal sealed class AlsaAudioBackend : IAudioBackend
 		return index >= 0 && index < ports.Length && ports[index].Handle != IntPtr.Zero;
 	}
 
+	// Live re-bind (§3.7.8): runs on the RT thread, so closing the old PCM and opening the new one is
+	// safe against ReadCapture/WritePlayback (same thread). A brief one-frame stall on reconfigure is
+	// acceptable. No-op if the port already points at this device and is open.
+	public void RebindPort(AudioPortDirection direction, int index, string deviceId)
+	{
+		ArgumentException.ThrowIfNullOrWhiteSpace(deviceId);
+		var ports = direction == AudioPortDirection.Capture ? _capturePorts : _playbackPorts;
+		if (index < 0 || index >= ports.Length)
+		{
+			return;
+		}
+
+		var existing = ports[index];
+		if (string.Equals(existing.DeviceId, deviceId, StringComparison.Ordinal) && existing.Handle != IntPtr.Zero)
+		{
+			return;
+		}
+
+		ClosePort(existing);
+		var streamType = direction == AudioPortDirection.Capture ? SND_PCM_STREAM_CAPTURE : SND_PCM_STREAM_PLAYBACK;
+		var port = new AlsaPort(deviceId, streamType);
+		ports[index] = port;
+		_log("engine", $"Re-binding {DescribeStream(streamType)} port {index} to '{deviceId}'.");
+		if (_isRunning)
+		{
+			TryOpenPort(port);
+		}
+	}
+
 	private void TryOpenPort(AlsaPort port)
 	{
 		try

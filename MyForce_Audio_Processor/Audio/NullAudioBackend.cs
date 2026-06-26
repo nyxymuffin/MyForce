@@ -104,6 +104,11 @@ internal sealed class NullAudioBackend : IAudioBackend
 		return index >= 0 && index < map.Length && map[index];
 	}
 
+	// No hardware to re-open; the slot stays valid so the engine keeps routing (silence). No-op (§3.7.8).
+	public void RebindPort(AudioPortDirection direction, int index, string deviceId)
+	{
+	}
+
 	public void Dispose()
 	{
 		lock (_gate)

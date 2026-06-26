@@ -100,6 +100,9 @@ internal sealed class AudioProcessorCoordinator : IAsyncDisposable
 	private readonly Dictionary<string, VoxDetector> _voxDetectors;
 
 	private readonly Dictionary<string, int> _rxSourceIndexByRadio;
+	// device id -> owning radio id. Read on the RT thread (hotplug) + written on the control thread
+	// (live re-bind), so it is concurrent (§3.7.8).
+	private readonly System.Collections.Concurrent.ConcurrentDictionary<string, string> _deviceToRadio;
 
 	private readonly Dictionary<string, bool> _callDetectByRadio = new(StringComparer.OrdinalIgnoreCase);
 
@@ -139,9 +142,10 @@ internal sealed class AudioProcessorCoordinator : IAsyncDisposable
 		// Phase 1 real-time engine (§3.6): build the fixed source/sink topology, open a backend,
 		// and wire the built-in keying/detect primitives and the TX state machine to it.
 		_relayKeying = new RelayKeyingService(_persistedTopology.RelaySets, AudioProcessorLog.Write);
-		var engineSetup = BuildEngineSetup(_registry.RadioIds, ResolveInitialSpeakerDeviceId());
+		var engineSetup = BuildEngineSetup(_registry.Radios, ResolveInitialSpeakerDeviceId());
 		_engineTopology = engineSetup.Topology;
 		_rxSourceIndexByRadio = engineSetup.RxSourceIndexByRadio;
+		_deviceToRadio = new System.Collections.Concurrent.ConcurrentDictionary<string, string>(engineSetup.DeviceToRadio, StringComparer.OrdinalIgnoreCase);
 		_audioBackend = CreateAudioBackend(EngineAudioFormat.Default);
 		_audioBackend.Bind(engineSetup.CaptureDeviceIds, engineSetup.PlaybackDeviceIds);
 		_audioBackend.DeviceHotplug += OnBackendDeviceHotplug;
@@ -808,6 +812,11 @@ internal sealed record PersistedBridgeMember(
 			var mergedConfig = AudioProcessorRegistry.InstanceConfigFromJson(command.Config.ToJsonString(), radio.Config);
 			PersistRadioInstanceConfig(radio, mergedConfig);
 			AudioProcessorLog.Write("config", $"Persisted config for module '{moduleId}' to the System Config Store.");
+
+			// Live re-bind the radio's audio ports to the new rx/tx cards WITHOUT a restart (§3.7.8). The
+			// engine applies the swap on its RT thread; the next boot rebuilds the same binding from the store.
+			ApplyLiveDeviceRebind(radio.Id, mergedConfig);
+
 			await _mqttRuntime.PublishAsync(
 				_topics.ModuleConfigTopic(radio.Id),
 				AudioProcessorJson.Serialize(new ModuleConfigSpecPayload(1, DateTimeOffset.UtcNow, radio.Id.Value, RadioInstanceConfigPayload.Create(mergedConfig))),
@@ -1063,9 +1072,9 @@ internal sealed record PersistedBridgeMember(
 	/// the operator mic, then one RX per radio; sink 0 is the speaker, then one TX per radio. Each
 	/// endpoint binds to a backend port at the same index, so a slot is stable across unplug (§3.6.10).
 	/// </summary>
-	private static EngineSetupResult BuildEngineSetup(IReadOnlyList<RadioId> radioIds, string speakerDeviceId)
+	private static EngineSetupResult BuildEngineSetup(IReadOnlyList<RadioRuntimeDefinition> radios, string speakerDeviceId)
 	{
-		ArgumentNullException.ThrowIfNull(radioIds);
+		ArgumentNullException.ThrowIfNull(radios);
 		ArgumentException.ThrowIfNullOrWhiteSpace(speakerDeviceId);
 
 		var sources = new List<EngineEndpoint> { new("mic", EngineEndpointKind.OperatorMic, 0) };
@@ -1073,20 +1082,37 @@ internal sealed record PersistedBridgeMember(
 		var captureDeviceIds = new List<string> { "operator-mic" };
 		var playbackDeviceIds = new List<string> { speakerDeviceId };
 		var rxSourceIndexByRadio = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+		var deviceToRadio = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
-		for (var index = 0; index < radioIds.Count; index++)
+		for (var index = 0; index < radios.Count; index++)
 		{
-			var radioId = radioIds[index];
+			var radio = radios[index];
+			var radioId = radio.Id;
 			var port = index + 1; // port 0 is the mic / speaker
 			sources.Add(new EngineEndpoint($"rx:{radioId.Value}", EngineEndpointKind.RadioRx, port));
 			sinks.Add(new EngineEndpoint($"tx:{radioId.Value}", EngineEndpointKind.RadioTx, port));
-			captureDeviceIds.Add($"radio-{radioId.Value}");
-			playbackDeviceIds.Add($"radio-{radioId.Value}");
+
+			// v3.0 separate-card routing (§3.7.8): capture the radio's received audio from its rx_device
+			// card and play transmit audio to its tx_device card. The two may be the same card or two
+			// different cards. Fall back to a legacy single Soundcard, then the logical placeholder.
+			var fallback = $"radio-{radioId.Value}";
+			var captureDevice = FirstConfiguredDevice(radio.Config.Device?.RxDevice, radio.Config.Device?.Soundcard, fallback);
+			var playbackDevice = FirstConfiguredDevice(radio.Config.Device?.TxDevice, radio.Config.Device?.Soundcard, fallback);
+			captureDeviceIds.Add(captureDevice);
+			playbackDeviceIds.Add(playbackDevice);
+			deviceToRadio[captureDevice] = radioId.Value;
+			deviceToRadio[playbackDevice] = radioId.Value;
 			rxSourceIndexByRadio[radioId.Value] = port;
 		}
 
-		return new EngineSetupResult(new EngineTopology(sources, sinks), captureDeviceIds, playbackDeviceIds, rxSourceIndexByRadio);
+		return new EngineSetupResult(new EngineTopology(sources, sinks), captureDeviceIds, playbackDeviceIds, rxSourceIndexByRadio, deviceToRadio);
 	}
+
+	/// <summary>First non-blank of the configured rx/tx device, the legacy single soundcard, or the placeholder.</summary>
+	private static string FirstConfiguredDevice(string? primary, string? secondary, string fallback)
+		=> !string.IsNullOrWhiteSpace(primary) ? primary
+			: !string.IsNullOrWhiteSpace(secondary) ? secondary
+				: fallback;
 
 	/// <summary>
 	/// Selects the concrete backend (§3.6.4): ALSA on the in-vehicle Linux target, the portable
@@ -1424,6 +1450,31 @@ internal sealed record PersistedBridgeMember(
 		}
 	}
 
+	/// <summary>
+	/// Live re-binds a radio's capture/playback ports to the cards in its (new) config without a restart
+	/// (§3.7.8). The engine performs the ALSA swap on its RT thread; the device->radio map is updated so
+	/// hotplug keeps resolving. A no-op for radios without an engine port slot.
+	/// </summary>
+	private void ApplyLiveDeviceRebind(RadioId radioId, RadioModuleInstanceConfig config)
+	{
+		ArgumentNullException.ThrowIfNull(radioId);
+		ArgumentNullException.ThrowIfNull(config);
+
+		if (!_rxSourceIndexByRadio.TryGetValue(radioId.Value, out var port))
+		{
+			return;
+		}
+
+		var fallback = $"radio-{radioId.Value}";
+		var captureDevice = FirstConfiguredDevice(config.Device?.RxDevice, config.Device?.Soundcard, fallback);
+		var playbackDevice = FirstConfiguredDevice(config.Device?.TxDevice, config.Device?.Soundcard, fallback);
+		_deviceToRadio[captureDevice] = radioId.Value;
+		_deviceToRadio[playbackDevice] = radioId.Value;
+		_realtimeEngine.RequestRebindCapture(port, captureDevice);
+		_realtimeEngine.RequestRebindPlayback(port, playbackDevice);
+		AudioProcessorLog.Write("engine", $"Requested live re-bind for '{radioId.Value}': rx='{captureDevice}', tx='{playbackDevice}'.");
+	}
+
 	/// <summary>Clears a removed module's retained topics (registry/config/status/state) (§4.4).</summary>
 	private async Task ClearModuleRetainedTopicsAsync(string id)
 	{
@@ -1439,13 +1490,19 @@ internal sealed record PersistedBridgeMember(
 	/// </summary>
 	private void OnBackendDeviceHotplug(object? sender, AudioDeviceHotplugEventArgs args)
 	{
-		const string radioPrefix = "radio-";
-		if (!args.DeviceId.StartsWith(radioPrefix, StringComparison.OrdinalIgnoreCase))
+		// Resolve the radio that owns this device. Device ids are now the configured rx/tx card names
+		// (§3.7.8), so map back via _deviceToRadio; fall back to the legacy "radio-<id>" placeholder.
+		if (!_deviceToRadio.TryGetValue(args.DeviceId, out var radioValue))
 		{
-			return;
+			const string radioPrefix = "radio-";
+			if (!args.DeviceId.StartsWith(radioPrefix, StringComparison.OrdinalIgnoreCase))
+			{
+				return;
+			}
+
+			radioValue = args.DeviceId[radioPrefix.Length..];
 		}
 
-		var radioValue = args.DeviceId[radioPrefix.Length..];
 		var radio = _registry.Radios.FirstOrDefault(radio => string.Equals(radio.Id.Value, radioValue, StringComparison.OrdinalIgnoreCase));
 		if (radio is null)
 		{
@@ -3291,7 +3348,10 @@ internal sealed record EngineSetupResult(
 	EngineTopology Topology,
 	IReadOnlyList<string> CaptureDeviceIds,
 	IReadOnlyList<string> PlaybackDeviceIds,
-	Dictionary<string, int> RxSourceIndexByRadio);
+	Dictionary<string, int> RxSourceIndexByRadio,
+	// Maps each bound capture/playback device id back to the radio that owns it, so device hotplug
+	// resolves the affected radio even when the id is a real ALSA card name (§3.6.10/§3.7.8).
+	Dictionary<string, string> DeviceToRadio);
 
 internal sealed class ConsolePttRequest
 {

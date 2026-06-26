@@ -120,6 +120,12 @@ internal sealed class RealtimeAudioEngine : IDisposable
 	/// <summary>Queue a discrete command for the RT thread (lock-free, control side).</summary>
 	public bool TryEnqueueCommand(EngineCommand command) => _commandRing.TryEnqueue(command);
 
+	/// <summary>Live re-bind a radio's capture port to a new device id; applied on the RT thread (§3.7.8).</summary>
+	public bool RequestRebindCapture(int index, string deviceId) => _commandRing.TryEnqueue(EngineCommand.RebindCapture(index, deviceId));
+
+	/// <summary>Live re-bind a radio's playback port to a new device id; applied on the RT thread (§3.7.8).</summary>
+	public bool RequestRebindPlayback(int index, string deviceId) => _commandRing.TryEnqueue(EngineCommand.RebindPlayback(index, deviceId));
+
 	// ---- RT thread below this line: NO allocation, NO locks, NO logging, NO MQTT (§3.6.6) ----
 
 	private void RunAudioLoop()
@@ -158,6 +164,20 @@ internal sealed class RealtimeAudioEngine : IDisposable
 			{
 				case EngineCommandKind.ResetMeters:
 					Array.Clear(_sourceLevels);
+					break;
+				case EngineCommandKind.RebindCapture:
+					if (command.DeviceId is not null)
+					{
+						_backend.RebindPort(AudioPortDirection.Capture, command.Index, command.DeviceId);
+					}
+
+					break;
+				case EngineCommandKind.RebindPlayback:
+					if (command.DeviceId is not null)
+					{
+						_backend.RebindPort(AudioPortDirection.Playback, command.Index, command.DeviceId);
+					}
+
 					break;
 				case EngineCommandKind.None:
 				default:
@@ -261,13 +281,25 @@ internal sealed class RealtimeAudioEngine : IDisposable
 internal enum EngineCommandKind
 {
 	None = 0,
-	ResetMeters = 1
+	ResetMeters = 1,
+	// Live re-bind a capture/playback port to a new device id (§3.7.8): the actual ALSA close/open
+	// runs on the RT thread (in DrainCommands) so it never races frame I/O.
+	RebindCapture = 2,
+	RebindPlayback = 3
 }
 
-/// <summary>A small value-type command so the SPSC ring never allocates (§3.6.6).</summary>
-internal readonly record struct EngineCommand(EngineCommandKind Kind, int Index, float Value)
+/// <summary>
+/// A small value-type command so the SPSC ring never allocates on transfer (§3.6.6). DeviceId is an
+/// already-allocated string reference (control thread) carried for rebind commands; copying the
+/// struct does not allocate.
+/// </summary>
+internal readonly record struct EngineCommand(EngineCommandKind Kind, int Index, float Value, string? DeviceId = null)
 {
 	public static EngineCommand ResetMeters() => new(EngineCommandKind.ResetMeters, 0, 0f);
+
+	public static EngineCommand RebindCapture(int index, string deviceId) => new(EngineCommandKind.RebindCapture, index, 0f, deviceId);
+
+	public static EngineCommand RebindPlayback(int index, string deviceId) => new(EngineCommandKind.RebindPlayback, index, 0f, deviceId);
 }
 
 /// <summary>

@@ -121,6 +121,12 @@ internal interface IAudioBackend : IDisposable
 	/// <summary>True when the port currently has a live device bound (§3.6.10).</summary>
 	bool IsPortAvailable(AudioPortDirection direction, int index);
 
+	/// <summary>
+	/// Re-bind a single capture/playback port to a new device id without a restart (§3.7.8). MUST be
+	/// called on the RT thread (via the engine command ring) so it never races frame I/O.
+	/// </summary>
+	void RebindPort(AudioPortDirection direction, int index, string deviceId);
+
 	/// <summary>Raised when a bound device appears or disappears.</summary>
 	event EventHandler<AudioDeviceHotplugEventArgs>? DeviceHotplug;
 }
