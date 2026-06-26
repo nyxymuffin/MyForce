@@ -170,6 +170,17 @@ unsigned long g_lastStatePublish = 0;
 unsigned long g_lastInputPoll = 0;
 unsigned long g_lastStatusLog = 0;     // periodic connection heartbeat to serial
 
+// ---------------------------------------------------------------------------
+// Active-function watchdog / fail-safe (§5.10.1, v2.4/v2.6). Siren & light
+// functions are held as a LEASE: while anything is active the console must keep
+// refreshing (~2 s). Every inbound command and every cmd/refresh resets the
+// deadline; if no refresh arrives within the timeout we turn EVERYTHING off so an
+// unattended siren/lightbar can never stay running. The controller stays dumb, it
+// only ever sees "refreshes still arriving" and shuts off when they stop.
+// ---------------------------------------------------------------------------
+static const unsigned long SIREN_WATCHDOG_TIMEOUT_MS = 8000;  // fail-safe deadline (§5.10.1)
+unsigned long g_lastRefresh = 0;   // millis() of the last command/refresh received
+
 // Verbose serial logging for field diagnostics: every inbound MQTT message, command
 // dispatch, relay/I2C writes, and a periodic connection heartbeat. Set false to quieten.
 static const bool          LOG_VERBOSE = false;
@@ -525,6 +536,12 @@ void publishRegistry() {
 	acts.add("pulse");        // { channel|function, ms } (e.g. a timed airhorn blast)
 	acts.add("code");         // { code: off|code1|code2|code3 } (interlocked code selector)
 	acts.add("directional");  // { direction: off|left|center|right } (center = both relays)
+	acts.add("refresh");      // active-function lease keep-alive (§5.10.1)
+	acts.add("all_off");      // turn off all siren/light functions
+
+	// Active-function watchdog: the UI must refresh within this window or the controller
+	// fails safe and turns everything off (§5.10.1, v2.6).
+	caps["watchdog_timeout_ms"] = SIREN_WATCHDOG_TIMEOUT_MS;
 
 	char buf[768];
 	size_t n = serializeJson(doc, buf, sizeof(buf));
@@ -578,6 +595,25 @@ uint8_t resolveTargetChannel(JsonDocument& doc) {
 	return 0;
 }
 
+// True if any siren/light function (any relay) is currently energised. Drives the
+// active-function watchdog (§5.10.1): the watchdog only fires when something is on.
+bool anyFunctionActive() {
+	for (uint8_t i = 0; i < RELAY_COUNT; i++) {
+		if (g_relayState[i]) {
+			return true;
+		}
+	}
+	return false;
+}
+
+// De-energise every function (fail-safe / all-off). Cancels pulses too.
+void allFunctionsOff() {
+	for (uint8_t i = 0; i < RELAY_COUNT; i++) {
+		g_pulseExpiry[i] = 0;
+		setRelay(i + 1, false);
+	}
+}
+
 // ===========================================================================
 // Command dispatch (§5.2 cmd/<action>, §5.8.2 ack)
 // Topic shape: myforce/module/<id>/cmd/<action>
@@ -606,6 +642,25 @@ void handleCommand(const char* action, const char* fullTopic,
 		Serial.print(doc["function"] | "(none)");
 		Serial.print(" state=");
 		Serial.println(doc["state"] | "(none)");
+	}
+
+	// Every inbound command re-asserts operator presence: reset the active-function
+	// watchdog deadline (§5.10.1). cmd/refresh is the dedicated keep-alive.
+	g_lastRefresh = millis();
+
+	// --- Operating command: refresh (active-function lease keep-alive, §5.10.1) -
+	if (strcmp(action, "refresh") == 0) {
+		// The deadline was already reset above; just acknowledge.
+		publishAck(fullTopic, msgId, "ok", nullptr);
+		return;
+	}
+
+	// --- Operating command: all_off (kill all siren/light functions) ------------
+	if (strcmp(action, "all_off") == 0) {
+		allFunctionsOff();
+		publishAck(fullTopic, msgId, "ok", nullptr);
+		publishState();
+		return;
 	}
 
 	// --- Operating command: set (no admin auth) ---------------------------
@@ -938,11 +993,27 @@ void setup() {
 	g_mqttClient.setSocketTimeout(MQTT_SOCKET_TIMEOUT_SECONDS);
 }
 
+// Active-function watchdog (§5.10.1): if any function is active but no refresh has
+// arrived within the timeout, fail safe and turn everything off. Runs regardless of
+// MQTT state, so a broker/LAN outage that stops the refresh stream also trips it.
+void serviceWatchdog() {
+	if (!anyFunctionActive()) {
+		return;   // nothing active, nothing to protect
+	}
+	if ((long)(millis() - g_lastRefresh) >= (long)SIREN_WATCHDOG_TIMEOUT_MS) {
+		Serial.println("WATCHDOG: no refresh within timeout; failing safe (all functions off).");
+		allFunctionsOff();
+		publishState();             // publishes only if connected; relays are off regardless
+		g_lastRefresh = millis();   // avoid re-tripping immediately
+	}
+}
+
 // ===========================================================================
 // loop
 // ===========================================================================
 void loop() {
 	Ethernet.maintain();   // renew DHCP lease (non-blocking)
+	serviceWatchdog();     // §5.10.1 fail-safe, every loop regardless of MQTT state
 
 	// LOG: periodic connection heartbeat so the serial monitor always shows whether
 	// the ESP32 has an IP, a live MQTT link, and the relay board responding on I2C.

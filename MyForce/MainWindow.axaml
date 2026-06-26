@@ -1208,7 +1208,7 @@
                                                 </Border>
                                             </Grid>
                                         </Border>
-                                        <Grid Grid.Column="1" RowDefinitions="68,68" RowSpacing="8" VerticalAlignment="Top">
+                                        <Grid Grid.Column="1" RowDefinitions="*,*" RowSpacing="8">
                                             <!-- Shrunk row: GEO AREA | NUIS | CHANNELS -->
                                             <Grid Grid.Row="0" ColumnDefinitions="*,*,*" ColumnSpacing="8">
                                                 <Border Grid.Column="0" Classes="buttonFrame" PointerPressed="OnRadioGeoAreaPressed">

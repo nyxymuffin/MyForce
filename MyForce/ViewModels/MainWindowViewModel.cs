@@ -309,6 +309,9 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 
 	private readonly DispatcherTimer _clockTimer;
 
+	// ~1 s tick that refreshes the siren active-function lease while anything is active (§5.10.1).
+	private readonly DispatcherTimer _sirenLeaseTimer;
+
 	private readonly InternetRadioCatalogService _internetRadioCatalogService;
 
 	private readonly AmFmUiStateStore _amFmUiStateStore;
@@ -502,6 +505,11 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 		};
 
 		_clockTimer.Tick += OnClockTimerTick;
+		_sirenLeaseTimer = new DispatcherTimer
+		{
+			Interval = TimeSpan.FromSeconds(1),
+		};
+		_sirenLeaseTimer.Tick += OnSirenLeaseTick;
 		UpdateClock();
 		LoadInternetRadioCatalog();
 		RestoreAmFmUiState();
@@ -509,6 +517,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 		_adminWhat3WordsApiKey = _what3WordsService.GetConfiguredApiKey() ?? string.Empty;
 		_ = RefreshWhat3WordsAsync();
 		_clockTimer.Start();
+		_sirenLeaseTimer.Start();
 		_ = InitializeMqttAsync();
 	}
 
@@ -713,6 +722,10 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 		// Built-in local actions for keys that already drive UI behaviour today.
 		switch (index)
 		{
+			case 1:
+				// L/S button (touch or VIP/HCD): kill all active siren/light functions (§5.10.1).
+				AllSirenLightsOff();
+				break;
 			case 4:
 				ToggleAmFmMute();
 				break;
@@ -1905,6 +1918,8 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 	{
 		_clockTimer.Stop();
 		_clockTimer.Tick -= OnClockTimerTick;
+		_sirenLeaseTimer.Stop();
+		_sirenLeaseTimer.Tick -= OnSirenLeaseTick;
 		_mqttConnectionService.StateChanged -= OnMqttStateChanged;
 		_mqttConnectionService.MessageReceived -= OnMqttMessageReceived;
 		_mqttConnectionService.Dispose();
@@ -2868,6 +2883,78 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 		var envelope = CreateCommandEnvelope(isAdminCommand: false, includeMessageId: false);
 		var command = new SirenSetCommandMessage(envelope.V, envelope.Ts, envelope.MsgId, envelope.Auth, function, on ? "on" : "off");
 		_ = PublishCommandAsync(InternetRadioMqttTopics.SirenSetCommandTopic, command);
+	}
+
+	// --- Siren/light active-function lease + watchdog refresh (§5.10.1) ----------
+	// While any siren/light function is active, this console holds the lease: it refreshes
+	// the controller (~1 s, inside the 8 s watchdog) so an unattended siren can never stay
+	// on, and publishes a holder-heartbeat for multi-console handoff. When nothing is active
+	// the lease is dropped. The L/S button kills everything (all_off + clears UI state).
+
+	private bool _isSirenLeaseHolder;
+
+	// True when any siren/light function is currently asserted by this console (momentary
+	// operator intent, §5.10.1) - directional, code, scene lights, or air horn.
+	public bool AnySirenLightActive =>
+		SelectedDirectional != DirectionalMode.Off
+		|| SelectedAlertCode != AlertCodeMode.Off
+		|| IsLeftAlleyActive || IsTakeDownActive || IsRightAlleyActive || IsAirHornActive;
+
+	// Drives the ~1 s lease tick (refresh + holder heartbeat while active).
+	private void OnSirenLeaseTick(object? sender, EventArgs e)
+	{
+		if (AnySirenLightActive)
+		{
+			_isSirenLeaseHolder = true;            // activation / successor takeover
+			PublishSirenRefresh();                 // reset the controller watchdog (§5.10.1)
+			PublishSirenLeaseHeartbeat(active: true);
+		}
+		else if (_isSirenLeaseHolder)
+		{
+			// Nothing active anymore: drop the lease and stop refreshing (§5.10.1).
+			_isSirenLeaseHolder = false;
+			PublishSirenLeaseHeartbeat(active: false);
+		}
+	}
+
+	// L/S button (soft key 1, touch or VIP/HCD): turn off ALL active siren/light functions.
+	public void AllSirenLightsOff()
+	{
+		SelectedDirectional = DirectionalMode.Off;   // publishes directional off
+		SelectedAlertCode = AlertCodeMode.Off;       // publishes code off
+		IsLeftAlleyActive = false;
+		IsTakeDownActive = false;
+		IsRightAlleyActive = false;
+		IsAirHornActive = false;
+
+		// Authoritative kill on the controller (turns off every relay), then drop the lease.
+		PublishSirenAllOff();
+		if (_isSirenLeaseHolder)
+		{
+			_isSirenLeaseHolder = false;
+			PublishSirenLeaseHeartbeat(active: false);
+		}
+	}
+
+	// Lease keep-alive: re-asserts operator presence so the controller's watchdog never trips.
+	private void PublishSirenRefresh()
+	{
+		var envelope = CreateCommandEnvelope(isAdminCommand: false, includeMessageId: false);
+		_ = PublishCommandAsync(InternetRadioMqttTopics.SirenRefreshCommandTopic, envelope);
+	}
+
+	// Authoritative all-off for the siren controller (kills every relay).
+	private void PublishSirenAllOff()
+	{
+		var envelope = CreateCommandEnvelope(isAdminCommand: false, includeMessageId: false);
+		_ = PublishCommandAsync(InternetRadioMqttTopics.SirenAllOffCommandTopic, envelope);
+	}
+
+	// Retained holder heartbeat so other consoles know who holds the lease (§5.10.1, v2.5).
+	private void PublishSirenLeaseHeartbeat(bool active)
+	{
+		var command = new SirenLeaseMessage(MqttCommandSchemaVersion, DateTimeOffset.UtcNow, active ? ConsoleId : null, active);
+		_ = PublishCommandAsync(InternetRadioMqttTopics.SirenLeaseTopic, command, retain: true);
 	}
 
 	// ===========================================================================

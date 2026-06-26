@@ -87,6 +87,15 @@ internal static class InternetRadioMqttTopics
 	// horn, etc.): cmd/set with { function, state }.
 	public const string SirenSetCommandTopic = "myforce/module/siren1/cmd/set";
 
+	// Active-function lease (§5.10.1): the console refreshes (~2 s) while anything is
+	// active so the controller's watchdog never trips; all_off kills everything; the
+	// retained lease topic names the current holder for multi-console handoff.
+	public const string SirenRefreshCommandTopic = "myforce/module/siren1/cmd/refresh";
+
+	public const string SirenAllOffCommandTopic = "myforce/module/siren1/cmd/all_off";
+
+	public const string SirenLeaseTopic = "myforce/module/siren1/lease";
+
 	// This console's selected radio target (§5.4): the radio the RADIO page is viewing
 	// and that the VIP PTT keys. Console id is "vip" to match the soft-key topic.
 	public const string ConsoleSelectCommandTopic = "myforce/console/vip/cmd/select";
@@ -164,6 +173,16 @@ internal sealed record ConsoleSelectCommandMessage(
 	[property: JsonPropertyName("msg_id")] string? MsgId,
 	string? Auth,
 	[property: JsonPropertyName("target")] string Target);
+
+/// <summary>
+/// Retained siren active-function lease heartbeat (myforce/module/siren1/lease, §5.10.1):
+/// names the console currently holding/refreshing the lease, or holder=null when released.
+/// </summary>
+internal sealed record SirenLeaseMessage(
+	int V,
+	DateTimeOffset Ts,
+	[property: JsonPropertyName("holder")] string? Holder,
+	[property: JsonPropertyName("active")] bool Active);
 
 /// <summary>
 /// UI-published function-button press (myforce/module/&lt;id&gt;/cmd/button, §5.12, v2.8):
