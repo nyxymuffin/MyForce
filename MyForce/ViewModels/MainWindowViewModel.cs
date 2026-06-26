@@ -2840,12 +2840,25 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 		_lastWhat3WordsLatitude = LocationLatitude;
 		_lastWhat3WordsLongitude = LocationLongitude;
 
-		string? words = await _what3WordsService.GetWordsAsync(LocationLatitude, LocationLongitude, CancellationToken.None).ConfigureAwait(false);
-		string resolvedText = string.IsNullOrWhiteSpace(words)
-			? "CONFIG API KEY"
-			: words.ToUpperInvariant();
+		// This runs fire-and-forget from the constructor and the location setters, so any
+		// unhandled fault here would become an unobserved task exception. The service
+		// already swallows network failures, but we defend in depth: on any failure we
+		// clear the cached coordinates so the next location change retries the lookup
+		// rather than being skipped as "unchanged".
+		try
+		{
+			string? words = await _what3WordsService.GetWordsAsync(LocationLatitude, LocationLongitude, CancellationToken.None).ConfigureAwait(false);
+			string resolvedText = string.IsNullOrWhiteSpace(words)
+				? "CONFIG API KEY"
+				: words.ToUpperInvariant();
 
-		await Dispatcher.UIThread.InvokeAsync(() => What3WordsDisplay = resolvedText);
+			await Dispatcher.UIThread.InvokeAsync(() => What3WordsDisplay = resolvedText);
+		}
+		catch (Exception)
+		{
+			_lastWhat3WordsLatitude = double.NaN;
+			_lastWhat3WordsLongitude = double.NaN;
+		}
 	}
 
 	private void SaveCurrentPreset(int presetIndex)

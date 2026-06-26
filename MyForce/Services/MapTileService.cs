@@ -65,18 +65,30 @@ internal sealed class MapTileService : IDisposable
 		}
 
 		string tileUrl = FormattableString.Invariant($"https://tile.openstreetmap.org/{zoom}/{x}/{y}.png");
-		using HttpResponseMessage response = await HttpClient.GetAsync(tileUrl, cancellationToken).ConfigureAwait(false);
-		if (!response.IsSuccessStatusCode)
+
+		// The vehicle is frequently offline, so a tile fetch must degrade to "no tile"
+		// (the map keeps showing cached tiles) and never propagate. We catch transport
+		// faults (no internet/DNS), the client timeout, and local cache-write errors.
+		try
 		{
+			using HttpResponseMessage response = await HttpClient.GetAsync(tileUrl, cancellationToken).ConfigureAwait(false);
+			if (!response.IsSuccessStatusCode)
+			{
+				return null;
+			}
+
+			byte[] tileBytes = await response.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
+			Directory.CreateDirectory(Path.GetDirectoryName(tilePath)!);
+			await File.WriteAllBytesAsync(tilePath, tileBytes, cancellationToken).ConfigureAwait(false);
+			Bitmap downloadedBitmap = new(new MemoryStream(tileBytes));
+			_memoryCache[cacheKey] = downloadedBitmap;
+			return downloadedBitmap;
+		}
+		catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or OperationCanceledException or IOException)
+		{
+			// No connectivity / timeout / cache-write failure: no tile this round.
 			return null;
 		}
-
-		byte[] tileBytes = await response.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
-		Directory.CreateDirectory(Path.GetDirectoryName(tilePath)!);
-		await File.WriteAllBytesAsync(tilePath, tileBytes, cancellationToken).ConfigureAwait(false);
-		Bitmap downloadedBitmap = new(new MemoryStream(tileBytes));
-		_memoryCache[cacheKey] = downloadedBitmap;
-		return downloadedBitmap;
 	}
 
 	public void Dispose()

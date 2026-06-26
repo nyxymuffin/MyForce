@@ -118,6 +118,16 @@ enum Xl9535Reg {
 // never disturbs the others.
 uint16_t g_xlOutputShadow = 0x0000;
 
+// ---------------------------------------------------------------------------
+// Power-on relay self-test. On boot we briefly energise one relay on the XL9535
+// board to prove the I2C path and the board are alive (an audible click / lit
+// LED). Channel 16 (bit 15) is used because it sits OUTSIDE the mapped function
+// channels, so the test never drives a real wired output. Disable with the flag.
+// ---------------------------------------------------------------------------
+static const bool     BOOT_RELAY_TEST_ENABLED = true;
+static const uint8_t  BOOT_RELAY_TEST_CHANNEL  = 16;    // 1-based; XL9535 bit 15
+static const uint16_t BOOT_RELAY_TEST_MS       = 750;   // pulse duration
+
 // Last-published relay/input state, so we only emit on change.
 bool g_relayState[RELAY_COUNT];
 bool g_inputState[INPUT_COUNT];
@@ -130,6 +140,14 @@ enum TimingMs {
   STATE_PUBLISH_INTERVAL  = 10000,  // periodic full state refresh (retained heartbeat)
   INPUT_POLL_INTERVAL     = 50      // debounced input sampling cadence
 };
+
+// MQTT liveness tuning. The keepalive makes the client PING the broker on an idle
+// link, so a silently dropped broker/LAN is detected within ~1-2 keepalive windows
+// even when no commands are flowing; connected() then goes false and loop()
+// reconnects. The socket timeout bounds how long a connect()/read may block so a
+// dead broker never stalls the control loop (§5.2 presence).
+static const uint16_t MQTT_KEEPALIVE_SECONDS     = 15;  // PINGREQ cadence on idle link
+static const uint8_t  MQTT_SOCKET_TIMEOUT_SECONDS = 4;  // bound blocking socket ops
 
 // Pulse bookkeeping: a relay can be commanded to auto-release after N ms.
 unsigned long g_pulseExpiry[RELAY_COUNT];   // millis() deadline, 0 = no active pulse
@@ -182,6 +200,37 @@ void xlBegin() {
   xlPushOutputs();
   xlWriteReg(XL9535_CONFIG_PORT0, 0x00);  // port 0 pins = outputs
   xlWriteReg(XL9535_CONFIG_PORT1, 0x00);  // port 1 pins = outputs
+}
+
+// Power-on self-test: pulse the test relay on the XL9535 board to prove relay
+// function, with a serial banner so the behaviour is never a surprise. Drives the
+// expander bit directly (the test channel is outside the mapped function range,
+// so it bypasses setRelay()/g_relayState). No-op unless the XL9535 backend is in use.
+void bootRelaySelfTest() {
+  if (!BOOT_RELAY_TEST_ENABLED) {
+    return;
+  }
+  if (RELAY_BACKEND != RELAY_BACKEND_XL9535) {
+    Serial.println("BOOT SELF-TEST: skipped (XL9535 relay backend not selected).");
+    return;
+  }
+
+  uint16_t mask = (uint16_t)1 << (BOOT_RELAY_TEST_CHANNEL - 1);   // 0-based expander bit
+  Serial.print("BOOT SELF-TEST: energising relay ");
+  Serial.print(BOOT_RELAY_TEST_CHANNEL);
+  Serial.print(" on the XL9535 board for ");
+  Serial.print(BOOT_RELAY_TEST_MS);
+  Serial.println(" ms to prove relay function.");
+
+  g_xlOutputShadow |= mask;    // energise the test relay
+  xlPushOutputs();
+  delay(BOOT_RELAY_TEST_MS);
+  g_xlOutputShadow &= ~mask;   // release it again
+  xlPushOutputs();
+
+  Serial.print("BOOT SELF-TEST: relay ");
+  Serial.print(BOOT_RELAY_TEST_CHANNEL);
+  Serial.println(" released. (Disable with BOOT_RELAY_TEST_ENABLED = false.)");
 }
 
 // Drive one relay channel (1-based) to energised/de-energised, honouring the
@@ -550,6 +599,8 @@ void setup() {
     g_pulseExpiry[i] = 0;
     setRelay(i + 1, false);
   }
+  // Prove relay function before bringing the network up (§3.2 hardware bring-up).
+  bootRelaySelfTest();
   // Initialise inputs (pull-ups where the pin supports them; 34/35/36/39 do not).
   for (uint8_t i = 0; i < INPUT_COUNT; i++) {
     pinMode(g_inputPins[i], INPUT_PULLUP);
@@ -582,6 +633,10 @@ void setup() {
   g_mqttClient.setBufferSize(1024);
   g_mqttClient.setServer(g_brokerAddress, MQTT_BROKER_PORT);
   g_mqttClient.setCallback(mqttCallback);
+  // Detect idle broker/LAN drops via keepalive, and keep reconnect attempts from
+  // blocking the loop on a dead broker (§5.2 presence / idle reconnect).
+  g_mqttClient.setKeepAlive(MQTT_KEEPALIVE_SECONDS);
+  g_mqttClient.setSocketTimeout(MQTT_SOCKET_TIMEOUT_SECONDS);
 }
 
 // ===========================================================================
