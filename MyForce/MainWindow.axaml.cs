@@ -409,6 +409,31 @@ public partial class MainWindow : Window
 		}
 	}
 
+	// Admin Radio config screen (§4.4): add a radio of the pressed type, or remove/rename an existing one.
+	private void OnAddRadioTypePressed(object? sender, PointerPressedEventArgs e)
+	{
+		if (sender is Control { DataContext: RadioRegistryEntryMessage type })
+		{
+			_viewModel.AddRadio(type.TypeId, type.DisplayName);
+		}
+	}
+
+	private void OnRemoveRadioPressed(object? sender, PointerPressedEventArgs e)
+	{
+		if (sender is Control { DataContext: RadioAdminItem radio })
+		{
+			radio.Remove();
+		}
+	}
+
+	private void OnSetRadioAliasPressed(object? sender, PointerPressedEventArgs e)
+	{
+		if (sender is Control { DataContext: RadioAdminItem radio })
+		{
+			radio.SaveAlias();
+		}
+	}
+
 	private void OnRadioNuisPressed(object? sender, PointerPressedEventArgs e) { }
 
 	// EXT AUDIO (radio page + patrol): toggle the siren ext_audio relay (pulses green).

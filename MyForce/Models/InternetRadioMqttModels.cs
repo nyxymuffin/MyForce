@@ -117,6 +117,17 @@ internal static class InternetRadioMqttTopics
 
 // ── v3.0 radio-definition flow (§4.4) ──
 
+/// <summary>One declared module instance from myforce/sys/definition (§5.8.3).</summary>
+public sealed record SystemDefinitionModuleMessage(
+	string Id,
+	[property: JsonPropertyName("type_id")] string TypeId,
+	string Alias,
+	string Category,
+	bool Required);
+
+/// <summary>myforce/sys/definition (retained): the operator-declared system (modules, §4.4).</summary>
+internal sealed record SystemDefinitionMessage(IReadOnlyList<SystemDefinitionModuleMessage>? Modules);
+
 /// <summary>One option for a dynamic schema x-options pick-list (value stored, label shown).</summary>
 public sealed record ResourceOptionMessage(string Value, string Label);
 

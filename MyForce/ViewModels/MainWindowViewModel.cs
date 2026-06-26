@@ -329,6 +329,47 @@ public sealed class RadioFunctionButton : INotifyPropertyChanged
 	private void Raise(string name) => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
 }
 
+/// <summary>
+/// One declared radio in the admin Radio config screen (§4.4): its id/type, an editable alias, and
+/// the remove action. Built from the retained sys/definition so add/remove/rename show immediately.
+/// </summary>
+public sealed class RadioAdminItem : INotifyPropertyChanged
+{
+	private readonly MainWindowViewModel _owner;
+	private string _aliasInput;
+
+	public RadioAdminItem(string radioId, string typeId, string alias, MainWindowViewModel owner)
+	{
+		RadioId = radioId;
+		TypeId = typeId;
+		_aliasInput = alias;
+		_owner = owner;
+	}
+
+	public string RadioId { get; }
+
+	public string TypeId { get; }
+
+	public string AliasInput
+	{
+		get => _aliasInput;
+		set
+		{
+			if (!string.Equals(_aliasInput, value, StringComparison.Ordinal))
+			{
+				_aliasInput = value;
+				PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(AliasInput)));
+			}
+		}
+	}
+
+	public void SaveAlias() => _owner.SetRadioAlias(RadioId, AliasInput);
+
+	public void Remove() => _owner.RemoveRadio(RadioId);
+
+	public event PropertyChangedEventHandler? PropertyChanged;
+}
+
 public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 {
 	private const int PresetCount = 6;
@@ -1234,6 +1275,68 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 		private set => SetProperty(ref _adminSchemaModules, value);
 	}
 
+	// --- Radio config screen (§4.4): add / remove / alias declared radios -------
+	// Sourced from the retained sys/definition (so add/remove/rename reflect immediately, even before
+	// the AP re-hydrates the live instance). Commands are admin-class (carry the admin credential).
+
+	private IReadOnlyList<RadioAdminItem> _radioAdminItems = Array.Empty<RadioAdminItem>();
+
+	public IReadOnlyList<RadioAdminItem> RadioAdminItems
+	{
+		get => _radioAdminItems;
+		private set => SetProperty(ref _radioAdminItems, value);
+	}
+
+	public bool HasRadioAdminItems => RadioAdminItems.Count > 0;
+
+	// Add a radio of the given type (alias optional). The AP assigns the id and seeds defaults (§4.4).
+	public void AddRadio(string typeId, string? alias)
+	{
+		if (string.IsNullOrWhiteSpace(typeId))
+		{
+			return;
+		}
+
+		var envelope = CreateCommandEnvelope(isAdminCommand: true, includeMessageId: true);
+		var command = new AddModuleCommandMessage(envelope.V, envelope.Ts, envelope.MsgId, envelope.Auth, typeId, string.IsNullOrWhiteSpace(alias) ? null : alias);
+		_ = PublishCommandAsync(InternetRadioMqttTopics.AddModuleCommandTopic, command);
+	}
+
+	public void RemoveRadio(string radioId)
+	{
+		if (string.IsNullOrWhiteSpace(radioId))
+		{
+			return;
+		}
+
+		var envelope = CreateCommandEnvelope(isAdminCommand: true, includeMessageId: true);
+		var command = new RemoveModuleCommandMessage(envelope.V, envelope.Ts, envelope.MsgId, envelope.Auth, radioId);
+		_ = PublishCommandAsync(InternetRadioMqttTopics.RemoveModuleCommandTopic, command);
+	}
+
+	public void SetRadioAlias(string radioId, string alias)
+	{
+		if (string.IsNullOrWhiteSpace(radioId) || string.IsNullOrWhiteSpace(alias))
+		{
+			return;
+		}
+
+		var envelope = CreateCommandEnvelope(isAdminCommand: true, includeMessageId: true);
+		var command = new SetAliasCommandMessage(envelope.V, envelope.Ts, envelope.MsgId, envelope.Auth, radioId, alias);
+		_ = PublishCommandAsync(InternetRadioMqttTopics.SetAliasCommandTopic, command);
+	}
+
+	// Rebuild the editable radio list from the declared system definition (radio-category modules).
+	private void ApplySystemDefinition(SystemDefinitionMessage definition)
+	{
+		var radios = (definition.Modules ?? Array.Empty<SystemDefinitionModuleMessage>())
+			.Where(module => string.Equals(module.Category, "radio", StringComparison.OrdinalIgnoreCase))
+			.Select(module => new RadioAdminItem(module.Id, module.TypeId, module.Alias, this))
+			.ToArray();
+		RadioAdminItems = radios;
+		PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(HasRadioAdminItems)));
+	}
+
 	public string AdminSchemaSummary => AdminSchemaModules.Count == 0
 		? "Waiting for module registry schemas."
 		: $"SCHEMA MODULES: {AdminSchemaModules.Count}  FIELDS: {AdminSchemaModules.Sum(static module => module.FieldPaths.Count)}";
@@ -2069,6 +2172,24 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 			}
 
 			Dispatcher.UIThread.Post(() => ApplyAudioProcessorRegistry(registry));
+			return;
+		}
+
+		if (string.Equals(message.Topic, InternetRadioMqttTopics.SystemDefinitionTopic, StringComparison.OrdinalIgnoreCase))
+		{
+			var definitionPayload = message.ConvertPayloadToString();
+			if (string.IsNullOrWhiteSpace(definitionPayload))
+			{
+				return;
+			}
+
+			var definition = JsonSerializer.Deserialize<SystemDefinitionMessage>(definitionPayload, MqttJsonSerializerOptions);
+			if (definition is null)
+			{
+				return;
+			}
+
+			Dispatcher.UIThread.Post(() => ApplySystemDefinition(definition));
 			return;
 		}
 

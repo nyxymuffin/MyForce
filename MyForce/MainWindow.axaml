@@ -2284,10 +2284,9 @@
                                                                            FontSize="11"
                                                                            TextWrapping="Wrap"
                                                                            Text="{Binding Capabilities.Detect.Count, StringFormat='DETECT OPTIONS: {0}'}" />
-                                                                <TextBlock Classes="white"
-                                                                           FontSize="11"
-                                                                           TextWrapping="Wrap"
-                                                                           Text="Tap-to-add is the next Radio admin step; this list confirms the AP sees the type and that built-in resources are available without plugins." />
+                                                                <Border Classes="buttonFrame active" Height="36" Width="130" HorizontalAlignment="Left" PointerPressed="OnAddRadioTypePressed">
+                                                                    <Viewbox Stretch="Uniform" Margin="4"><TextBlock Classes="white" TextAlignment="Center" VerticalAlignment="Center" Text="ADD RADIO" /></Viewbox>
+                                                                </Border>
                                                             </StackPanel>
                                                         </Border>
                                                     </DataTemplate>
@@ -2304,6 +2303,35 @@
                                                                FontSize="12"
                                                                TextWrapping="Wrap"
                                                                Text="{Binding AdminRadioSummary}" />
+                                                </StackPanel>
+                                            </Border>
+
+                                            <!-- v3.0 manage declared radios (§4.4): rename + remove (admin-class). Sourced
+                                                 from sys/definition so changes reflect immediately. -->
+                                            <Border Classes="panel" Padding="10" IsVisible="{Binding HasRadioAdminItems}">
+                                                <StackPanel Spacing="6">
+                                                    <TextBlock Classes="white" FontSize="18" Text="MANAGE RADIOS" />
+                                                    <ItemsControl ItemsSource="{Binding RadioAdminItems}">
+                                                        <ItemsControl.ItemTemplate>
+                                                            <DataTemplate x:DataType="viewModels:RadioAdminItem">
+                                                                <Border Classes="buttonFrame" Margin="0,0,0,8" Padding="8">
+                                                                    <StackPanel Spacing="6">
+                                                                        <TextBlock Classes="white" FontSize="11" Text="{Binding RadioId, StringFormat='ID: {0}'}" />
+                                                                        <TextBlock Classes="white" FontSize="11" Text="{Binding TypeId, StringFormat='TYPE: {0}'}" />
+                                                                        <Grid ColumnDefinitions="*,Auto,Auto" ColumnSpacing="6">
+                                                                            <TextBox Grid.Column="0" FontSize="13" VerticalAlignment="Center" Text="{Binding AliasInput, Mode=TwoWay}" Watermark="Alias" />
+                                                                            <Border Grid.Column="1" Classes="buttonFrame" Width="70" Height="34" PointerPressed="OnSetRadioAliasPressed">
+                                                                                <Viewbox Stretch="Uniform" Margin="3"><TextBlock Classes="white" TextAlignment="Center" VerticalAlignment="Center" Text="SET" /></Viewbox>
+                                                                            </Border>
+                                                                            <Border Grid.Column="2" Classes="buttonFrame" Width="90" Height="34" PointerPressed="OnRemoveRadioPressed">
+                                                                                <Viewbox Stretch="Uniform" Margin="3"><TextBlock Classes="white" TextAlignment="Center" VerticalAlignment="Center" Text="REMOVE" /></Viewbox>
+                                                                            </Border>
+                                                                        </Grid>
+                                                                    </StackPanel>
+                                                                </Border>
+                                                            </DataTemplate>
+                                                        </ItemsControl.ItemTemplate>
+                                                    </ItemsControl>
                                                 </StackPanel>
                                             </Border>
 
