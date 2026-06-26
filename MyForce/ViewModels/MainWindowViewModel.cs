@@ -2635,6 +2635,88 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 		_ = PublishCommandAsync(InternetRadioMqttTopics.SirenCodeCommandTopic, command);
 	}
 
+	// --- L/S page: scene lights (toggle) + air horn (momentary) -----------------
+	// Each drives a Siren Interface Controller relay via cmd/set { function, state }.
+
+	private bool _isLeftAlleyActive;
+	public bool IsLeftAlleyActive
+	{
+		get => _isLeftAlleyActive;
+		private set => SetProperty(ref _isLeftAlleyActive, value);
+	}
+
+	private bool _isTakeDownActive;
+	public bool IsTakeDownActive
+	{
+		get => _isTakeDownActive;
+		private set => SetProperty(ref _isTakeDownActive, value);
+	}
+
+	private bool _isRightAlleyActive;
+	public bool IsRightAlleyActive
+	{
+		get => _isRightAlleyActive;
+		private set => SetProperty(ref _isRightAlleyActive, value);
+	}
+
+	private bool _isAirHornActive;
+	public bool IsAirHornActive
+	{
+		get => _isAirHornActive;
+		private set => SetProperty(ref _isAirHornActive, value);
+	}
+
+	// Scene-light toggles: flip the latched state and drive the matching siren relay.
+	public void ToggleLeftAlley()
+	{
+		IsLeftAlleyActive = !IsLeftAlleyActive;
+		PublishSirenSet("alley_left", IsLeftAlleyActive);
+	}
+
+	public void ToggleTakeDown()
+	{
+		IsTakeDownActive = !IsTakeDownActive;
+		PublishSirenSet("takedown", IsTakeDownActive);
+	}
+
+	public void ToggleRightAlley()
+	{
+		IsRightAlleyActive = !IsRightAlleyActive;
+		PublishSirenSet("alley_right", IsRightAlleyActive);
+	}
+
+	// Air horn is momentary: sound while the button is held (press = on, release = off).
+	public void AirHornDown()
+	{
+		if (IsAirHornActive)
+		{
+			return;
+		}
+
+		IsAirHornActive = true;
+		PublishSirenSet("airhorn", true);
+	}
+
+	public void AirHornUp()
+	{
+		if (!IsAirHornActive)
+		{
+			return;
+		}
+
+		IsAirHornActive = false;
+		PublishSirenSet("airhorn", false);
+	}
+
+	// Publishes an on/off command for a single siren relay (§5.2 cmd/set). Fire-and-forget
+	// operating command (no admin auth, §4.6, §3.9.3).
+	private void PublishSirenSet(string function, bool on)
+	{
+		var envelope = CreateCommandEnvelope(isAdminCommand: false, includeMessageId: false);
+		var command = new SirenSetCommandMessage(envelope.V, envelope.Ts, envelope.MsgId, envelope.Auth, function, on ? "on" : "off");
+		_ = PublishCommandAsync(InternetRadioMqttTopics.SirenSetCommandTopic, command);
+	}
+
 	// Camera REC button: pulse the GPIO controller's camera_record relay, flashing
 	// the button so the operator gets immediate confirmation the press registered.
 	public void TriggerCameraRecord()

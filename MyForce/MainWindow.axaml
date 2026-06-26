@@ -961,22 +961,144 @@
                         </Grid>
                         </Grid>
 
+                        <!-- L/S page. Drives the Siren Interface Controller (siren1): CODE 1/2/3
+                             and ARROW reuse the patrol bindings; SCENE LIGHTS and AIR HORN drive
+                             siren relays via cmd/set. The SIREN box is intentionally left blank. -->
                         <Border Classes="panel"
                                 Width="916"
                                 Height="637"
                                 IsVisible="{Binding IsLightsAndSirensContentVisible}"
                                 Padding="24">
-                            <Grid RowDefinitions="Auto,*"
-                                  RowSpacing="16">
-                                <TextBlock Classes="white"
-                                           FontSize="32"
-                                           Text="LIGHTS / SIRENS" />
-                                <TextBlock Grid.Row="1"
-                                           Classes="white"
-                                           FontSize="22"
-                                           VerticalAlignment="Center"
-                                           HorizontalAlignment="Center"
-                                           Text="Lights and siren tab content coming next." />
+                            <Grid Width="868" Height="589" RowDefinitions="468,109" RowSpacing="12">
+
+                                <!-- Top: blank SIREN box | CODE / ARROW / SCENE LIGHTS stack -->
+                                <Grid Grid.Row="0" Width="868" Height="468" ColumnDefinitions="338,518" ColumnSpacing="12">
+
+                                    <!-- SIREN box: intentionally blank (no siren controls yet). -->
+                                    <Border Grid.Column="0" Classes="panel" Width="338" Height="468" Padding="10">
+                                        <TextBlock Classes="white" FontSize="20" TextAlignment="Center" VerticalAlignment="Top" Text="SIREN" />
+                                    </Border>
+
+                                    <Grid Grid.Column="1" Width="518" Height="468" RowDefinitions="116,140,188" RowSpacing="12">
+
+                                        <!-- CODE 1 / 2 / 3 (reuses the patrol code state + handlers). -->
+                                        <Border Grid.Row="0" Classes="panel" Width="518" Height="116" Padding="8">
+                                            <Grid Width="502" Height="100" ColumnDefinitions="*,*,*" ColumnSpacing="6">
+                                                <Grid Grid.Column="0" RowDefinitions="28,*">
+                                                    <TextBlock Classes="white" FontSize="16" TextAlignment="Center" Text="CODE 1" />
+                                                    <Grid Grid.Row="1">
+                                                        <Border Classes="buttonFrame" PointerPressed="OnCode1Pressed" IsVisible="{Binding !IsCode1Selected}">
+                                                            <Viewbox Stretch="Uniform"><TextBlock Classes="white" TextAlignment="Center" VerticalAlignment="Center" Text="{Binding Code1StateText}" /></Viewbox>
+                                                        </Border>
+                                                        <Border Classes="buttonFrame code1Active" PointerPressed="OnCode1Pressed" IsVisible="{Binding IsCode1Selected}">
+                                                            <Viewbox Stretch="Uniform"><TextBlock Classes="white" TextAlignment="Center" VerticalAlignment="Center" Text="{Binding Code1StateText}" /></Viewbox>
+                                                        </Border>
+                                                    </Grid>
+                                                </Grid>
+                                                <Grid Grid.Column="1" RowDefinitions="28,*">
+                                                    <TextBlock Classes="white" FontSize="16" TextAlignment="Center" Text="CODE 2" />
+                                                    <Grid Grid.Row="1">
+                                                        <Border Classes="buttonFrame" PointerPressed="OnCode2Pressed" IsVisible="{Binding !IsCode2Selected}">
+                                                            <Viewbox Stretch="Uniform"><TextBlock Classes="white" TextAlignment="Center" VerticalAlignment="Center" Text="{Binding Code2StateText}" /></Viewbox>
+                                                        </Border>
+                                                        <Border Classes="buttonFrame code2Active" PointerPressed="OnCode2Pressed" IsVisible="{Binding IsCode2Selected}">
+                                                            <Viewbox Stretch="Uniform"><TextBlock Classes="white" TextAlignment="Center" VerticalAlignment="Center" Text="{Binding Code2StateText}" /></Viewbox>
+                                                        </Border>
+                                                    </Grid>
+                                                </Grid>
+                                                <Grid Grid.Column="2" RowDefinitions="28,*">
+                                                    <TextBlock Classes="white" FontSize="16" TextAlignment="Center" Text="CODE 3" />
+                                                    <Grid Grid.Row="1">
+                                                        <Border Classes="buttonFrame" PointerPressed="OnCode3Pressed" IsVisible="{Binding !IsCode3Selected}">
+                                                            <Viewbox Stretch="Uniform"><TextBlock Classes="white" TextAlignment="Center" VerticalAlignment="Center" Text="{Binding Code3StateText}" /></Viewbox>
+                                                        </Border>
+                                                        <Border Classes="buttonFrame code3Active" PointerPressed="OnCode3Pressed" IsVisible="{Binding IsCode3Selected}">
+                                                            <Viewbox Stretch="Uniform"><TextBlock Classes="white" TextAlignment="Center" VerticalAlignment="Center" Text="{Binding Code3StateText}" /></Viewbox>
+                                                        </Border>
+                                                    </Grid>
+                                                </Grid>
+                                            </Grid>
+                                        </Border>
+
+                                        <!-- ARROW / FLASH = directional Left / Center / Right (same as patrol). -->
+                                        <Border Grid.Row="1" Classes="panel" Width="518" Height="140" Padding="8">
+                                            <Grid Width="502" Height="124" RowDefinitions="28,*" RowSpacing="4">
+                                                <TextBlock Classes="white" FontSize="16" TextAlignment="Center" Text="ARROW / FLASH" />
+                                                <Grid Grid.Row="1" ColumnDefinitions="*,*,*" ColumnSpacing="6">
+                                                    <Grid Grid.Column="0">
+                                                        <Border Classes="buttonFrame" PointerPressed="OnDirectionalLeftPressed" IsVisible="{Binding !IsDirectionalLeftSelected}">
+                                                            <Viewbox Stretch="Uniform"><TextBlock Classes="white" TextAlignment="Center" VerticalAlignment="Center" Text="◀" /></Viewbox>
+                                                        </Border>
+                                                        <Border Classes="buttonFrame directionalActive" PointerPressed="OnDirectionalLeftPressed" IsVisible="{Binding IsDirectionalLeftSelected}">
+                                                            <Viewbox Stretch="Uniform"><TextBlock Classes="white" TextAlignment="Center" VerticalAlignment="Center" Text="◀" /></Viewbox>
+                                                        </Border>
+                                                    </Grid>
+                                                    <Grid Grid.Column="1">
+                                                        <Border Classes="buttonFrame" PointerPressed="OnDirectionalCenterOutPressed" IsVisible="{Binding !IsDirectionalCenterOutSelected}">
+                                                            <Viewbox Stretch="Uniform"><TextBlock Classes="white" TextAlignment="Center" VerticalAlignment="Center" Text="◀ ▶" /></Viewbox>
+                                                        </Border>
+                                                        <Border Classes="buttonFrame directionalActive" PointerPressed="OnDirectionalCenterOutPressed" IsVisible="{Binding IsDirectionalCenterOutSelected}">
+                                                            <Viewbox Stretch="Uniform"><TextBlock Classes="white" TextAlignment="Center" VerticalAlignment="Center" Text="◀ ▶" /></Viewbox>
+                                                        </Border>
+                                                    </Grid>
+                                                    <Grid Grid.Column="2">
+                                                        <Border Classes="buttonFrame" PointerPressed="OnDirectionalRightPressed" IsVisible="{Binding !IsDirectionalRightSelected}">
+                                                            <Viewbox Stretch="Uniform"><TextBlock Classes="white" TextAlignment="Center" VerticalAlignment="Center" Text="▶" /></Viewbox>
+                                                        </Border>
+                                                        <Border Classes="buttonFrame directionalActive" PointerPressed="OnDirectionalRightPressed" IsVisible="{Binding IsDirectionalRightSelected}">
+                                                            <Viewbox Stretch="Uniform"><TextBlock Classes="white" TextAlignment="Center" VerticalAlignment="Center" Text="▶" /></Viewbox>
+                                                        </Border>
+                                                    </Grid>
+                                                </Grid>
+                                            </Grid>
+                                        </Border>
+
+                                        <!-- SCENE LIGHTS: LEFT ALLEY / TAKE DOWN / RIGHT ALLEY (latching). -->
+                                        <Border Grid.Row="2" Classes="panel" Width="518" Height="188" Padding="8">
+                                            <Grid Width="502" Height="172" RowDefinitions="28,*" RowSpacing="6">
+                                                <TextBlock Classes="white" FontSize="16" TextAlignment="Center" Text="SCENE LIGHTS" />
+                                                <Grid Grid.Row="1" ColumnDefinitions="*,*,*" ColumnSpacing="6">
+                                                    <Grid Grid.Column="0">
+                                                        <Border Classes="buttonFrame" PointerPressed="OnLeftAlleyPressed" IsVisible="{Binding !IsLeftAlleyActive}">
+                                                            <Viewbox Stretch="Uniform"><TextBlock Classes="white" TextAlignment="Center" VerticalAlignment="Center" Text="LEFT ALLEY" /></Viewbox>
+                                                        </Border>
+                                                        <Border Classes="buttonFrame active" PointerPressed="OnLeftAlleyPressed" IsVisible="{Binding IsLeftAlleyActive}">
+                                                            <Viewbox Stretch="Uniform"><TextBlock Classes="white" TextAlignment="Center" VerticalAlignment="Center" Text="LEFT ALLEY" /></Viewbox>
+                                                        </Border>
+                                                    </Grid>
+                                                    <Grid Grid.Column="1">
+                                                        <Border Classes="buttonFrame" PointerPressed="OnTakeDownPressed" IsVisible="{Binding !IsTakeDownActive}">
+                                                            <Viewbox Stretch="Uniform"><TextBlock Classes="white" TextAlignment="Center" VerticalAlignment="Center" Text="TAKE DOWN" /></Viewbox>
+                                                        </Border>
+                                                        <Border Classes="buttonFrame active" PointerPressed="OnTakeDownPressed" IsVisible="{Binding IsTakeDownActive}">
+                                                            <Viewbox Stretch="Uniform"><TextBlock Classes="white" TextAlignment="Center" VerticalAlignment="Center" Text="TAKE DOWN" /></Viewbox>
+                                                        </Border>
+                                                    </Grid>
+                                                    <Grid Grid.Column="2">
+                                                        <Border Classes="buttonFrame" PointerPressed="OnRightAlleyPressed" IsVisible="{Binding !IsRightAlleyActive}">
+                                                            <Viewbox Stretch="Uniform"><TextBlock Classes="white" TextAlignment="Center" VerticalAlignment="Center" Text="RIGHT ALLEY" /></Viewbox>
+                                                        </Border>
+                                                        <Border Classes="buttonFrame active" PointerPressed="OnRightAlleyPressed" IsVisible="{Binding IsRightAlleyActive}">
+                                                            <Viewbox Stretch="Uniform"><TextBlock Classes="white" TextAlignment="Center" VerticalAlignment="Center" Text="RIGHT ALLEY" /></Viewbox>
+                                                        </Border>
+                                                    </Grid>
+                                                </Grid>
+                                            </Grid>
+                                        </Border>
+                                    </Grid>
+                                </Grid>
+
+                                <!-- Bottom row: AIR HORN only; remaining slots left blank per spec. -->
+                                <Grid Grid.Row="1" Width="868" Height="109" ColumnDefinitions="168,168,168,168,*" ColumnSpacing="7">
+                                    <Grid Grid.Column="0">
+                                        <Border Classes="buttonFrame" PointerPressed="OnAirHornPressed" PointerReleased="OnAirHornReleased" IsVisible="{Binding !IsAirHornActive}">
+                                            <Viewbox Stretch="Uniform"><TextBlock Classes="white" TextAlignment="Center" VerticalAlignment="Center" Text="AIR HORN" /></Viewbox>
+                                        </Border>
+                                        <Border Classes="buttonFrame active" PointerPressed="OnAirHornPressed" PointerReleased="OnAirHornReleased" IsVisible="{Binding IsAirHornActive}">
+                                            <Viewbox Stretch="Uniform"><TextBlock Classes="white" TextAlignment="Center" VerticalAlignment="Center" Text="AIR HORN" /></Viewbox>
+                                        </Border>
+                                    </Grid>
+                                </Grid>
                             </Grid>
                         </Border>
 

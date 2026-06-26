@@ -83,6 +83,10 @@ internal static class InternetRadioMqttTopics
 
 	public const string SirenCodeCommandTopic = "myforce/module/siren1/cmd/code";
 
+	// Generic per-relay on/off for the Siren Interface Controller (scene lights, air
+	// horn, etc.): cmd/set with { function, state }.
+	public const string SirenSetCommandTopic = "myforce/module/siren1/cmd/set";
+
 	// GPIO Relay Controller command topic (§5.2 per-module cmd/<action>). The
 	// controller's instance id is "gpio.relay1"; "pulse" momentarily energises a
 	// named relay then auto-releases it, used by the camera REC/STOP/AUTOZ buttons
@@ -130,6 +134,21 @@ internal sealed record SirenCodeCommandMessage(
 	[property: JsonPropertyName("msg_id")] string? MsgId,
 	string? Auth,
 	[property: JsonPropertyName("code")] string Code);
+
+/// <summary>
+/// UI-published per-relay on/off command for the Siren Interface Controller
+/// (myforce/module/siren1/cmd/set, §5.2). Function is a relay function name
+/// (e.g. "alley_left", "takedown", "airhorn"); State is "on" or "off". Used by the
+/// L/S page scene-light toggles and the air horn. MsgId carries the snake_case
+/// name (msg_id) the ESP32 firmware reads (§5.8.1).
+/// </summary>
+internal sealed record SirenSetCommandMessage(
+	int V,
+	DateTimeOffset Ts,
+	[property: JsonPropertyName("msg_id")] string? MsgId,
+	string? Auth,
+	[property: JsonPropertyName("function")] string Function,
+	[property: JsonPropertyName("state")] string State);
 
 /// <summary>
 /// UI-published momentary pulse command for the GPIO Relay Controller

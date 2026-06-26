@@ -327,6 +327,23 @@ public partial class MainWindow : Window
 	private void OnCameraAutoZoomPressed(object? sender, PointerPressedEventArgs e)
 		=> _viewModel.TriggerCameraAutoZoom();
 
+	// L/S page scene lights (latching toggles on the Siren Interface Controller).
+	private void OnLeftAlleyPressed(object? sender, PointerPressedEventArgs e)
+		=> _viewModel.ToggleLeftAlley();
+
+	private void OnTakeDownPressed(object? sender, PointerPressedEventArgs e)
+		=> _viewModel.ToggleTakeDown();
+
+	private void OnRightAlleyPressed(object? sender, PointerPressedEventArgs e)
+		=> _viewModel.ToggleRightAlley();
+
+	// L/S page air horn: momentary, sounds while held.
+	private void OnAirHornPressed(object? sender, PointerPressedEventArgs e)
+		=> _viewModel.AirHornDown();
+
+	private void OnAirHornReleased(object? sender, PointerReleasedEventArgs e)
+		=> _viewModel.AirHornUp();
+
 	private void OnEmergencyPressed(object? sender, PointerPressedEventArgs e)
 	{
 		if (Application.Current?.ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)
