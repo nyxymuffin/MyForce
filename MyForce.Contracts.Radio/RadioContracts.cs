@@ -25,7 +25,8 @@ namespace MyForce.Contracts.Radio;
 /// </summary>
 public static class RadioContract
 {
-	public const int Version = 1;
+	// v2: added module function buttons + console-scoped menus (§3.10, framework v2.8).
+	public const int Version = 2;
 }
 
 /// <summary>
@@ -72,6 +73,14 @@ public interface IRadioModule : IAsyncDisposable
 	/// the control's ArgsSchema (§3.7.7).
 	/// </summary>
 	Task<OperationResult> ExecuteControlAsync(string action, JsonElement args, CancellationToken cancellationToken);
+
+	/// <summary>
+	/// A declared function button was pressed (§3.10.2, v2.8). consoleId identifies the originating
+	/// console (for ShowMenuAsync). A one-shot button acts; a menu button starts a session and acks
+	/// promptly. Default: not supported, so modules without buttons need no change.
+	/// </summary>
+	Task<OperationResult> PressButtonAsync(string buttonId, string consoleId, CancellationToken cancellationToken)
+		=> Task.FromResult(OperationResult.Error($"Function button '{buttonId}' is not supported."));
 }
 
 /// <summary>
@@ -94,6 +103,14 @@ public interface IModuleHost
 	void EmitEvent(string name, JsonNode? data = null);
 
 	void Log(LogLevel level, string message);
+
+	/// <summary>
+	/// Present a console-scoped menu and await the operator's input (§3.10.3, v2.8). The AP renders
+	/// the JSON-Schema menu on the given console and returns the result. Default: returns a cancelled
+	/// result, so a host that does not yet support menus is non-fatal.
+	/// </summary>
+	Task<MenuResult> ShowMenuAsync(string consoleId, MenuSpec menu, CancellationToken cancellationToken)
+		=> Task.FromResult(new MenuResult(false, null));
 }
 
 /// <summary>
@@ -152,7 +169,30 @@ public sealed record RadioCapabilities(
 	IReadOnlyList<KeyingMethod> Keying,
 	IReadOnlyList<DetectMethod> Detect,
 	bool ProvidesAudio,
-	IReadOnlyList<string> Controls);
+	IReadOnlyList<string> Controls,
+	// Up to 24 module-declared function buttons the UI renders as a panel (§3.10, v2.8).
+	IReadOnlyList<FunctionButton>? Buttons = null);
+
+/// <summary>
+/// A module-declared function button (§3.10.1). OpensMenu = true means the press starts a menu
+/// session (the module calls IModuleHost.ShowMenuAsync); false = a one-shot action.
+/// </summary>
+public sealed record FunctionButton(
+	string Id,
+	string Label,
+	bool OpensMenu = false,
+	string? Icon = null,
+	int? Group = null,
+	int? Order = null);
+
+/// <summary>
+/// A menu the module asks a console to display (§3.10.3). Schema is JSON Schema (2020-12) describing
+/// the input fields; the UI renders it the same way it renders admin pages (§3.9.5).
+/// </summary>
+public sealed record MenuSpec(string Title, string Schema, JsonNode? Initial = null);
+
+/// <summary>The operator's response to a menu. Submitted = false means cancelled.</summary>
+public sealed record MenuResult(bool Submitted, JsonNode? Values);
 
 /// <summary>
 /// Describes the operator-selected keying settings for a radio instance.

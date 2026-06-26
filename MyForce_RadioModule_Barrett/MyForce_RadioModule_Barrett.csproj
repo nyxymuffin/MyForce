@@ -15,6 +15,11 @@
     </ProjectReference>
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- RS232 CAT control of the Barrett 2050 over a serial port (Linux + Windows). -->
+    <PackageReference Include="System.IO.Ports" Version="9.0.0" />
+  </ItemGroup>
+
   <!-- Convenience: drop the built plugin into the Audio Processor's discovery folder so it is
        picked up on the next AP launch. This mirrors the AP's own resolution of
        Environment.SpecialFolder.ApplicationData: $XDG_CONFIG_HOME (else ~/.config) on Linux,
