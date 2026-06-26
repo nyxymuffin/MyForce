@@ -91,6 +91,23 @@
             </Style.Animations>
         </Style>
 
+        <!-- Pulsing green active state (EXT AUDIO). -->
+        <Style Selector="Border.buttonFrame.greenPulse">
+            <Setter Property="Background" Value="{StaticResource Code1ActiveBrush}" />
+            <Setter Property="BorderBrush" Value="{StaticResource Code1ActiveBorderBrush}" />
+            <Setter Property="Opacity" Value="1" />
+            <Style.Animations>
+                <Animation Duration="0:0:1" IterationCount="INFINITE" PlaybackDirection="Alternate">
+                    <KeyFrame Cue="0%">
+                        <Setter Property="Opacity" Value="1" />
+                    </KeyFrame>
+                    <KeyFrame Cue="100%">
+                        <Setter Property="Opacity" Value="0.4" />
+                    </KeyFrame>
+                </Animation>
+            </Style.Animations>
+        </Style>
+
         <!-- Apply the active Code 1 color. -->
         <Style Selector="Border.buttonFrame.code1Active">
             <Setter Property="Background" Value="{StaticResource Code1ActiveBrush}" />
@@ -831,48 +848,46 @@
                                                        FontSize="13.333"
                                                        TextAlignment="Center"
                                                        Text="EXT AUDIO" />
-                                            <Border Grid.Row="1" Classes="buttonFrame" Width="157" Height="139" PointerPressed="OnExternalAudioPressed">
-                                                <Grid>
-                                                    <Viewbox Stretch="Uniform"
-                                                             HorizontalAlignment="Center"
-                                                             VerticalAlignment="Center"
-                                                             MaxWidth="120"
-                                                             MaxHeight="110">
-                                                        <TextBlock Classes="white"
-                                                                   TextAlignment="Center"
-                                                                   VerticalAlignment="Center"
-                                                                   Text="OFF" />
+                                            <Grid Grid.Row="1">
+                                                <Border Classes="buttonFrame" Width="157" Height="139" PointerPressed="OnExtAudioTogglePressed" IsVisible="{Binding !IsExtAudioActive}">
+                                                    <Viewbox Stretch="Uniform" HorizontalAlignment="Center" VerticalAlignment="Center" MaxWidth="120" MaxHeight="110">
+                                                        <TextBlock Classes="white" TextAlignment="Center" VerticalAlignment="Center" Text="OFF" />
                                                     </Viewbox>
-                                                </Grid>
-                                            </Border>
+                                                </Border>
+                                                <Border Classes="buttonFrame greenPulse" Width="157" Height="139" PointerPressed="OnExtAudioTogglePressed" IsVisible="{Binding IsExtAudioActive}">
+                                                    <Viewbox Stretch="Uniform" HorizontalAlignment="Center" VerticalAlignment="Center" MaxWidth="120" MaxHeight="110">
+                                                        <TextBlock Classes="white" TextAlignment="Center" VerticalAlignment="Center" Text="ON" />
+                                                    </Viewbox>
+                                                </Border>
+                                            </Grid>
                                         </Grid>
                                     </Border>
                                 </Grid>
 
                                 <!-- Voice Memo (soft key 3) with hidden custom soft key 5 below -->
                                 <Grid Grid.Column="1" Width="183" Height="369" RowDefinitions="179,182" RowSpacing="8" VerticalAlignment="Top">
+                                    <!-- ACTIVE RADIO / SCAN: toggles scan for the selected radio (links to the
+                                         radio page SCAN), glows orange while scanning. -->
                                     <Border Classes="panel" Width="183" Height="179" Padding="8">
                                         <Grid Width="165" Height="161" RowDefinitions="28,133">
                                             <TextBlock Classes="white"
                                                        Width="165"
                                                        Height="28"
-                                                       FontSize="18"
+                                                       FontSize="14"
                                                        TextAlignment="Center"
-                                                       Text="MEMO" />
-                                            <Border Grid.Row="1" Classes="buttonFrame" Width="165" Height="133" PointerPressed="OnMemoRecordPressed">
-                                                <Grid>
-                                                    <Viewbox Stretch="Uniform"
-                                                             HorizontalAlignment="Center"
-                                                             VerticalAlignment="Center"
-                                                             MaxWidth="120"
-                                                             MaxHeight="90">
-                                                        <TextBlock Classes="white"
-                                                                   TextAlignment="Center"
-                                                                   VerticalAlignment="Center"
-                                                                   Text="REC" />
+                                                       Text="{Binding ActiveRadioScanLabel}" />
+                                            <Grid Grid.Row="1">
+                                                <Border Classes="buttonFrame" Width="165" Height="133" PointerPressed="OnRadioScanTogglePressed" IsVisible="{Binding !IsRadioScanActive}">
+                                                    <Viewbox Stretch="Uniform" HorizontalAlignment="Center" VerticalAlignment="Center" MaxWidth="120" MaxHeight="90">
+                                                        <TextBlock Classes="white" TextAlignment="Center" VerticalAlignment="Center" Text="SCAN" />
                                                     </Viewbox>
-                                                </Grid>
-                                            </Border>
+                                                </Border>
+                                                <Border Classes="buttonFrame directionalActive" Width="165" Height="133" PointerPressed="OnRadioScanTogglePressed" IsVisible="{Binding IsRadioScanActive}">
+                                                    <Viewbox Stretch="Uniform" HorizontalAlignment="Center" VerticalAlignment="Center" MaxWidth="120" MaxHeight="90">
+                                                        <TextBlock Classes="white" TextAlignment="Center" VerticalAlignment="Center" Text="SCAN" />
+                                                    </Viewbox>
+                                                </Border>
+                                            </Grid>
                                         </Grid>
                                     </Border>
                                     <!-- Hidden custom soft key 5 -->
@@ -1226,14 +1241,24 @@
                                                     <Viewbox Stretch="Uniform" Margin="4"><TextBlock Classes="white" TextAlignment="Center" VerticalAlignment="Center" Text="CHANNELS" /></Viewbox>
                                                 </Border>
                                             </Grid>
-                                            <!-- EXT AUDIO | SCAN under them -->
+                                            <!-- EXT AUDIO (green pulse) | SCAN (orange glow) - shared state with patrol -->
                                             <Grid Grid.Row="1" ColumnDefinitions="*,*,*" ColumnSpacing="8">
-                                                <Border Grid.Column="0" Classes="buttonFrame" PointerPressed="OnRadioExtAudioPressed">
-                                                    <Viewbox Stretch="Uniform" Margin="4"><TextBlock Classes="white" TextAlignment="Center" VerticalAlignment="Center" Text="EXT AUDIO" /></Viewbox>
-                                                </Border>
-                                                <Border Grid.Column="1" Classes="buttonFrame" PointerPressed="OnRadioScanPressed">
-                                                    <Viewbox Stretch="Uniform" Margin="4"><TextBlock Classes="white" TextAlignment="Center" VerticalAlignment="Center" Text="SCAN" /></Viewbox>
-                                                </Border>
+                                                <Grid Grid.Column="0">
+                                                    <Border Classes="buttonFrame" PointerPressed="OnRadioExtAudioPressed" IsVisible="{Binding !IsExtAudioActive}">
+                                                        <Viewbox Stretch="Uniform" Margin="4"><TextBlock Classes="white" TextAlignment="Center" VerticalAlignment="Center" Text="EXT AUDIO" /></Viewbox>
+                                                    </Border>
+                                                    <Border Classes="buttonFrame greenPulse" PointerPressed="OnRadioExtAudioPressed" IsVisible="{Binding IsExtAudioActive}">
+                                                        <Viewbox Stretch="Uniform" Margin="4"><TextBlock Classes="white" TextAlignment="Center" VerticalAlignment="Center" Text="EXT AUDIO" /></Viewbox>
+                                                    </Border>
+                                                </Grid>
+                                                <Grid Grid.Column="1">
+                                                    <Border Classes="buttonFrame" PointerPressed="OnRadioScanPressed" IsVisible="{Binding !IsRadioScanActive}">
+                                                        <Viewbox Stretch="Uniform" Margin="4"><TextBlock Classes="white" TextAlignment="Center" VerticalAlignment="Center" Text="SCAN" /></Viewbox>
+                                                    </Border>
+                                                    <Border Classes="buttonFrame directionalActive" PointerPressed="OnRadioScanPressed" IsVisible="{Binding IsRadioScanActive}">
+                                                        <Viewbox Stretch="Uniform" Margin="4"><TextBlock Classes="white" TextAlignment="Center" VerticalAlignment="Center" Text="SCAN" /></Viewbox>
+                                                    </Border>
+                                                </Grid>
                                             </Grid>
                                         </Grid>
                                     </Grid>

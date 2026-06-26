@@ -3006,12 +3006,16 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 	{
 		SelectedDirectional = DirectionalMode.Off;   // publishes directional off
 		SelectedAlertCode = AlertCodeMode.Off;       // publishes code off
-		IsLeftAlleyActive = false;
-		IsTakeDownActive = false;
-		IsRightAlleyActive = false;
-		IsAirHornActive = false;
 
-		// Authoritative kill on the controller (turns off every relay), then drop the lease.
+		// Each scene light / air horn must be explicitly de-energised on the controller, not just
+		// cleared in the UI, so the relays actually drop (publish set:off per function).
+		if (IsLeftAlleyActive) { IsLeftAlleyActive = false; PublishSirenSet("alley_left", false); }
+		if (IsTakeDownActive) { IsTakeDownActive = false; PublishSirenSet("takedown", false); }
+		if (IsRightAlleyActive) { IsRightAlleyActive = false; PublishSirenSet("alley_right", false); }
+		if (IsAirHornActive) { IsAirHornActive = false; PublishSirenSet("airhorn", false); }
+		if (IsExtAudioActive) { IsExtAudioActive = false; PublishSirenSet("ext_audio", false); }
+
+		// Backstop: also tell the controller to kill every relay, then drop the lease.
 		PublishSirenAllOff();
 		if (_isSirenLeaseHolder)
 		{
@@ -3039,6 +3043,51 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 	{
 		var command = new SirenLeaseMessage(MqttCommandSchemaVersion, DateTimeOffset.UtcNow, active ? ConsoleId : null, active);
 		_ = PublishCommandAsync(InternetRadioMqttTopics.SirenLeaseTopic, command, retain: true);
+	}
+
+	// --- Active-radio SCAN (patrol "ACTIVE RADIO / SCAN" + radio page SCAN) ------
+	// Both buttons toggle scan for the currently selected radio and glow orange while scanning.
+
+	private bool _isRadioScanActive;
+	public bool IsRadioScanActive
+	{
+		get => _isRadioScanActive;
+		private set => SetProperty(ref _isRadioScanActive, value);
+	}
+
+	// "ACTIVE RADIO" label shows which radio scan targets.
+	public string ActiveRadioScanLabel => string.IsNullOrWhiteSpace(_selectedRadioDisplayName) || _selectedRadioDisplayName == "---"
+		? "ACTIVE RADIO"
+		: _selectedRadioDisplayName;
+
+	// Toggle scan on the selected radio module (cmd/scan { state: start|stop }, §5.3).
+	public void ToggleRadioScan()
+	{
+		if (string.IsNullOrWhiteSpace(_selectedRadioId))
+		{
+			return;
+		}
+
+		IsRadioScanActive = !IsRadioScanActive;
+		var envelope = CreateCommandEnvelope(isAdminCommand: false, includeMessageId: true);
+		var command = new RadioScanCommandMessage(envelope.V, envelope.Ts, envelope.MsgId, IsRadioScanActive ? "start" : "stop");
+		_ = PublishCommandAsync($"myforce/module/{_selectedRadioId}/cmd/scan", command);
+	}
+
+	// --- EXT AUDIO (patrol soft key 2 + radio page) -> siren ext_audio relay -----
+	// Toggles the siren controller's ext_audio relay and pulses green while active.
+
+	private bool _isExtAudioActive;
+	public bool IsExtAudioActive
+	{
+		get => _isExtAudioActive;
+		private set => SetProperty(ref _isExtAudioActive, value);
+	}
+
+	public void ToggleExtAudio()
+	{
+		IsExtAudioActive = !IsExtAudioActive;
+		PublishSirenSet("ext_audio", IsExtAudioActive);
 	}
 
 	// ===========================================================================
@@ -3151,6 +3200,8 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 		_selectedRadioDisplayName = string.IsNullOrWhiteSpace(match?.DisplayName) ? radioId : match!.DisplayName;
 		PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(RadioPageTitle)));
 		PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(ChannelSelectionRadioTitle)));
+		PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(ActiveRadioScanLabel)));
+		IsRadioScanActive = false;   // scan state is per-radio; reset on selection
 		RebuildRadioFunctionButtons();
 		PublishConsoleSelect(radioId);
 		IsRadioSelectionOverlayVisible = false;

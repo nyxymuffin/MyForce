@@ -185,6 +185,16 @@ internal sealed record SirenLeaseMessage(
 	[property: JsonPropertyName("active")] bool Active);
 
 /// <summary>
+/// UI-published radio scan command (myforce/module/&lt;id&gt;/cmd/scan, §5.3): start/stop scanning
+/// on a radio module. State is "start" or "stop".
+/// </summary>
+internal sealed record RadioScanCommandMessage(
+	int V,
+	DateTimeOffset Ts,
+	[property: JsonPropertyName("msg_id")] string? MsgId,
+	[property: JsonPropertyName("state")] string State);
+
+/// <summary>
 /// UI-published function-button press (myforce/module/&lt;id&gt;/cmd/button, §5.12, v2.8):
 /// a module-declared button was pressed on this console.
 /// </summary>

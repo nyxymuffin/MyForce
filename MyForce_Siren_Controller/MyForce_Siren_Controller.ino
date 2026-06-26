@@ -55,7 +55,8 @@ static const char* g_relayFunctions[] = {
   "alley_right",         // 8  - AlleyRight
   "takedown",            // 9  - Takedown
   "pa",                  // 10 - PA
-  "cruise"               // 11 - Cruise
+  "cruise",              // 11 - Cruise
+  "ext_audio"            // 12 - External audio (EXT AUDIO button)
 };
 static const uint8_t RELAY_COUNT = sizeof(g_relayFunctions) / sizeof(g_relayFunctions[0]);
 

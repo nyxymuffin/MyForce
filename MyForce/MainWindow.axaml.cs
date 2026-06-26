@@ -411,9 +411,19 @@ public partial class MainWindow : Window
 
 	private void OnRadioNuisPressed(object? sender, PointerPressedEventArgs e) { }
 
-	private void OnRadioExtAudioPressed(object? sender, PointerPressedEventArgs e) { }
+	// EXT AUDIO (radio page + patrol): toggle the siren ext_audio relay (pulses green).
+	private void OnRadioExtAudioPressed(object? sender, PointerPressedEventArgs e)
+		=> _viewModel.ToggleExtAudio();
 
-	private void OnRadioScanPressed(object? sender, PointerPressedEventArgs e) { }
+	private void OnExtAudioTogglePressed(object? sender, PointerPressedEventArgs e)
+		=> _viewModel.ToggleExtAudio();
+
+	// SCAN (radio page + patrol ACTIVE RADIO/SCAN): toggle scan on the selected radio (glows orange).
+	private void OnRadioScanPressed(object? sender, PointerPressedEventArgs e)
+		=> _viewModel.ToggleRadioScan();
+
+	private void OnRadioScanTogglePressed(object? sender, PointerPressedEventArgs e)
+		=> _viewModel.ToggleRadioScan();
 
 	private void OnRadioPresetPressed(object? sender, PointerPressedEventArgs e) { }
 
@@ -523,12 +533,6 @@ public partial class MainWindow : Window
 	// Soft keys 1-6 under the directionals: route touch presses through the same trigger the HCD uses.
 	private void OnLightsAndSirensOffPressed(object? sender, PointerPressedEventArgs e)
 		=> _viewModel.TriggerSoftKey(1);
-
-	private void OnExternalAudioPressed(object? sender, PointerPressedEventArgs e)
-		=> _viewModel.TriggerSoftKey(2);
-
-	private void OnMemoRecordPressed(object? sender, PointerPressedEventArgs e)
-		=> _viewModel.TriggerSoftKey(3);
 
 	private void OnSoftKey5Pressed(object? sender, PointerPressedEventArgs e)
 		=> _viewModel.TriggerSoftKey(5);
