@@ -702,12 +702,12 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 
 	private string _adminAudioStatus = "Waiting for AP audio routing state.";
 
+	// Only the local UI is known-present at startup. Every other component (AP, GPIO controller, siren
+	// interface, radio modules) is added to this list ONLY when we actually detect it via its retained
+	// MQTT status, so the System Status page never shows modules that are not really there.
 	private IReadOnlyList<AdminSystemComponentStatus> _systemComponentStatuses =
 	[
 		new("ui", "Main UI", AdminComponentStatus.Online, "Local console is running.", "LOCAL"),
-		new("audio-processor", "Audio Processor", AdminComponentStatus.Unknown, "Waiting for retained MQTT status.", AudioProcessorStatusTopic),
-		new("gpio-controller", "GPIO Controller", AdminComponentStatus.Unknown, "Waiting for retained MQTT status.", GpioControllerStatusTopic),
-		new("siren-interface", "Siren Interface", AdminComponentStatus.Unknown, "Waiting for retained MQTT status.", SirenInterfaceStatusTopic),
 	];
 
 	// Tracks the currently selected directional mode.
@@ -3160,7 +3160,14 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 
 		if (string.IsNullOrWhiteSpace(payload))
 		{
-			UpdateSystemComponentStatus(GetComponentIdFromTopic(topic), AdminComponentStatus.Unknown, "Status payload was empty.", topic);
+			// An empty retained payload means the component cleared its status (gone). Reflect that only if
+			// we already knew about it; never create a phantom row for a component we never detected.
+			var componentId = GetComponentIdFromTopic(topic);
+			if (SystemComponentStatuses.Any(component => string.Equals(component.Id, componentId, StringComparison.OrdinalIgnoreCase)))
+			{
+				UpdateSystemComponentStatus(componentId, AdminComponentStatus.Offline, "Component cleared its status (offline).", topic);
+			}
+
 			return;
 		}
 

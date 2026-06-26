@@ -4,6 +4,9 @@
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <!-- Copy NuGet dependency assemblies (System.IO.Ports) into bin so they can be deployed alongside the
+         plugin; the AP's plugin load context resolves them from the plugins folder (§3.6.7). -->
+    <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
   </PropertyGroup>
 
   <ItemGroup>
@@ -31,8 +34,13 @@
       <MyForcePluginsDir Condition="'$(OS)' != 'Windows_NT' And '$(XDG_CONFIG_HOME)' != ''">$(XDG_CONFIG_HOME)/myforce/plugins</MyForcePluginsDir>
       <MyForcePluginsDir Condition="'$(OS)' != 'Windows_NT' And '$(XDG_CONFIG_HOME)' == ''">$(HOME)/.config/myforce/plugins</MyForcePluginsDir>
     </PropertyGroup>
+    <!-- Deploy the plugin plus its private dependency assemblies (e.g. System.IO.Ports). The contract
+         assembly is excluded (Private=false keeps it out of bin) so the host's copy stays authoritative. -->
+    <ItemGroup>
+      <PluginDeployFiles Include="$(OutDir)*.dll" Exclude="$(OutDir)MyForce.Contracts.Radio.dll" />
+    </ItemGroup>
     <MakeDir Directories="$(MyForcePluginsDir)" Condition="'$(MyForcePluginsDir)' != ''" />
-    <Copy SourceFiles="$(TargetPath)" DestinationFolder="$(MyForcePluginsDir)" SkipUnchangedFiles="true" Condition="'$(MyForcePluginsDir)' != ''" />
+    <Copy SourceFiles="@(PluginDeployFiles)" DestinationFolder="$(MyForcePluginsDir)" SkipUnchangedFiles="true" Condition="'$(MyForcePluginsDir)' != ''" />
   </Target>
 
 </Project>

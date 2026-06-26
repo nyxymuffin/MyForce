@@ -18,6 +18,7 @@
 using System.Buffers;
 using System.Globalization;
 using System.Runtime.InteropServices;
+using System.Reflection;
 using System.Runtime.Loader;
 using System.Collections.ObjectModel;
 using System.Diagnostics;
@@ -314,7 +315,7 @@ internal sealed class RadioPluginCatalog
 		{
 			try
 			{
-				var loadContext = new AssemblyLoadContext($"radio-plugin:{Path.GetFileNameWithoutExtension(assemblyPath)}", isCollectible: true);
+				var loadContext = new PluginLoadContext($"radio-plugin:{Path.GetFileNameWithoutExtension(assemblyPath)}", pluginDirectoryPath);
 				var assembly = loadContext.LoadFromAssemblyPath(assemblyPath);
 				var factoryType = assembly
 					.GetTypes()
@@ -358,6 +359,43 @@ internal sealed class RadioPluginCatalog
 		}
 
 		return new RadioPluginCatalog(pluginDirectoryPath, modules.AsReadOnly());
+	}
+}
+
+/// <summary>
+/// Load context for a radio plugin that resolves the plugin's OWN dependencies (e.g. System.IO.Ports for
+/// the Barrett RM) from the shared plugins folder, while letting the radio contract and the shared
+/// framework assemblies fall back to the host's default context. Without this, a plugin with an extra
+/// dependency throws ReflectionTypeLoadException on GetTypes() and is silently skipped during discovery.
+/// </summary>
+internal sealed class PluginLoadContext : AssemblyLoadContext
+{
+	private readonly string _pluginDirectory;
+
+	public PluginLoadContext(string name, string pluginDirectory)
+		: base(name, isCollectible: true)
+	{
+		_pluginDirectory = pluginDirectory;
+	}
+
+	protected override Assembly? Load(AssemblyName assemblyName)
+	{
+		if (string.IsNullOrWhiteSpace(assemblyName.Name))
+		{
+			return null;
+		}
+
+		// The shared contract must come from the host so IRadioModuleFactory type identity matches; never
+		// load a second copy from the plugins folder.
+		if (string.Equals(assemblyName.Name, "MyForce.Contracts.Radio", StringComparison.OrdinalIgnoreCase))
+		{
+			return null;
+		}
+
+		// Resolve any dependency DLL deployed alongside the plugins; anything not present here (the shared
+		// framework) returns null and falls back to the default load context.
+		var candidate = Path.Combine(_pluginDirectory, assemblyName.Name + ".dll");
+		return File.Exists(candidate) ? LoadFromAssemblyPath(candidate) : null;
 	}
 }
 
