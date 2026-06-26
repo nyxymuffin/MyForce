@@ -319,13 +319,13 @@ public partial class MainWindow : Window
 	{ }
 
 	private void OnCameraRecordPressed(object? sender, PointerPressedEventArgs e)
-	{ }
+		=> _viewModel.TriggerCameraRecord();
 
 	private void OnCameraStopPressed(object? sender, PointerPressedEventArgs e)
-	{ }
+		=> _viewModel.TriggerCameraStop();
 
 	private void OnCameraAutoZoomPressed(object? sender, PointerPressedEventArgs e)
-	{ }
+		=> _viewModel.TriggerCameraAutoZoom();
 
 	private void OnEmergencyPressed(object? sender, PointerPressedEventArgs e)
 	{

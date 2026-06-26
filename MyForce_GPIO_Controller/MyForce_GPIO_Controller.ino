@@ -75,18 +75,25 @@ enum RelayBackend {
   RELAY_BACKEND_GPIO   = 0,   // direct ESP32 GPIO pins via digitalWrite()
   RELAY_BACKEND_XL9535 = 1    // XL9535-K16V5 16-channel I2C relay board
 };
-static const RelayBackend RELAY_BACKEND = RELAY_BACKEND_GPIO;  // existing wiring default
+static const RelayBackend RELAY_BACKEND = RELAY_BACKEND_XL9535;  // same hardware as the siren controller
 
 // Relay channel pins (channel index is the array position + 1, i.e. 1-based on the bus).
 // Only used when RELAY_BACKEND == RELAY_BACKEND_GPIO; ignored for the XL9535 board.
-static const uint8_t g_relayPins[]  = { 13, 14, 27, 16 };
+// One pin per relay function below.
+static const uint8_t g_relayPins[]  = { 13, 14, 27 };
 // Input channel pins (read with internal pull-ups; index is position + 1).
 static const uint8_t g_inputPins[]  = { 32, 39, 34, 35 };  // 34/35/39 are input-only, no pull-up
 
 // Human-facing relay function names, parallel to g_relayPins (§4.5). The array
 // length defines RELAY_COUNT, so it also bounds the XL9535 channels used
 // (channel N drives expander bit N-1; the board exposes up to 16).
-static const char* g_relayFunctions[] = { "beacon", "floodlight", "horn", "aux" };
+//
+// Camera/DVR control relays. These are MOMENTARY: the UI fires a short pulse to
+// each one to simulate pressing the matching button on the camera head/recorder.
+//   Relay 1 -> camera_record  (UI "REC"   button)
+//   Relay 2 -> camera_stop    (UI "STOP"  button)
+//   Relay 3 -> cam_autozoom   (UI "AUTOZ" button, front camera auto zoom)
+static const char* g_relayFunctions[] = { "camera_record", "camera_stop", "cam_autozoom" };
 
 static const uint8_t RELAY_COUNT = sizeof(g_relayFunctions) / sizeof(g_relayFunctions[0]);
 static const uint8_t INPUT_COUNT = sizeof(g_inputPins) / sizeof(g_inputPins[0]);

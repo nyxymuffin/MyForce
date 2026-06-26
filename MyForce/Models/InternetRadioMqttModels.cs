@@ -82,6 +82,12 @@ internal static class InternetRadioMqttTopics
 	public const string SirenDirectionalCommandTopic = "myforce/module/siren1/cmd/directional";
 
 	public const string SirenCodeCommandTopic = "myforce/module/siren1/cmd/code";
+
+	// GPIO Relay Controller command topic (§5.2 per-module cmd/<action>). The
+	// controller's instance id is "gpio.relay1"; "pulse" momentarily energises a
+	// named relay then auto-releases it, used by the camera REC/STOP/AUTOZ buttons
+	// to simulate a button press on the camera/DVR.
+	public const string GpioPulseCommandTopic = "myforce/module/gpio.relay1/cmd/pulse";
 }
 
 /// <summary>HCD-published hand grip mode (lights / radio / patrol).</summary>
@@ -124,6 +130,21 @@ internal sealed record SirenCodeCommandMessage(
 	[property: JsonPropertyName("msg_id")] string? MsgId,
 	string? Auth,
 	[property: JsonPropertyName("code")] string Code);
+
+/// <summary>
+/// UI-published momentary pulse command for the GPIO Relay Controller
+/// (myforce/module/gpio.relay1/cmd/pulse, §5.2). The firmware energises the named
+/// relay (Function) for Ms milliseconds then auto-releases it, simulating a button
+/// press on the camera/DVR. MsgId carries the snake_case name (msg_id) the ESP32
+/// firmware reads (§5.8.1).
+/// </summary>
+internal sealed record GpioPulseCommandMessage(
+	int V,
+	DateTimeOffset Ts,
+	[property: JsonPropertyName("msg_id")] string? MsgId,
+	string? Auth,
+	[property: JsonPropertyName("function")] string Function,
+	[property: JsonPropertyName("ms")] int Ms);
 
 /// <summary>
 /// Represents a UI request for the AP to start internet radio playback.

@@ -170,6 +170,10 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 
 	private const string SirenInterfaceStatusTopic = "myforce/siren/status/service";
 
+	// Momentary pulse width for the camera REC/STOP/AUTOZ relays. Long enough for the
+	// camera/DVR to register a button press, short enough to feel instant.
+	private const int CameraTriggerPulseMs = 300;
+
 	private static readonly TimeSpan ComponentHeartbeatTimeout = TimeSpan.FromSeconds(15);
 
 	private const int InternetStationViewportSize = 6;
@@ -2610,6 +2614,25 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 		var envelope = CreateCommandEnvelope(isAdminCommand: false, includeMessageId: false);
 		var command = new SirenCodeCommandMessage(envelope.V, envelope.Ts, envelope.MsgId, envelope.Auth, code);
 		_ = PublishCommandAsync(InternetRadioMqttTopics.SirenCodeCommandTopic, command);
+	}
+
+	// Camera REC button: pulse the GPIO controller's camera_record relay.
+	public void TriggerCameraRecord() => PublishGpioRelayPulse("camera_record");
+
+	// Camera STOP button: pulse the GPIO controller's camera_stop relay.
+	public void TriggerCameraStop() => PublishGpioRelayPulse("camera_stop");
+
+	// Camera AUTOZ button: pulse the GPIO controller's cam_autozoom relay.
+	public void TriggerCameraAutoZoom() => PublishGpioRelayPulse("cam_autozoom");
+
+	// Publishes a momentary pulse to a named GPIO controller relay. The firmware
+	// energises the relay then auto-releases it after CameraTriggerPulseMs, simulating
+	// a button press on the camera/DVR. Fire-and-forget operating command (§4.6, §3.9.3).
+	private void PublishGpioRelayPulse(string function)
+	{
+		var envelope = CreateCommandEnvelope(isAdminCommand: false, includeMessageId: false);
+		var command = new GpioPulseCommandMessage(envelope.V, envelope.Ts, envelope.MsgId, envelope.Auth, function, CameraTriggerPulseMs);
+		_ = PublishCommandAsync(InternetRadioMqttTopics.GpioPulseCommandTopic, command);
 	}
 
 	private void RaiseAlertCodeStateChanged()
