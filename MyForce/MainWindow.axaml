@@ -68,6 +68,12 @@
             <Setter Property="BorderBrush" Value="{StaticResource ActiveButtonBorderBrush}" />
         </Style>
 
+        <!-- Scene-light active state: white button (text is set black inline so it stays readable). -->
+        <Style Selector="Border.buttonFrame.sceneActive">
+            <Setter Property="Background" Value="White" />
+            <Setter Property="BorderBrush" Value="White" />
+        </Style>
+
         <!-- Flash the active directional selection. -->
         <Style Selector="Border.buttonFrame.directionalActive">
             <Setter Property="Background" Value="{StaticResource DirectionalActiveBrush}" />
@@ -1062,24 +1068,24 @@
                                                         <Border Classes="buttonFrame" PointerPressed="OnLeftAlleyPressed" IsVisible="{Binding !IsLeftAlleyActive}">
                                                             <Viewbox Stretch="Uniform"><TextBlock Classes="white" TextAlignment="Center" VerticalAlignment="Center" Text="LEFT ALLEY" /></Viewbox>
                                                         </Border>
-                                                        <Border Classes="buttonFrame active" PointerPressed="OnLeftAlleyPressed" IsVisible="{Binding IsLeftAlleyActive}">
-                                                            <Viewbox Stretch="Uniform"><TextBlock Classes="white" TextAlignment="Center" VerticalAlignment="Center" Text="LEFT ALLEY" /></Viewbox>
+                                                        <Border Classes="buttonFrame sceneActive" PointerPressed="OnLeftAlleyPressed" IsVisible="{Binding IsLeftAlleyActive}">
+                                                            <Viewbox Stretch="Uniform"><TextBlock Classes="white" Foreground="Black" TextAlignment="Center" VerticalAlignment="Center" Text="LEFT ALLEY" /></Viewbox>
                                                         </Border>
                                                     </Grid>
                                                     <Grid Grid.Column="1">
                                                         <Border Classes="buttonFrame" PointerPressed="OnTakeDownPressed" IsVisible="{Binding !IsTakeDownActive}">
                                                             <Viewbox Stretch="Uniform"><TextBlock Classes="white" TextAlignment="Center" VerticalAlignment="Center" Text="TAKE DOWN" /></Viewbox>
                                                         </Border>
-                                                        <Border Classes="buttonFrame active" PointerPressed="OnTakeDownPressed" IsVisible="{Binding IsTakeDownActive}">
-                                                            <Viewbox Stretch="Uniform"><TextBlock Classes="white" TextAlignment="Center" VerticalAlignment="Center" Text="TAKE DOWN" /></Viewbox>
+                                                        <Border Classes="buttonFrame sceneActive" PointerPressed="OnTakeDownPressed" IsVisible="{Binding IsTakeDownActive}">
+                                                            <Viewbox Stretch="Uniform"><TextBlock Classes="white" Foreground="Black" TextAlignment="Center" VerticalAlignment="Center" Text="TAKE DOWN" /></Viewbox>
                                                         </Border>
                                                     </Grid>
                                                     <Grid Grid.Column="2">
                                                         <Border Classes="buttonFrame" PointerPressed="OnRightAlleyPressed" IsVisible="{Binding !IsRightAlleyActive}">
                                                             <Viewbox Stretch="Uniform"><TextBlock Classes="white" TextAlignment="Center" VerticalAlignment="Center" Text="RIGHT ALLEY" /></Viewbox>
                                                         </Border>
-                                                        <Border Classes="buttonFrame active" PointerPressed="OnRightAlleyPressed" IsVisible="{Binding IsRightAlleyActive}">
-                                                            <Viewbox Stretch="Uniform"><TextBlock Classes="white" TextAlignment="Center" VerticalAlignment="Center" Text="RIGHT ALLEY" /></Viewbox>
+                                                        <Border Classes="buttonFrame sceneActive" PointerPressed="OnRightAlleyPressed" IsVisible="{Binding IsRightAlleyActive}">
+                                                            <Viewbox Stretch="Uniform"><TextBlock Classes="white" Foreground="Black" TextAlignment="Center" VerticalAlignment="Center" Text="RIGHT ALLEY" /></Viewbox>
                                                         </Border>
                                                     </Grid>
                                                 </Grid>
