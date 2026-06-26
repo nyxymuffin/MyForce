@@ -2137,7 +2137,21 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 		var detail = status.Online
 			? $"Health: {status.Health}"
 			: $"Offline: {status.Reason ?? "offline"}";
-		UpdateSystemComponentStatus(status.Id, componentStatus, detail, topic);
+		// The ESP32 firmwares publish §5.2 status under their module id (e.g. "siren1",
+		// "gpio.relay1"); map those onto the pre-registered System Status rows so they
+		// update the existing component instead of adding a duplicate row.
+		UpdateSystemComponentStatus(MapModuleIdToComponentId(status.Id), componentStatus, detail, topic);
+	}
+
+	// Maps a §5.2 module id onto the System Status component id it should drive.
+	private static string MapModuleIdToComponentId(string moduleId)
+	{
+		return moduleId switch
+		{
+			"siren1" => "siren-interface",
+			"gpio.relay1" => "gpio-controller",
+			_ => moduleId,
+		};
 	}
 
 	private void ApplyModuleRadioStateSpec(ModuleRadioStateSpecMessage state)

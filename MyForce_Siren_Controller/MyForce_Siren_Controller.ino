@@ -236,10 +236,29 @@ void xlPushOutputs() {
 	xlWriteReg(XL9535_OUTPUT_PORT1, (uint8_t)(g_xlOutputShadow >> 8));     // relays 9-16
 }
 
-// Bring the XL9535 up: start I2C, drive all relays de-energised, then set both
-// ports to outputs. Outputs are written BEFORE configuring direction so no relay
-// glitches on (the latch holds 0 = de-energised; the board is active high).
+// Recover a wedged I2C bus: if the ESP32 reset mid-transaction (a re-flash or warm
+// reset), the XL9535 can be left holding SDA low, which hangs every later transfer
+// until the board is power-cycled, the relays then never actuate. Clock SCL up to
+// 9 times to let the slave release SDA, then issue a manual STOP. Run BEFORE Wire.begin().
+void i2cBusRecover() {
+	pinMode(PIN_XL9535_SCL, OUTPUT);
+	pinMode(PIN_XL9535_SDA, INPUT_PULLUP);
+	for (uint8_t i = 0; i < 9 && digitalRead(PIN_XL9535_SDA) == LOW; i++) {
+		digitalWrite(PIN_XL9535_SCL, HIGH); delayMicroseconds(5);
+		digitalWrite(PIN_XL9535_SCL, LOW);  delayMicroseconds(5);
+	}
+	// Manual STOP condition: SDA low->high while SCL is high.
+	pinMode(PIN_XL9535_SDA, OUTPUT);
+	digitalWrite(PIN_XL9535_SDA, LOW);  delayMicroseconds(5);
+	digitalWrite(PIN_XL9535_SCL, HIGH); delayMicroseconds(5);
+	digitalWrite(PIN_XL9535_SDA, HIGH); delayMicroseconds(5);
+}
+
+// Bring the XL9535 up: recover any wedged bus, start I2C, drive all relays
+// de-energised, then set both ports to outputs. Outputs are written BEFORE
+// configuring direction so no relay glitches on (latch holds 0 = de-energised).
 void xlBegin() {
+	i2cBusRecover();
 	Wire.begin(PIN_XL9535_SDA, PIN_XL9535_SCL);
 	g_xlOutputShadow = 0x0000;        // all off
 	xlPushOutputs();
