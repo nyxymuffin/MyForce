@@ -896,6 +896,11 @@ bool mqttReconnect() {
 void setup() {
 	Serial.begin(115200);
 	delay(100);
+	// In verbose mode, pause so the serial monitor (which reopens the port a moment
+	// after the reset-on-connect) catches the boot scan and self-test output.
+	if (LOG_VERBOSE) {
+		delay(1500);
+	}
 	Serial.println();
 	Serial.println("MyForce Siren Interface Controller starting.");
 
@@ -962,15 +967,22 @@ void loop() {
 	Ethernet.maintain();   // renew DHCP lease (non-blocking)
 
 	// LOG: periodic connection heartbeat so the serial monitor always shows whether
-	// the ESP32 has an IP and a live MQTT link, even when idle.
+	// the ESP32 has an IP, a live MQTT link, and the relay board responding on I2C.
 	if (LOG_VERBOSE && millis() - g_lastStatusLog >= STATUS_LOG_INTERVAL) {
 		g_lastStatusLog = millis();
+		// Probe the relay board so the heartbeat shows whether it ACKs at 0x20 (the
+		// boot I2C scan scrolls past before the serial monitor reattaches on reset).
+		Wire.beginTransmission(XL9535_I2C_ADDR);
+		uint8_t i2cStat = Wire.endTransmission();
 		Serial.print("[STATUS] ip=");
 		Serial.print(Ethernet.localIP());
 		Serial.print(" mqtt=");
 		Serial.print(g_mqttClient.connected() ? "connected" : "DISCONNECTED");
 		Serial.print(" state=");        // PubSubClient state: 0 = connected, negatives = errors
-		Serial.println(g_mqttClient.state());
+		Serial.print(g_mqttClient.state());
+		Serial.print(" i2c0x20=");      // 0 = board ACKs; 2 = nobody home; 4 = bus error
+		if (i2cStat == 0) { Serial.println("ok"); }
+		else { Serial.print("err"); Serial.println(i2cStat); }
 	}
 
 	if (!g_mqttClient.connected()) {
