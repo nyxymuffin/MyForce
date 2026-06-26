@@ -1667,6 +1667,26 @@ internal sealed record PersistedBridgeMember(
 			cancellationToken: CancellationToken.None).ConfigureAwait(false);
 	}
 
+	/// <summary>
+	/// Clears retained module topics for any persisted radio that is NOT in the live registry (its plugin
+	/// is missing, so it was skipped at load). Without this, a radio hosted on a previous run keeps
+	/// publishing a stale retained "online" status that the UI would still display (§4.4).
+	/// </summary>
+	private async Task ClearStaleRadioRetainedTopicsAsync()
+	{
+		var liveRadioIds = new HashSet<string>(_registry.Radios.Select(static radio => radio.Id.Value), StringComparer.OrdinalIgnoreCase);
+		foreach (var definition in _persistedTopology.RadioDefinitions)
+		{
+			if (string.IsNullOrWhiteSpace(definition.RadioId) || liveRadioIds.Contains(definition.RadioId))
+			{
+				continue;
+			}
+
+			AudioProcessorLog.Write("config", $"Clearing stale retained topics for unloaded radio '{definition.RadioId}' (type '{definition.TypeId}', no plugin).");
+			await ClearModuleRetainedTopicsAsync(definition.RadioId).ConfigureAwait(false);
+		}
+	}
+
 	/// <summary>Clears a removed module's retained topics (registry/config/status/state) (§4.4).</summary>
 	private async Task ClearModuleRetainedTopicsAsync(string id)
 	{
@@ -2034,6 +2054,10 @@ internal sealed record PersistedBridgeMember(
 
 	private async Task PublishBirthSnapshotAsync(CancellationToken cancellationToken)
 	{
+		// Clear retained module topics for any persisted radio whose plugin is no longer loaded, so a
+		// radio that used to be hosted does not keep showing "online" from a stale retained status (§4.4).
+		await ClearStaleRadioRetainedTopicsAsync().ConfigureAwait(false);
+
 		await PublishSpecSystemTopicsAsync(cancellationToken).ConfigureAwait(false);
 
 		await _mqttRuntime.PublishAsync(
@@ -2121,6 +2145,13 @@ internal sealed record PersistedBridgeMember(
 		await _mqttRuntime.PublishAsync(
 			_topics.SystemRelaySetsTopic,
 			AudioProcessorJson.Serialize(SystemRelaySetsPayload.Create(_persistedTopology.RelaySets)),
+			retain: true,
+			cancellationToken: cancellationToken).ConfigureAwait(false);
+
+		// Serial ports present on the host, for the com_port / serial pick-list (§3.7.8, §3.9.5).
+		await _mqttRuntime.PublishAsync(
+			_topics.SystemSerialPortsTopic,
+			AudioProcessorJson.Serialize(SystemSerialPortsPayload.Create()),
 			retain: true,
 			cancellationToken: cancellationToken).ConfigureAwait(false);
 	}
@@ -2815,6 +2846,8 @@ internal sealed class AudioProcessorTopicFactory
 	public string SystemAudioDevicesTopic => $"{SystemRootTopic}/audio_devices";
 
 	public string SystemRelaySetsTopic => $"{SystemRootTopic}/relay_sets";
+
+	public string SystemSerialPortsTopic => $"{SystemRootTopic}/serial_ports";
 
 	// v3.0 system-definition commands (§4.4) and their subscribe filter.
 	public string SystemCommandsTopicFilter => $"{SystemRootTopic}/cmd/#";
@@ -4184,6 +4217,32 @@ internal sealed record SystemAudioDevicesPayload(
 		var capture = devices.Where(static d => d.InputEnabled).Select(static d => new ResourceOptionPayload(d.Id.Value, d.DisplayName)).ToArray();
 		var playback = devices.Where(static d => d.OutputEnabled).Select(static d => new ResourceOptionPayload(d.Id.Value, d.DisplayName)).ToArray();
 		return new SystemAudioDevicesPayload(capture, playback);
+	}
+}
+
+/// <summary>
+/// myforce/sys/serial_ports (retained, §5.1): the serial ports present on the host, that a radio's
+/// com_port / serial x-options resolve against so the admin offers a pick-list instead of free text.
+/// </summary>
+internal sealed record SystemSerialPortsPayload(IReadOnlyList<ResourceOptionPayload> Ports)
+{
+	public static SystemSerialPortsPayload Create()
+	{
+		string[] names;
+		try
+		{
+			names = System.IO.Ports.SerialPort.GetPortNames();
+		}
+		catch (Exception ex) when (ex is PlatformNotSupportedException or InvalidOperationException)
+		{
+			names = Array.Empty<string>();
+		}
+
+		return new SystemSerialPortsPayload(names
+			.Distinct(StringComparer.OrdinalIgnoreCase)
+			.OrderBy(static name => name, StringComparer.OrdinalIgnoreCase)
+			.Select(static name => new ResourceOptionPayload(name, name))
+			.ToArray());
 	}
 }
 

@@ -68,6 +68,7 @@ internal static class InternetRadioMqttTopics
 	// the sys/cmd/* commands ask the AP (sole writer) to add/remove/alias an instance (admin-class).
 	public const string SystemAudioDevicesTopic = "myforce/sys/audio_devices";
 	public const string SystemRelaySetsTopic = "myforce/sys/relay_sets";
+	public const string SystemSerialPortsTopic = "myforce/sys/serial_ports";
 	public const string AddModuleCommandTopic = "myforce/sys/cmd/add_module";
 	public const string RemoveModuleCommandTopic = "myforce/sys/cmd/remove_module";
 	public const string SetAliasCommandTopic = "myforce/sys/cmd/set_alias";
@@ -144,6 +145,9 @@ public sealed record RelaySetOptionMessage(string Value, string Label, int Chann
 
 /// <summary>myforce/sys/relay_sets (retained, §5.1): defined relay sets for the keying pick-list.</summary>
 internal sealed record SystemRelaySetsMessage(IReadOnlyList<RelaySetOptionMessage>? RelaySets);
+
+/// <summary>myforce/sys/serial_ports (retained, §5.1): host serial ports for the com_port pick-list.</summary>
+internal sealed record SystemSerialPortsMessage(IReadOnlyList<ResourceOptionMessage>? Ports);
 
 /// <summary>UI → AP create-instance command (myforce/sys/cmd/add_module, §4.4). Admin-class.</summary>
 internal sealed record AddModuleCommandMessage(
@@ -506,7 +510,9 @@ internal sealed record ModuleStatusSpecMessage(
 	string Id,
 	bool Online,
 	string Health,
-	string? Reason);
+	string? Reason,
+	// Controller firmware revision (§5.8.4), shown in the System Status row when the device reports it.
+	string? Fw = null);
 
 /// <summary>
 /// Retained per-radio channel list (myforce/module/&lt;id&gt;/channels, §5.3/§3.11): the effective

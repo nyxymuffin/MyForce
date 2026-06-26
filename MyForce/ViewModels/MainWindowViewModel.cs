@@ -1483,6 +1483,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 	private IReadOnlyList<ResourceOptionMessage> _captureDevices = Array.Empty<ResourceOptionMessage>();
 	private IReadOnlyList<ResourceOptionMessage> _playbackDevices = Array.Empty<ResourceOptionMessage>();
 	private IReadOnlyList<ResourceOptionMessage> _relaySetOptions = Array.Empty<ResourceOptionMessage>();
+	private IReadOnlyList<ResourceOptionMessage> _serialPortOptions = Array.Empty<ResourceOptionMessage>();
 
 	private bool _isRadioConfigEditorVisible;
 	private string _editingRadioId = string.Empty;
@@ -1520,6 +1521,10 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 		=> _relaySetOptions = (relaySets.RelaySets ?? Array.Empty<RelaySetOptionMessage>())
 			.Select(set => new ResourceOptionMessage(set.Value, $"{set.Label} ({set.Channels} ch)")).ToArray();
 
+	// Host serial ports for the com_port pick-list (sys/serial_ports, §5.1).
+	private void ApplySerialPorts(SystemSerialPortsMessage serialPorts)
+		=> _serialPortOptions = serialPorts.Ports ?? Array.Empty<ResourceOptionMessage>();
+
 	// Open the editor for a radio: parse its schema + current config into editable fields.
 	public void OpenRadioConfigEditor(string radioId)
 	{
@@ -1544,6 +1549,14 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 	{
 		if (string.IsNullOrWhiteSpace(_editingRadioId))
 		{
+			return;
+		}
+
+		// Config is an admin-class command, so it needs the admin session credential. Guard explicitly so a
+		// lost admin session shows feedback instead of throwing (which previously crashed the UI on save).
+		if (!IsAdminAuthenticated)
+		{
+			MqttCommandFeedback = "Admin session required to save config.";
 			return;
 		}
 
@@ -1590,7 +1603,11 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 			var title = fieldSchema.TryGetProperty("title", out var titleElement) && titleElement.ValueKind == JsonValueKind.String
 				? titleElement.GetString()!
 				: path;
-			var currentValue = ResolveConfigValue(config, path);
+			// Use the saved value if present, else the schema's "default" so a fresh radio prefills sensibly.
+			var defaultValue = fieldSchema.TryGetProperty("default", out var defaultElement) && defaultElement.ValueKind != JsonValueKind.Undefined
+				? defaultElement
+				: (JsonElement?)null;
+			var currentValue = ResolveConfigValue(config, path) ?? defaultValue;
 
 			// x-options (or a known device/relay leaf) -> dynamic pick-list resolved at runtime.
 			var resourceChoices = ResolvePickListChoices(fieldSchema, property.Name);
@@ -1657,6 +1674,13 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 		if (key.Contains("relay", StringComparison.OrdinalIgnoreCase))
 		{
 			return _relaySetOptions;
+		}
+
+		// Serial-port fields (e.g. Barrett's com_port) resolve against the host's enumerated ports.
+		if (key.Contains("com_port", StringComparison.OrdinalIgnoreCase)
+			|| key.Contains("serial", StringComparison.OrdinalIgnoreCase))
+		{
+			return _serialPortOptions;
 		}
 
 		if (key.Contains("rx_device", StringComparison.OrdinalIgnoreCase) || key.Contains("capture", StringComparison.OrdinalIgnoreCase))
@@ -2471,6 +2495,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 		await _mqttConnectionService.SubscribeAsync(InternetRadioMqttTopics.SystemDefinitionTopic).ConfigureAwait(false);
 		await _mqttConnectionService.SubscribeAsync(InternetRadioMqttTopics.SystemAudioDevicesTopic).ConfigureAwait(false);
 		await _mqttConnectionService.SubscribeAsync(InternetRadioMqttTopics.SystemRelaySetsTopic).ConfigureAwait(false);
+		await _mqttConnectionService.SubscribeAsync(InternetRadioMqttTopics.SystemSerialPortsTopic).ConfigureAwait(false);
 		await _mqttConnectionService.SubscribeAsync(InternetRadioMqttTopics.ModuleTopicFilter).ConfigureAwait(false);
 		await _mqttConnectionService.SubscribeAsync(InternetRadioMqttTopics.ConsoleTxTopic).ConfigureAwait(false);
 		await _mqttConnectionService.SubscribeAsync(InternetRadioMqttTopics.HcdModeTopicFilter).ConfigureAwait(false);
@@ -2611,6 +2636,18 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 			if (relaySets is not null)
 			{
 				Dispatcher.UIThread.Post(() => ApplyRelaySets(relaySets));
+			}
+
+			return;
+		}
+
+		if (string.Equals(message.Topic, InternetRadioMqttTopics.SystemSerialPortsTopic, StringComparison.OrdinalIgnoreCase))
+		{
+			var payload = message.ConvertPayloadToString();
+			var serialPorts = string.IsNullOrWhiteSpace(payload) ? null : JsonSerializer.Deserialize<SystemSerialPortsMessage>(payload, MqttJsonSerializerOptions);
+			if (serialPorts is not null)
+			{
+				Dispatcher.UIThread.Post(() => ApplySerialPorts(serialPorts));
 			}
 
 			return;
@@ -2845,6 +2882,16 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 	private void ApplyModuleRegistrySpec(ModuleRegistrySpecMessage registry)
 	{
 		ArgumentNullException.ThrowIfNull(registry);
+
+		// Only radio modules carry a config_schema the radio editor renders. Non-radio controllers (siren,
+		// gpio) also publish module/<id>/registry but without a config_schema; processing them here would
+		// pollute the radio admin and crash on Clone() of an undefined schema. Skip them.
+		if (!string.Equals(registry.Category, "radio", StringComparison.OrdinalIgnoreCase)
+			|| registry.ConfigSchema.ValueKind != JsonValueKind.Object)
+		{
+			return;
+		}
+
 		// Keep the instance config schema so the schema-driven editor can render this radio (§3.9.5).
 		// The addable-type list is fed from sys/plugins (ApplySystemPlugins); a per-instance registry only
 		// supplies the live instance's schema for its EDIT CONFIG editor, not a new addable type.
@@ -2907,6 +2954,12 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 		var detail = status.Online
 			? $"Health: {status.Health}"
 			: $"Offline: {status.Reason ?? "offline"}";
+		// Append the controller firmware revision when the device reports it (§5.8.4).
+		if (!string.IsNullOrWhiteSpace(status.Fw))
+		{
+			detail = $"{detail}  FW: {status.Fw}";
+		}
+
 		// The ESP32 firmwares publish §5.2 status under their module id (e.g. "siren1",
 		// "gpio.relay1"); map those onto the pre-registered System Status rows so they
 		// update the existing component instead of adding a duplicate row.
@@ -3829,6 +3882,10 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 	// Retained per-radio channel lists (myforce/module/<id>/channels, §3.11) feeding the CHANNELS picker.
 	private readonly Dictionary<string, IReadOnlyList<ChannelEntryMessage>> _radioChannels = new(StringComparer.OrdinalIgnoreCase);
 
+	// The channel center behind each of the 4 patrol PROXIMITY LIST slots, so a press can jump to that
+	// radio + channel. Null when the slot is empty.
+	private readonly ChannelCenter?[] _proximitySlots = new ChannelCenter?[4];
+
 	// The single operator-designated talk radio (TALK button); future PTT triggers key this one.
 	private string _talkRadioId = string.Empty;
 
@@ -4069,11 +4126,77 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 		// Optimistically reflect the new channel; the radio's reported state will confirm/replace it.
 		_radioChannelLabels[_selectedRadioId] = label;
 		CurrentRadioChannel = label;
+		MqttCommandFeedback = $"Channel: {label}";
 		PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(SelectedRadioChannelLabel)));
 		RebuildPatrolRadioChannelList();
 		RebuildRadioSelectionItems();
 		RefreshTalkRadioDisplay();
 		IsChannelSelectionOverlayVisible = false;
+	}
+
+	// CH UP / CH DN (status bar + RADIO page): step the viewed radio one channel along its channel list,
+	// wrapping at the ends. Gives feedback when the radio has no channels so a press is never silent.
+	public void ChannelStepUp() => StepChannel(+1);
+
+	public void ChannelStepDown() => StepChannel(-1);
+
+	private void StepChannel(int delta)
+	{
+		if (string.IsNullOrWhiteSpace(_selectedRadioId))
+		{
+			MqttCommandFeedback = "No radio selected.";
+			return;
+		}
+
+		var channels = _radioChannels.TryGetValue(_selectedRadioId, out var list) ? list : Array.Empty<ChannelEntryMessage>();
+		if (channels.Count == 0)
+		{
+			MqttCommandFeedback = "No channels available for this radio.";
+			return;
+		}
+
+		// Locate the current channel by its label; default to the first if the current is unknown.
+		var currentIndex = 0;
+		for (var i = 0; i < channels.Count; i++)
+		{
+			if (string.Equals(channels[i].Label, CurrentRadioChannel, StringComparison.OrdinalIgnoreCase))
+			{
+				currentIndex = i;
+				break;
+			}
+		}
+
+		var nextIndex = ((currentIndex + delta) % channels.Count + channels.Count) % channels.Count;
+		var next = channels[nextIndex];
+		SelectChannel(next.Index, next.Label);
+	}
+
+	// PROXIMITY LIST press: jump to the nearby channel's radio as both the selected radio and the talk
+	// radio, and tune it to that channel (§radio-page-semantics).
+	public void SelectProximitySlot(int slotIndex)
+	{
+		if (slotIndex < 0 || slotIndex >= _proximitySlots.Length || _proximitySlots[slotIndex] is not { } center)
+		{
+			return;
+		}
+
+		SelectRadioTarget(center.RadioId);         // selected radio (publishes console select)
+		DesignateSelectedAsTalkRadio();            // and the single talk radio
+
+		// Tune to the channel: by index if the radio's channel list has it, else reflect the label directly.
+		var channels = _radioChannels.TryGetValue(center.RadioId, out var list) ? list : Array.Empty<ChannelEntryMessage>();
+		var match = channels.FirstOrDefault(channel => string.Equals(channel.Label, center.Channel, StringComparison.OrdinalIgnoreCase));
+		if (match is not null)
+		{
+			SelectChannel(match.Index, match.Label);
+		}
+		else
+		{
+			_radioChannelLabels[center.RadioId] = center.Channel;
+			CurrentRadioChannel = center.Channel;
+			PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(SelectedRadioChannelLabel)));
+			RefreshTalkRadioDisplay();
+		}
 	}
 
 	// Volume up/down on the radio page reuse the master output volume for now.
@@ -4288,15 +4411,18 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 	}
 
 	// A proximity slot shows the owning radio's alias then its channel ("ALIAS: CHANNEL") so the operator
-	// can tell which radio a nearby channel belongs to, not just the bare channel name.
+	// can tell which radio a nearby channel belongs to, not just the bare channel name. Also records the
+	// slot's channel center so a press can jump to that radio + channel.
 	private string ProximitySlotLabel(IReadOnlyList<RankedChannelCenter> nearest, int index)
 	{
 		if (index >= nearest.Count)
 		{
+			_proximitySlots[index] = null;
 			return string.Empty;
 		}
 
 		var center = nearest[index].Center;
+		_proximitySlots[index] = center;
 		return $"{ResolveRadioAlias(center.RadioId)}: {center.Channel}";
 	}
 

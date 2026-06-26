@@ -55,6 +55,7 @@ static const char* MODULE_ID = "gpio.relay1";   // unique per controller on the 
 static const char* MODULE_KIND = "external";      // radio_module | radio_resource | external
 static const char* MODULE_CAT = "gpio";          // radio | media | siren | scada | gpio
 static const int   PAYLOAD_VERSION = 1;           // envelope "v" (§5.8.1)
+static const char* FIRMWARE_REV = "1.0.0";        // controller firmware revision (§5.8.4), shown in UI
 
 // Admin credential for config-changing commands (§4.6). Dummy gate, not security.
 static const char* ADMIN_PIN = "2135";
@@ -378,6 +379,7 @@ void publishStatus(bool online) {
 	doc["id"] = MODULE_ID;
 	doc["online"] = online;
 	doc["health"] = online ? "available" : "unavailable";
+	doc["fw"] = FIRMWARE_REV;   // controller firmware revision, surfaced on the System Status page
 	if (!online) {
 		doc["reason"] = "offline";
 	}

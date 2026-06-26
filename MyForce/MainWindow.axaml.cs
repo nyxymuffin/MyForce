@@ -291,7 +291,7 @@ public partial class MainWindow : Window
 	}
 
 	private void OnChannelUpPressed(object? sender, PointerPressedEventArgs e)
-	{ }
+		=> _viewModel.ChannelStepUp();
 
 	private void OnSpeedPressed(object? sender, PointerPressedEventArgs e)
 	{
@@ -313,10 +313,10 @@ public partial class MainWindow : Window
 	}
 
 	private void OnChannelDownPressed(object? sender, PointerPressedEventArgs e)
-	{ }
+		=> _viewModel.ChannelStepDown();
 
 	private void OnScanPressed(object? sender, PointerPressedEventArgs e)
-	{ }
+		=> _viewModel.ToggleRadioScan();
 
 	private void OnCameraRecordPressed(object? sender, PointerPressedEventArgs e)
 		=> _viewModel.TriggerCameraRecord();
@@ -391,9 +391,11 @@ public partial class MainWindow : Window
 	private void OnRadioTalkPressed(object? sender, PointerPressedEventArgs e)
 		=> _viewModel.DesignateSelectedAsTalkRadio();
 
-	private void OnRadioChannelUpPressed(object? sender, PointerPressedEventArgs e) { }
+	private void OnRadioChannelUpPressed(object? sender, PointerPressedEventArgs e)
+		=> _viewModel.ChannelStepUp();
 
-	private void OnRadioChannelDownPressed(object? sender, PointerPressedEventArgs e) { }
+	private void OnRadioChannelDownPressed(object? sender, PointerPressedEventArgs e)
+		=> _viewModel.ChannelStepDown();
 
 	// GEO AREA: open the channel-centers overlay for the selected radio.
 	private void OnRadioGeoAreaPressed(object? sender, PointerPressedEventArgs e)
@@ -524,17 +526,18 @@ public partial class MainWindow : Window
 		SelectTab(MainConsoleTab.Camera);
 	}
 
+	// PROXIMITY LIST: jump to the slot's radio + channel as the selected and talk radio.
 	private void OnProximityChannel1Pressed(object? sender, PointerPressedEventArgs e)
-	{ }
+		=> _viewModel.SelectProximitySlot(0);
 
 	private void OnProximityChannel2Pressed(object? sender, PointerPressedEventArgs e)
-	{ }
+		=> _viewModel.SelectProximitySlot(1);
 
 	private void OnProximityChannel3Pressed(object? sender, PointerPressedEventArgs e)
-	{ }
+		=> _viewModel.SelectProximitySlot(2);
 
 	private void OnProximityChannel4Pressed(object? sender, PointerPressedEventArgs e)
-	{ }
+		=> _viewModel.SelectProximitySlot(3);
 
 	private void OnVolumeUpPressed(object? sender, PointerPressedEventArgs e)
 	{
