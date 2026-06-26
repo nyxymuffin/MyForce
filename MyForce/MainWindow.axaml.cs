@@ -344,6 +344,54 @@ public partial class MainWindow : Window
 	private void OnAirHornReleased(object? sender, PointerReleasedEventArgs e)
 		=> _viewModel.AirHornUp();
 
+	// RADIO page: SELECT opens the radio picker; CHANNELS opens the channel page.
+	private void OnRadioSelectPressed(object? sender, PointerPressedEventArgs e)
+		=> _viewModel.OpenRadioSelection();
+
+	private void OnRadioChannelsPressed(object? sender, PointerPressedEventArgs e)
+		=> _viewModel.OpenChannelSelection();
+
+	private void OnRadioVolumeUpPressed(object? sender, PointerPressedEventArgs e)
+		=> _viewModel.RadioVolumeUp();
+
+	private void OnRadioVolumeDownPressed(object? sender, PointerPressedEventArgs e)
+		=> _viewModel.RadioVolumeDown();
+
+	// Radio-selection overlay: pick a radio row, or close the overlay.
+	private void OnRadioSelectionItemPressed(object? sender, PointerPressedEventArgs e)
+	{
+		if (sender is Control { DataContext: RadioSelectionItem item })
+		{
+			item.Select();
+		}
+	}
+
+	private void OnRadioSelectionClosePressed(object? sender, PointerPressedEventArgs e)
+		=> _viewModel.CloseRadioSelection();
+
+	private void OnChannelSelectionClosePressed(object? sender, PointerPressedEventArgs e)
+		=> _viewModel.CloseChannelSelection();
+
+	// RADIO page secondary controls. These depend on per-radio plugin support (channel
+	// stepping, scan, geo-area, nuisance delete, ext audio) and are placeholders for now.
+	private void OnRadioListenPressed(object? sender, PointerPressedEventArgs e) { }
+
+	private void OnRadioTalkPressed(object? sender, PointerPressedEventArgs e) { }
+
+	private void OnRadioChannelUpPressed(object? sender, PointerPressedEventArgs e) { }
+
+	private void OnRadioChannelDownPressed(object? sender, PointerPressedEventArgs e) { }
+
+	private void OnRadioGeoAreaPressed(object? sender, PointerPressedEventArgs e) { }
+
+	private void OnRadioNuisPressed(object? sender, PointerPressedEventArgs e) { }
+
+	private void OnRadioExtAudioPressed(object? sender, PointerPressedEventArgs e) { }
+
+	private void OnRadioScanPressed(object? sender, PointerPressedEventArgs e) { }
+
+	private void OnRadioPresetPressed(object? sender, PointerPressedEventArgs e) { }
+
 	private void OnEmergencyPressed(object? sender, PointerPressedEventArgs e)
 	{
 		if (Application.Current?.ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)

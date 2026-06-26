@@ -87,6 +87,10 @@ internal static class InternetRadioMqttTopics
 	// horn, etc.): cmd/set with { function, state }.
 	public const string SirenSetCommandTopic = "myforce/module/siren1/cmd/set";
 
+	// This console's selected radio target (§5.4): the radio the RADIO page is viewing
+	// and that the VIP PTT keys. Console id is "vip" to match the soft-key topic.
+	public const string ConsoleSelectCommandTopic = "myforce/console/vip/cmd/select";
+
 	// GPIO Relay Controller command topic (§5.2 per-module cmd/<action>). The
 	// controller's instance id is "gpio.relay1"; "pulse" momentarily energises a
 	// named relay then auto-releases it, used by the camera REC/STOP/AUTOZ buttons
@@ -149,6 +153,17 @@ internal sealed record SirenSetCommandMessage(
 	string? Auth,
 	[property: JsonPropertyName("function")] string Function,
 	[property: JsonPropertyName("state")] string State);
+
+/// <summary>
+/// UI-published console radio selection (myforce/console/vip/cmd/select, §5.4): the
+/// radio this console is viewing / will key. Target is the radio's module id.
+/// </summary>
+internal sealed record ConsoleSelectCommandMessage(
+	int V,
+	DateTimeOffset Ts,
+	[property: JsonPropertyName("msg_id")] string? MsgId,
+	string? Auth,
+	[property: JsonPropertyName("target")] string Target);
 
 /// <summary>
 /// UI-published momentary pulse command for the GPIO Relay Controller

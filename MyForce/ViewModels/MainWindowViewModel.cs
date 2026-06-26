@@ -25,6 +25,7 @@ using System.Runtime.CompilerServices;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
+using Avalonia.Media;
 using Avalonia.Threading;
 using MQTTnet;
 using MyForce.Models;
@@ -148,6 +149,33 @@ public enum AuxiliaryAudioSourceMode
 	Bluetooth,
 
 	InternetRadio,
+}
+
+/// <summary>
+/// One row in the RADIO page SELECT picker: a radio's alias, its current channel, and
+/// the action that selects it as this console's target (§5.4).
+/// </summary>
+public sealed class RadioSelectionItem
+{
+	private readonly MainWindowViewModel _owner;
+
+	public RadioSelectionItem(string radioId, string alias, string channel, MainWindowViewModel owner)
+	{
+		RadioId = radioId;
+		Alias = alias;
+		Channel = channel;
+		_owner = owner;
+	}
+
+	public string RadioId { get; }
+
+	public string Alias { get; }
+
+	public string Channel { get; }
+
+	public string ChannelLabel => $"CH: {Channel}";
+
+	public void Select() => _owner.SelectRadioTarget(RadioId);
 }
 
 public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
@@ -2171,6 +2199,22 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 		CurSelChExt1 = state.RxActive ? "RX ACTIVE" : "RX IDLE";
 		CurSelChExt2 = state.TxActive ? $"TX ACTIVE / {state.TxSource ?? "manual"}" : "TX IDLE";
 		CurSelChExt3 = state.Signal?.RssiDbm is null ? string.Empty : $"RSSI {state.Signal.RssiDbm} dBm";
+
+		// RADIO page: drive the TX/RX indicator colors and the VU meter.
+		IsRadioTxActive = state.TxActive;
+		IsRadioRxActive = state.RxActive;
+		if (state.Channel?.Label is not null)
+		{
+			_radioChannelLabels[state.Id] = state.Channel.Label;
+			PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(SelectedRadioChannelLabel)));
+		}
+
+		// No live audio-level feed yet, so map RSSI (~ -120..-40 dBm) onto the 0-100 VU
+		// meter as a stand-in. TODO: replace with a real audio/VU level from the AP.
+		if (state.Signal?.RssiDbm is int rssiDbm)
+		{
+			RadioVuLevel = Math.Clamp((rssiDbm + 120) * 100.0 / 80.0, 0, 100);
+		}
 	}
 
 	/// <summary>
@@ -2715,6 +2759,153 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 		var envelope = CreateCommandEnvelope(isAdminCommand: false, includeMessageId: false);
 		var command = new SirenSetCommandMessage(envelope.V, envelope.Ts, envelope.MsgId, envelope.Auth, function, on ? "on" : "off");
 		_ = PublishCommandAsync(InternetRadioMqttTopics.SirenSetCommandTopic, command);
+	}
+
+	// ===========================================================================
+	// RADIO page: VU meter, TX/RX indicators, radio-selection + channel overlays.
+	// ===========================================================================
+
+	private const double RadioVuMeterHeight = 150;   // pixel height of the VU meter fill area
+
+	private string _selectedRadioId = string.Empty;
+	private string _selectedRadioDisplayName = "---";
+	private double _radioVuLevel;
+	private bool _isRadioTxActive;
+	private bool _isRadioRxActive;
+	private bool _isRadioSelectionOverlayVisible;
+	private bool _isChannelSelectionOverlayVisible;
+	private IReadOnlyList<RadioSelectionItem> _radioSelectionItems = Array.Empty<RadioSelectionItem>();
+	private readonly Dictionary<string, string> _radioChannelLabels = new(StringComparer.OrdinalIgnoreCase);
+
+	// Header title, e.g. "RADIO 1: XTL5000".
+	public string RadioPageTitle => $"RADIO 1: {_selectedRadioDisplayName}";
+
+	// "CH: <label>" for the selected radio's current channel.
+	public string SelectedRadioChannelLabel => string.IsNullOrWhiteSpace(CurrentRadioChannel) ? "CH:" : $"CH: {CurrentRadioChannel}";
+
+	// 0-100 level driving the VU meter, plus the derived pixel fill height the bar binds to.
+	public double RadioVuLevel
+	{
+		get => _radioVuLevel;
+		private set
+		{
+			if (SetProperty(ref _radioVuLevel, value))
+			{
+				PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(RadioVuFillHeight)));
+			}
+		}
+	}
+
+	public double RadioVuFillHeight => Math.Clamp(RadioVuLevel, 0, 100) / 100.0 * RadioVuMeterHeight;
+
+	// TX is red while transmitting, RX is blue while receiving; both dim grey when idle.
+	public bool IsRadioTxActive
+	{
+		get => _isRadioTxActive;
+		private set
+		{
+			if (SetProperty(ref _isRadioTxActive, value))
+			{
+				PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(RadioTxBrush)));
+			}
+		}
+	}
+
+	public bool IsRadioRxActive
+	{
+		get => _isRadioRxActive;
+		private set
+		{
+			if (SetProperty(ref _isRadioRxActive, value))
+			{
+				PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(RadioRxBrush)));
+			}
+		}
+	}
+
+	public IBrush RadioTxBrush => IsRadioTxActive ? Brushes.Red : Brushes.Gray;
+
+	public IBrush RadioRxBrush => IsRadioRxActive ? Brushes.DeepSkyBlue : Brushes.Gray;
+
+	public bool IsRadioSelectionOverlayVisible
+	{
+		get => _isRadioSelectionOverlayVisible;
+		private set => SetProperty(ref _isRadioSelectionOverlayVisible, value);
+	}
+
+	public bool IsChannelSelectionOverlayVisible
+	{
+		get => _isChannelSelectionOverlayVisible;
+		private set => SetProperty(ref _isChannelSelectionOverlayVisible, value);
+	}
+
+	// The radios offered in the SELECT picker: alias + current channel + a select key,
+	// built from the radios programmed in via the admin page (AP runtime list).
+	public IReadOnlyList<RadioSelectionItem> RadioSelectionItems
+	{
+		get => _radioSelectionItems;
+		private set => SetProperty(ref _radioSelectionItems, value);
+	}
+
+	public string ChannelSelectionRadioTitle => $"CHANNELS: {_selectedRadioDisplayName}";
+
+	// SELECT button: open the radio picker built from the admin/runtime radio list.
+	public void OpenRadioSelection()
+	{
+		RebuildRadioSelectionItems();
+		IsRadioSelectionOverlayVisible = true;
+	}
+
+	public void CloseRadioSelection() => IsRadioSelectionOverlayVisible = false;
+
+	// Choose a radio: remember it, tell the AP this console selected it (§5.4), and close.
+	public void SelectRadioTarget(string radioId)
+	{
+		if (string.IsNullOrWhiteSpace(radioId))
+		{
+			return;
+		}
+
+		_selectedRadioId = radioId;
+		var match = RadioRuntimeEntries.FirstOrDefault(radio => string.Equals(radio.RadioId, radioId, StringComparison.OrdinalIgnoreCase));
+		_selectedRadioDisplayName = string.IsNullOrWhiteSpace(match?.DisplayName) ? radioId : match!.DisplayName;
+		PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(RadioPageTitle)));
+		PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(ChannelSelectionRadioTitle)));
+		PublishConsoleSelect(radioId);
+		IsRadioSelectionOverlayVisible = false;
+	}
+
+	// CHANNELS button (replaces MONITOR): open the channel-selection page for the radio.
+	// The channel list source is radio-type/plugin specific and not wired yet (TODO).
+	public void OpenChannelSelection()
+	{
+		PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(ChannelSelectionRadioTitle)));
+		IsChannelSelectionOverlayVisible = true;
+	}
+
+	public void CloseChannelSelection() => IsChannelSelectionOverlayVisible = false;
+
+	// Volume up/down on the radio page reuse the master output volume for now.
+	public void RadioVolumeUp() => IncreaseMasterVolume();
+
+	public void RadioVolumeDown() => DecreaseMasterVolume();
+
+	private void RebuildRadioSelectionItems()
+	{
+		RadioSelectionItems = RadioRuntimeEntries
+			.Select(radio => new RadioSelectionItem(
+				radio.RadioId,
+				string.IsNullOrWhiteSpace(radio.DisplayName) ? radio.RadioId : radio.DisplayName,
+				_radioChannelLabels.TryGetValue(radio.RadioId, out var channel) ? channel : "---",
+				this))
+			.ToArray();
+	}
+
+	private void PublishConsoleSelect(string radioId)
+	{
+		var envelope = CreateCommandEnvelope(isAdminCommand: false, includeMessageId: false);
+		var command = new ConsoleSelectCommandMessage(envelope.V, envelope.Ts, envelope.MsgId, envelope.Auth, radioId);
+		_ = PublishCommandAsync(InternetRadioMqttTopics.ConsoleSelectCommandTopic, command);
 	}
 
 	// Camera REC button: pulse the GPIO controller's camera_record relay, flashing
