@@ -10,6 +10,7 @@
 *.userosscache
 *.sln.docstates
 fnecore-master*/
+DOCs*/
 SPECS AND REQUIREMENTS*/
 *.env
 MDS*/
