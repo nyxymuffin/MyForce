@@ -180,6 +180,49 @@ bool pinSupportsInternalPullup(uint8_t pin) {
 
 // --- XL9535 I2C relay backend -------------------------------------------------
 
+// Bit-bang SCL up to 9 cycles to free a slave that may be holding SDA low after an
+// interrupted transfer. Pins are left as plain GPIO; the caller re-inits Wire after.
+void i2cClockOutStuckSlave() {
+	pinMode(PIN_XL9535_SCL, OUTPUT);
+	pinMode(PIN_XL9535_SDA, INPUT_PULLUP);
+	for (uint8_t i = 0; i < 9 && digitalRead(PIN_XL9535_SDA) == LOW; i++) {
+		digitalWrite(PIN_XL9535_SCL, LOW);  delayMicroseconds(5);
+		digitalWrite(PIN_XL9535_SCL, HIGH); delayMicroseconds(5);
+	}
+}
+
+// Fully reset the I2C peripheral. Wire.end() releases the driver FIRST so we never
+// re-init on top of a live driver, that is what previously wedged the controller
+// into a permanent endTransmission==4. Then free any stuck slave and re-init clean.
+void i2cReset() {
+	Wire.end();
+	i2cClockOutStuckSlave();
+	Wire.begin(PIN_XL9535_SDA, PIN_XL9535_SCL);
+	Wire.setClock(100000);   // 100 kHz, conservative for longer/ribbon I2C runs
+}
+
+// Scan the I2C bus and log every address that ACKs. Run at boot so the serial
+// monitor shows whether the relay board is actually present at 0x20. If nothing is
+// found, it is a wiring / pull-up / power / address problem, not the firmware.
+void i2cScan() {
+	if (!LOG_VERBOSE) {
+		return;
+	}
+	uint8_t found = 0;
+	Serial.println("[I2C SCAN] scanning bus...");
+	for (uint8_t addr = 1; addr < 127; addr++) {
+		Wire.beginTransmission(addr);
+		if (Wire.endTransmission() == 0) {
+			Serial.print("[I2C SCAN] found device at 0x");
+			Serial.println(addr, HEX);
+			found++;
+		}
+	}
+	Serial.print("[I2C SCAN] complete, ");
+	Serial.print(found);
+	Serial.println(" device(s) responding.");
+}
+
 // Write a single 8-bit register on the XL9535 expander. Returns the Wire status
 // (0 = success); logs a line on any I2C error so a dead/wedged board is visible.
 uint8_t xlWriteReg(uint8_t reg, uint8_t value) {
@@ -193,55 +236,35 @@ uint8_t xlWriteReg(uint8_t reg, uint8_t value) {
 		Serial.print(" reg=0x");
 		Serial.print(reg, HEX);
 		Serial.print(" endTransmission=");
-		Serial.println(status);   // 2 = addr NAK (board not responding), 3 = data NAK
+		Serial.println(status);   // 2 = addr NAK (board not responding), 4 = bus error
 	}
 	return status;
 }
 
-// Push the 16-bit output shadow to both XL9535 output ports. If a write errors
-// (e.g. a transient bus glitch or a wedged bus), recover the bus and retry once so
-// the relay state is not silently lost.
+// Push the 16-bit output shadow to both XL9535 output ports. On any write error,
+// do ONE clean peripheral reset and retry so a transient glitch self-heals without
+// hammering the driver.
 void xlPushOutputs() {
 	uint8_t s0 = xlWriteReg(XL9535_OUTPUT_PORT0, (uint8_t)(g_xlOutputShadow & 0xFF));   // relays 1-8
 	uint8_t s1 = xlWriteReg(XL9535_OUTPUT_PORT1, (uint8_t)(g_xlOutputShadow >> 8));     // relays 9-16
 	if (s0 != 0 || s1 != 0) {
 		if (LOG_VERBOSE) {
-			Serial.println("[I2C] output write failed; recovering bus and retrying.");
+			Serial.println("[I2C] output write failed; resetting peripheral and retrying once.");
 		}
-		i2cBusRecover();
-		Wire.begin(PIN_XL9535_SDA, PIN_XL9535_SCL);
-		Wire.setClock(100000);
+		i2cReset();
 		xlWriteReg(XL9535_OUTPUT_PORT0, (uint8_t)(g_xlOutputShadow & 0xFF));
 		xlWriteReg(XL9535_OUTPUT_PORT1, (uint8_t)(g_xlOutputShadow >> 8));
 	}
 }
 
-// Recover a wedged I2C bus: if the ESP32 reset mid-transaction (a re-flash or warm
-// reset), the XL9535 can be left holding SDA low, which hangs every later transfer
-// until the board is power-cycled, the relays then never actuate. Clock SCL up to
-// 9 times to let the slave release SDA, then issue a manual STOP. Run BEFORE Wire.begin().
-void i2cBusRecover() {
-	pinMode(PIN_XL9535_SCL, OUTPUT);
-	pinMode(PIN_XL9535_SDA, INPUT_PULLUP);
-	for (uint8_t i = 0; i < 9 && digitalRead(PIN_XL9535_SDA) == LOW; i++) {
-		digitalWrite(PIN_XL9535_SCL, HIGH); delayMicroseconds(5);
-		digitalWrite(PIN_XL9535_SCL, LOW);  delayMicroseconds(5);
-	}
-	// Manual STOP condition: SDA low->high while SCL is high.
-	pinMode(PIN_XL9535_SDA, OUTPUT);
-	digitalWrite(PIN_XL9535_SDA, LOW);  delayMicroseconds(5);
-	digitalWrite(PIN_XL9535_SCL, HIGH); delayMicroseconds(5);
-	digitalWrite(PIN_XL9535_SDA, HIGH); delayMicroseconds(5);
-}
-
-// Bring the XL9535 up: recover any wedged bus, start I2C, drive all relays
-// de-energised, then set both ports to outputs. Outputs are written BEFORE
+// Bring the XL9535 up: start I2C clean, scan the bus for diagnostics, drive all
+// relays de-energised, then set both ports to outputs. Outputs are written BEFORE
 // configuring direction so no relay glitches on (latch holds 0 = de-energised).
 void xlBegin() {
-	i2cBusRecover();
 	Wire.begin(PIN_XL9535_SDA, PIN_XL9535_SCL);
 	Wire.setClock(100000);   // 100 kHz, conservative for longer/ribbon I2C runs
-	delay(5);                // let the bus settle after the manual recovery
+	delay(5);                // let the bus settle
+	i2cScan();               // log what is actually on the bus
 	g_xlOutputShadow = 0x0000;        // all off
 	xlPushOutputs();
 	xlWriteReg(XL9535_CONFIG_PORT0, 0x00);  // port 0 pins = outputs
