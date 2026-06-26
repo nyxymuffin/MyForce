@@ -15,22 +15,52 @@
 //
 // Copyright (C) 2025-2026 NyxTel Wireless / Nyx Gallini
 
+// MyForce Siren Interface Controller, ESP32 DevKit V1 + W5500 Lite firmware.
+// Drives the siren/lightbar via an XL9535-K16V5 16-channel I2C relay board.
+// External MQTT control-plane client (§3.2, §3.3, §5.2). All relay outputs are on
+// the I2C board, the ESP32 drives no relay pins directly.
 //
-// Relay output backend (§3.2). Same selectable backend as the GPIO controller.
-// The siren's relays live on the XL9535-K16V5 16-channel I2C board by default;
-// the direct-GPIO path is kept for bench testing without the relay board.
-// ---------------------------------------------------------------------------
-enum RelayLogic {
-	RELAY_ACTIVE_HIGH = 0,   // GPIO HIGH energises the relay coil
-	RELAY_ACTIVE_LOW = 1    // GPIO LOW  energises the relay coil (common on opto boards)
-};
-static const RelayLogic RELAY_LOGIC = RELAY_ACTIVE_LOW;   // only used by the GPIO backend
+// Libraries (Arduino Library Manager): Ethernet (W5500), PubSubClient, ArduinoJson
+// v7+, Wire (I2C for the XL9535 board).
 
-enum RelayBackend {
-	RELAY_BACKEND_GPIO = 0,   // direct ESP32 GPIO pins via digitalWrite()
-	RELAY_BACKEND_XL9535 = 1    // XL9535-K16V5 16-channel I2C relay board
-};
-static const RelayBackend RELAY_BACKEND = RELAY_BACKEND_XL9535;  // siren ships on the relay board
+#include <SPI.h>
+#include <Ethernet.h>
+#include <PubSubClient.h>
+#include <ArduinoJson.h>
+#include <Wire.h>   // I2C master for the XL9535-K16V5 relay backend
+
+// ---------------------------------------------------------------------------
+// SPI pin mapping (ESP32 DevKit V1 -> W5500 Lite, VSPI bus)
+// ---------------------------------------------------------------------------
+#define PIN_W5500_SCK   18   // VSPI SCK  -> W5500 SCLK
+#define PIN_W5500_MISO  19   // VSPI MISO -> W5500 MISO
+#define PIN_W5500_MOSI  23   // VSPI MOSI -> W5500 MOSI
+#define PIN_W5500_CS    33   // Chip select -> W5500 SCS
+#define PIN_W5500_RST   26   // Hardware reset -> W5500 RSTn (optional)
+
+// ---------------------------------------------------------------------------
+// Network configuration. W5500 Lite has no on-board MAC, so supply a locally
+// administered one. The low byte differs from the GPIO controller so the two
+// ESP32s never collide on the LAN.
+// ---------------------------------------------------------------------------
+static byte g_macAddress[] = { 0xDE, 0xAD, 0xBE, 0xEF, 0xFE, 0x02 };
+
+// ---------------------------------------------------------------------------
+// MQTT broker configuration (project default: unencrypted 1883).
+// ---------------------------------------------------------------------------
+static IPAddress      g_brokerAddress(10, 43, 2, 220);   // MQTT broker IPv4
+static const uint16_t MQTT_BROKER_PORT = 1883;           // Unencrypted (project default)
+
+// ---------------------------------------------------------------------------
+// Module identity (§5.2). All topics are addressed by this instance <id>.
+// ---------------------------------------------------------------------------
+static const char* MODULE_ID   = "siren1";        // unique per controller on the bus
+static const char* MODULE_KIND = "external";      // radio_module | radio_resource | external
+static const char* MODULE_CAT  = "siren";         // radio | media | siren | scada | gpio
+static const int   PAYLOAD_VERSION = 1;           // envelope "v" (§5.8.1)
+
+// Admin credential for config-changing commands (§4.6). Dummy gate, not security.
+static const char* ADMIN_PIN = "2135";
 
 // ---------------------------------------------------------------------------
 // Siren relay channels & functions (§4.5). Channel index is the array position
@@ -70,14 +100,6 @@ static const char* g_relayFunctions[] = {
 };
 static const uint8_t RELAY_COUNT = sizeof(g_relayFunctions) / sizeof(g_relayFunctions[0]);
 
-// Relay channel pins, used ONLY by the GPIO bench-test backend (ignored for the
-// XL9535 board). This list may be SHORTER than RELAY_COUNT: the ESP32 + W5500
-// cannot spare 11 safe GPIOs, so the GPIO backend only drives the channels for
-// which a pin exists here; the XL9535 board is required for the full mapping.
-// Avoid strapping/boot pins (0, 2, 12, 15) and the W5500 SPI pins.
-static const uint8_t g_relayPins[] = { 13, 14, 27, 16, 17, 4, 5, 25 };
-static const uint8_t RELAY_PIN_COUNT = sizeof(g_relayPins) / sizeof(g_relayPins[0]);
-
 // The mutually-exclusive siren-code functions. Selecting one code clears the
 // others so the single siren amplifier is never driven by two code lines at once.
 static const char* g_codeFunctions[] = { "code1", "code2", "code3" };
@@ -94,8 +116,10 @@ static const char* DIRECTIONAL_RIGHT_FUNCTION = "directional_right";
 // zero MQTT round-trip latency (§3.2 latency-tolerant note still wants the horn
 // to feel instant under the operator's hand).
 // ---------------------------------------------------------------------------
-static const uint8_t g_inputPins[] = { 32, 39 };           // 39 is input-only, no pull-up
-static const char* g_inputFunctions[] = { "horn_ring", "aux_in" };
+// Only pins with an internal pull-up are used so an unwired input reads a stable
+// inactive level (no spurious state spam). GPIO32 supports a pull-up.
+static const uint8_t g_inputPins[] = { 32 };               // horn-ring button to ground
+static const char* g_inputFunctions[] = { "horn_ring" };
 static const uint8_t INPUT_COUNT = sizeof(g_inputPins) / sizeof(g_inputPins[0]);
 
 // Local horn-ring passthrough: while the named input below is active, drive the
@@ -106,7 +130,7 @@ static const uint8_t HORN_RING_INPUT_INDEX = 0;       // index into g_inputPins/
 static const char* HORN_RING_RELAY_FUNCTION = "airhorn";
 
 // ---------------------------------------------------------------------------
-// XL9535-K16V5 16-channel I2C relay board (only used by RELAY_BACKEND_XL9535).
+// XL9535-K16V5 16-channel I2C relay board (the only relay output path).
 // The XL9535 is a 16-bit I2C I/O expander (PCA9555-compatible register map):
 // two 8-bit ports drive the 16 relays. The board is ACTIVE HIGH, a 1 bit
 // energises the relay coil. Default 7-bit I2C address is 0x20 (A0/A1/A2 open).
@@ -190,6 +214,12 @@ unsigned long g_lastInputPoll = 0;
 // Helpers
 // ===========================================================================
 
+// True if the ESP32 GPIO has an internal pull-up. GPIO 34-39 are input-only pads
+// with no pull resistors, so INPUT_PULLUP is invalid on them.
+bool pinSupportsInternalPullup(uint8_t pin) {
+	return !(pin >= 34 && pin <= 39);
+}
+
 // --- XL9535 I2C relay backend -------------------------------------------------
 
 // Write a single 8-bit register on the XL9535 expander.
@@ -220,13 +250,9 @@ void xlBegin() {
 // Power-on self-test: pulse the test relay on the XL9535 board to prove relay
 // function, with a serial banner so the behaviour is never a surprise. Drives the
 // expander bit directly (the test channel is outside the mapped function range,
-// so it bypasses setRelay()/g_relayState). No-op unless the XL9535 backend is in use.
+// so it bypasses setRelay()/g_relayState).
 void bootRelaySelfTest() {
 	if (!BOOT_RELAY_TEST_ENABLED) {
-		return;
-	}
-	if (RELAY_BACKEND != RELAY_BACKEND_XL9535) {
-		Serial.println("BOOT SELF-TEST: skipped (XL9535 relay backend not selected).");
 		return;
 	}
 
@@ -248,30 +274,20 @@ void bootRelaySelfTest() {
 	Serial.println(" released. (Disable with BOOT_RELAY_TEST_ENABLED = false.)");
 }
 
-// Drive one relay channel (1-based) to energised/de-energised. Routes to the
-// selected backend: direct GPIO or the XL9535 I2C board. Updates the cache.
+// Drive one relay channel (1-based) to energised/de-energised on the XL9535 I2C
+// board, then update the cache. The board is the only output path.
 void setRelay(uint8_t channel, bool energised) {
 	if (channel < 1 || channel > RELAY_COUNT) {
 		return;  // out of range, ignored (the command path reports rejected)
 	}
 	uint8_t idx = channel - 1;
 
-	if (RELAY_BACKEND == RELAY_BACKEND_XL9535) {
-
-		// The XL9535-K16V5 board is active high (bit = 1 energises the relay), so we
-		// map energised directly to the shadow bit and push the change.
-		uint16_t mask = (uint16_t)1 << idx;
-		if (energised) { g_xlOutputShadow |= mask; }
-		else { g_xlOutputShadow &= ~mask; }
-		xlPushOutputs();
-	}
-	else if (idx < RELAY_PIN_COUNT) {
-
-		// Direct GPIO drive, honouring the opto board's active-high/low wiring. Only
-		// channels that have a pin in g_relayPins are physically driven in this mode.
-		bool level = (RELAY_LOGIC == RELAY_ACTIVE_LOW) ? !energised : energised;
-		digitalWrite(g_relayPins[idx], level ? HIGH : LOW);
-	}
+	// The XL9535-K16V5 board is active high (bit = 1 energises the relay), so we
+	// map energised directly to the shadow bit and push the change.
+	uint16_t mask = (uint16_t)1 << idx;
+	if (energised) { g_xlOutputShadow |= mask; }
+	else { g_xlOutputShadow &= ~mask; }
+	xlPushOutputs();
 
 	g_relayState[idx] = energised;
 }
@@ -430,7 +446,7 @@ void publishRegistry() {
 	caps["input_channels"] = INPUT_COUNT;
 
 	// Which physical relay backend is driving the channels (§3.2).
-	caps["relay_backend"] = (RELAY_BACKEND == RELAY_BACKEND_XL9535) ? "xl9535_k16v5" : "esp32_gpio";
+	caps["relay_backend"] = "xl9535_k16v5";
 
 	// Named relay functions the UI can assign/trigger (§4.5).
 	JsonArray fns = caps["relay_functions"].to<JsonArray>();
@@ -776,19 +792,9 @@ void setup() {
 	Serial.println();
 	Serial.println("MyForce Siren Interface Controller starting.");
 
-	// Bring the relay backend up first so every siren/lightbar channel is
-	// de-energised before anything can command it (§3.2). The XL9535 board needs
-	// its I2C bus and port direction; the direct-GPIO backend just needs OUTPUT pins.
-	if (RELAY_BACKEND == RELAY_BACKEND_XL9535) {
-		xlBegin();
-	}
-	else {
-
-		// GPIO bench-test backend only drives the channels that have a pin defined.
-		for (uint8_t i = 0; i < RELAY_PIN_COUNT; i++) {
-			pinMode(g_relayPins[i], OUTPUT);
-		}
-	}
+	// Bring the XL9535 relay board up first (I2C bus + port direction) so every
+	// siren/lightbar channel is de-energised before anything can command it (§3.2).
+	xlBegin();
 
 	// Initialise relay outputs to de-energised before anything else.
 	for (uint8_t i = 0; i < RELAY_COUNT; i++) {
@@ -800,9 +806,11 @@ void setup() {
 	// Prove relay function before bringing the network up (§3.2 hardware bring-up).
 	bootRelaySelfTest();
 
-	// Initialise inputs (pull-ups where the pin supports them; 34/35/36/39 do not).
+	// Initialise inputs. Use a pull-up where the pin supports one (ESP32 GPIO 34-39
+	// are input-only and have NO internal pull, so requesting INPUT_PULLUP on them
+	// throws a gpio_pullup_en error). All configured input pins support a pull-up.
 	for (uint8_t i = 0; i < INPUT_COUNT; i++) {
-		pinMode(g_inputPins[i], INPUT_PULLUP);
+		pinMode(g_inputPins[i], pinSupportsInternalPullup(g_inputPins[i]) ? INPUT_PULLUP : INPUT);
 		g_inputState[i] = (digitalRead(g_inputPins[i]) == LOW);
 	}
 

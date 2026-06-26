@@ -58,41 +58,19 @@ static const int   PAYLOAD_VERSION = 1;           // envelope "v" (§5.8.1)
 static const char* ADMIN_PIN = "2135";
 
 // ---------------------------------------------------------------------------
-// Relay outputs & digital inputs
-// Map each logical channel to an ESP32 GPIO. The number of channels and the
+// Relay outputs & digital inputs. All relay outputs are driven over the XL9535
+// I2C relay board (no ESP32 pins drive relays). The number of channels and the
 // named relay "functions" are what the controller self-describes so the UI can
 // build its admin surface with no UI change (§4.5).
-// Avoid strapping/boot pins (0, 2, 12, 15) for relays where possible.
 // ---------------------------------------------------------------------------
-enum RelayLogic {
-	RELAY_ACTIVE_HIGH = 0,   // GPIO HIGH energises the relay coil
-	RELAY_ACTIVE_LOW = 1    // GPIO LOW  energises the relay coil (common on opto boards)
-};
-static const RelayLogic RELAY_LOGIC = RELAY_ACTIVE_LOW;
 
-// ---------------------------------------------------------------------------
-// Relay output backend (§3.2). The controller can drive its relay channels
-// either through direct ESP32 GPIO pins or through an XL9535-K16V5 16-channel
-// I2C relay board. The wire protocol (MQTT registry/state/cmd) is identical
-// for both, only the physical drive differs, selected here at compile time.
-// ---------------------------------------------------------------------------
-enum RelayBackend {
-	RELAY_BACKEND_GPIO = 0,   // direct ESP32 GPIO pins via digitalWrite()
-	RELAY_BACKEND_XL9535 = 1    // XL9535-K16V5 16-channel I2C relay board
-};
-static const RelayBackend RELAY_BACKEND = RELAY_BACKEND_XL9535;  // same hardware as the siren controller
+// Digital input pins. Only pins with an internal pull-up are used so an unwired
+// input reads a stable inactive level (no spurious state spam); GPIO32/25 support one.
+static const uint8_t g_inputPins[] = { 32, 25 };
 
-// Relay channel pins (channel index is the array position + 1, i.e. 1-based on the bus).
-// Only used when RELAY_BACKEND == RELAY_BACKEND_GPIO; ignored for the XL9535 board.
-// One pin per relay function below.
-static const uint8_t g_relayPins[] = { 13, 14, 27 };
-
-// Input channel pins (read with internal pull-ups; index is position + 1).
-static const uint8_t g_inputPins[] = { 32, 39, 34, 35 };  // 34/35/39 are input-only, no pull-up
-
-// Human-facing relay function names, parallel to g_relayPins (§4.5). The array
-// length defines RELAY_COUNT, so it also bounds the XL9535 channels used
-// (channel N drives expander bit N-1; the board exposes up to 16).
+// Human-facing relay function names (§4.5). The array length defines RELAY_COUNT
+// and maps each function to an XL9535 channel (channel N -> expander bit N-1; the
+// board exposes up to 16).
 //
 // Camera/DVR control relays. These are MOMENTARY: the UI fires a short pulse to
 // each one to simulate pressing the matching button on the camera head/recorder.
@@ -105,7 +83,7 @@ static const uint8_t RELAY_COUNT = sizeof(g_relayFunctions) / sizeof(g_relayFunc
 static const uint8_t INPUT_COUNT = sizeof(g_inputPins) / sizeof(g_inputPins[0]);
 
 // ---------------------------------------------------------------------------
-// XL9535-K16V5 16-channel I2C relay board (only used by RELAY_BACKEND_XL9535).
+// XL9535-K16V5 16-channel I2C relay board (the only relay output path).
 // The XL9535 is a 16-bit I2C I/O expander (PCA9555-compatible register map):
 // two 8-bit ports drive the 16 relays. The board is ACTIVE HIGH, a 1 bit
 // energises the relay coil. Default 7-bit I2C address is 0x20 (A0/A1/A2 open).
@@ -188,6 +166,12 @@ unsigned long g_lastInputPoll = 0;
 // Helpers
 // ===========================================================================
 
+// True if the ESP32 GPIO has an internal pull-up. GPIO 34-39 are input-only pads
+// with no pull resistors, so INPUT_PULLUP is invalid on them.
+bool pinSupportsInternalPullup(uint8_t pin) {
+	return !(pin >= 34 && pin <= 39);
+}
+
 // --- XL9535 I2C relay backend -------------------------------------------------
 
 // Write a single 8-bit register on the XL9535 expander.
@@ -218,13 +202,9 @@ void xlBegin() {
 // Power-on self-test: pulse the test relay on the XL9535 board to prove relay
 // function, with a serial banner so the behaviour is never a surprise. Drives the
 // expander bit directly (the test channel is outside the mapped function range,
-// so it bypasses setRelay()/g_relayState). No-op unless the XL9535 backend is in use.
+// so it bypasses setRelay()/g_relayState).
 void bootRelaySelfTest() {
 	if (!BOOT_RELAY_TEST_ENABLED) {
-		return;
-	}
-	if (RELAY_BACKEND != RELAY_BACKEND_XL9535) {
-		Serial.println("BOOT SELF-TEST: skipped (XL9535 relay backend not selected).");
 		return;
 	}
 
@@ -246,30 +226,20 @@ void bootRelaySelfTest() {
 	Serial.println(" released. (Disable with BOOT_RELAY_TEST_ENABLED = false.)");
 }
 
-// Drive one relay channel (1-based) to energised/de-energised, honouring the
-// active-high/low wiring. Updates the cached state. Routes to the selected
-// backend: direct GPIO or the XL9535 I2C board.
+// Drive one relay channel (1-based) to energised/de-energised on the XL9535 I2C
+// board, then update the cache. The board is the only output path.
 void setRelay(uint8_t channel, bool energised) {
 	if (channel < 1 || channel > RELAY_COUNT) {
 		return;  // out of range, ignored (the command path reports rejected)
 	}
 	uint8_t idx = channel - 1;
 
-	if (RELAY_BACKEND == RELAY_BACKEND_XL9535) {
-
-		// The XL9535-K16V5 board is active high (bit = 1 energises the relay), so
-		// we map energised directly to the shadow bit and push the change.
-		uint16_t mask = (uint16_t)1 << idx;
-		if (energised) { g_xlOutputShadow |= mask; }
-		else { g_xlOutputShadow &= ~mask; }
-		xlPushOutputs();
-	}
-	else {
-
-		// Direct GPIO drive, honouring the opto board's active-high/low wiring.
-		bool level = (RELAY_LOGIC == RELAY_ACTIVE_LOW) ? !energised : energised;
-		digitalWrite(g_relayPins[idx], level ? HIGH : LOW);
-	}
+	// The XL9535-K16V5 board is active high (bit = 1 energises the relay), so we
+	// map energised directly to the shadow bit and push the change.
+	uint16_t mask = (uint16_t)1 << idx;
+	if (energised) { g_xlOutputShadow |= mask; }
+	else { g_xlOutputShadow &= ~mask; }
+	xlPushOutputs();
 
 	g_relayState[idx] = energised;
 }
@@ -342,7 +312,7 @@ void publishRegistry() {
 
 	// Which physical relay backend is driving the channels (§3.2), so the UI/admin
 	// surface can show the hardware in use without any UI change (§4.5).
-	caps["relay_backend"] = (RELAY_BACKEND == RELAY_BACKEND_XL9535) ? "xl9535_k16v5" : "esp32_gpio";
+	caps["relay_backend"] = "xl9535_k16v5";
 
 	// Named relay functions the UI can assign/trigger (§4.5).
 	JsonArray fns = caps["relay_functions"].to<JsonArray>();
@@ -609,17 +579,9 @@ void setup() {
 	Serial.println();
 	Serial.println("MyForce GPIO Relay Controller starting.");
 
-	// Bring the relay backend up first so every channel is de-energised before
-	// anything else can command it (§3.2). The XL9535 board needs its I2C bus and
-	// port-direction set up; the direct-GPIO backend just needs its pins as OUTPUT.
-	if (RELAY_BACKEND == RELAY_BACKEND_XL9535) {
-		xlBegin();
-	}
-	else {
-		for (uint8_t i = 0; i < RELAY_COUNT; i++) {
-			pinMode(g_relayPins[i], OUTPUT);
-		}
-	}
+	// Bring the XL9535 relay board up first (I2C bus + port direction) so every
+	// channel is de-energised before anything else can command it (§3.2).
+	xlBegin();
 
 	// Initialise relay outputs to de-energised before anything else.
 	for (uint8_t i = 0; i < RELAY_COUNT; i++) {
@@ -631,9 +593,11 @@ void setup() {
 	// Prove relay function before bringing the network up (§3.2 hardware bring-up).
 	bootRelaySelfTest();
 
-	// Initialise inputs (pull-ups where the pin supports them; 34/35/36/39 do not).
+	// Initialise inputs. Use a pull-up where the pin supports one (ESP32 GPIO 34-39
+	// are input-only and have NO internal pull, so requesting INPUT_PULLUP on them
+	// throws a gpio_pullup_en error). All configured input pins support a pull-up.
 	for (uint8_t i = 0; i < INPUT_COUNT; i++) {
-		pinMode(g_inputPins[i], INPUT_PULLUP);
+		pinMode(g_inputPins[i], pinSupportsInternalPullup(g_inputPins[i]) ? INPUT_PULLUP : INPUT);
 		g_inputState[i] = (digitalRead(g_inputPins[i]) == LOW);
 	}
 
