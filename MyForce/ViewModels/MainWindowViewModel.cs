@@ -2501,6 +2501,27 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 			return;
 		}
 
+		// sys/plugins is the authoritative "addable radio types" list (discovered RM plugins + built-in
+		// AP resources). Without this, only already-declared radio instances showed as addable, so a
+		// discovered-but-uninstantiated plugin (e.g. Barrett) never appeared.
+		if (string.Equals(message.Topic, InternetRadioMqttTopics.SystemPluginsTopic, StringComparison.OrdinalIgnoreCase))
+		{
+			var pluginsPayload = message.ConvertPayloadToString();
+			if (string.IsNullOrWhiteSpace(pluginsPayload))
+			{
+				return;
+			}
+
+			var plugins = JsonSerializer.Deserialize<SystemPluginsMessage>(pluginsPayload, MqttJsonSerializerOptions);
+			if (plugins is null)
+			{
+				return;
+			}
+
+			Dispatcher.UIThread.Post(() => ApplySystemPlugins(plugins));
+			return;
+		}
+
 		if (string.Equals(message.Topic, InternetRadioMqttTopics.AudioProcessorRegistryTopic, StringComparison.OrdinalIgnoreCase))
 		{
 			var registryPayload = message.ConvertPayloadToString();
@@ -2779,16 +2800,9 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 	{
 		ArgumentNullException.ThrowIfNull(registry);
 		// Keep the instance config schema so the schema-driven editor can render this radio (§3.9.5).
+		// The addable-type list is fed from sys/plugins (ApplySystemPlugins); a per-instance registry only
+		// supplies the live instance's schema for its EDIT CONFIG editor, not a new addable type.
 		_radioSchemas[registry.Id] = registry.ConfigSchema.Clone();
-		var existing = AvailableRadioTypes.Where(entry => !string.Equals(entry.RadioId, registry.Id, StringComparison.OrdinalIgnoreCase));
-		AvailableRadioTypes = existing.Append(new RadioRegistryEntryMessage(
-			registry.Id,
-			registry.TypeId,
-			registry.Id,
-			registry.Kind,
-			registry.Capabilities,
-			registry.ConfigSchema.GetRawText(),
-			registry.ConfigSchema.GetRawText())).ToArray();
 		ApplyAdminSchemaProjection(registry);
 		RaiseAdminNetworkStateChanged();
 	}
@@ -2923,7 +2937,36 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 	private void ApplyAudioProcessorRegistry(AudioProcessorRegistryMessage registry)
 	{
 		ArgumentNullException.ThrowIfNull(registry);
-		AvailableRadioTypes = registry.Radios ?? Array.Empty<RadioRegistryEntryMessage>();
+		// The addable-type list now comes from sys/plugins (ApplySystemPlugins); the service registry only
+		// describes the currently declared instances, which are not the same as the types you can add.
+		RaiseAdminNetworkStateChanged();
+	}
+
+	/// <summary>
+	/// Sections 4.1/4.3/4.4: applies the retained sys/plugins payload as the addable radio type list so
+	/// every discovered RM plugin and built-in AP resource can be added, even before any instance exists.
+	/// </summary>
+	private void ApplySystemPlugins(SystemPluginsMessage plugins)
+	{
+		ArgumentNullException.ThrowIfNull(plugins);
+		var emptyCapabilities = new RadioCapabilitiesMessage(
+			Array.Empty<string>(),
+			Array.Empty<string>(),
+			ProvidesAudio: false,
+			Array.Empty<string>());
+
+		AvailableRadioTypes = (plugins.Types ?? Array.Empty<SystemPluginTypeMessage>())
+			.Select(type => new RadioRegistryEntryMessage(
+				RadioId: type.TypeId,
+				TypeId: type.TypeId,
+				DisplayName: string.IsNullOrWhiteSpace(type.DisplayName) ? type.TypeId : type.DisplayName,
+				// Normalize the AP plugin kinds onto the UI's Module/Resource vocabulary so the summary
+				// (BUILT-IN RESOURCES count) and the per-card badge stay meaningful.
+				Kind: string.Equals(type.Kind, "radio_resource", StringComparison.OrdinalIgnoreCase) ? "Resource" : "Module",
+				Capabilities: emptyCapabilities,
+				ConfigSchema: string.Empty,
+				InstanceSchema: string.Empty))
+			.ToArray();
 		RaiseAdminNetworkStateChanged();
 	}
 
@@ -3939,8 +3982,32 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 		ProximityChannel4 = ProximitySlotLabel(nearest, 3);
 	}
 
-	private static string ProximitySlotLabel(IReadOnlyList<RankedChannelCenter> nearest, int index)
-		=> index < nearest.Count ? nearest[index].Center.Channel : string.Empty;
+	// A proximity slot shows the owning radio's alias then its channel ("ALIAS: CHANNEL") so the operator
+	// can tell which radio a nearby channel belongs to, not just the bare channel name.
+	private string ProximitySlotLabel(IReadOnlyList<RankedChannelCenter> nearest, int index)
+	{
+		if (index >= nearest.Count)
+		{
+			return string.Empty;
+		}
+
+		var center = nearest[index].Center;
+		return $"{ResolveRadioAlias(center.RadioId)}: {center.Channel}";
+	}
+
+	// Resolve a radio's operator-facing alias from the declared radios (sys/definition) first, then the
+	// runtime entries, falling back to the raw radio id when neither carries a friendly name.
+	private string ResolveRadioAlias(string radioId)
+	{
+		var adminMatch = RadioAdminItems.FirstOrDefault(radio => string.Equals(radio.RadioId, radioId, StringComparison.OrdinalIgnoreCase));
+		if (!string.IsNullOrWhiteSpace(adminMatch?.AliasInput))
+		{
+			return adminMatch!.AliasInput;
+		}
+
+		var runtimeMatch = RadioRuntimeEntries.FirstOrDefault(radio => string.Equals(radio.RadioId, radioId, StringComparison.OrdinalIgnoreCase));
+		return string.IsNullOrWhiteSpace(runtimeMatch?.DisplayName) ? radioId : runtimeMatch!.DisplayName;
+	}
 
 	// --- GEO AREA overlay -------------------------------------------------------
 	// Lets the operator drop a Lat/Long center for the selected radio's CURRENT channel

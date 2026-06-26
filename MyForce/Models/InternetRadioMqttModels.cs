@@ -376,6 +376,23 @@ public sealed record AudioProcessorRegistryMessage(
 	IReadOnlyList<string> RadioIds,
 	IReadOnlyList<string> BridgeIds);
 
+/// <summary>
+/// Represents the retained AP sys/plugins payload: the radio types that can be added (each discovered
+/// RM plugin plus the built-in AP radio resources). This is the authoritative "addable radio types"
+/// list, independent of which radio instances are currently declared.
+/// </summary>
+internal sealed record SystemPluginsMessage(
+	int V,
+	DateTimeOffset Ts,
+	IReadOnlyList<SystemPluginTypeMessage> Types);
+
+/// <summary>One addable radio type advertised on sys/plugins.</summary>
+internal sealed record SystemPluginTypeMessage(
+	[property: JsonPropertyName("type_id")] string TypeId,
+	[property: JsonPropertyName("display_name")] string DisplayName,
+	string Kind,
+	string Version);
+
 public sealed record RadioRegistryEntryMessage(
 	string RadioId,
 	string TypeId,

@@ -1350,6 +1350,7 @@ internal sealed record PersistedBridgeMember(
 
 		var definitions = LoadPersistedRadioDefinitionsForWrite();
 		string? clearedModuleId = null;
+		string? addedModuleId = null;
 		string? field = null, code = null, message = null;
 		bool ok = false;
 
@@ -1409,6 +1410,7 @@ internal sealed record PersistedBridgeMember(
 				// Seed empty settings; the operator completes config via cmd/config (§4.4: a radio may
 				// exist before it is fully configured). "{}" hydrates with the module/AP defaults.
 				definitions.Add(new PersistedRadioDefinition(newId, command.TypeId, alias, "Module", "{}"));
+				addedModuleId = newId;
 				ok = true;
 			}
 		}
@@ -1431,6 +1433,14 @@ internal sealed record PersistedBridgeMember(
 			AudioProcessorJson.Serialize(SystemDefinitionPayload.CreateFromPersisted(definitions, _bridgeEngine.Definitions)),
 			retain: true,
 			cancellationToken: CancellationToken.None).ConfigureAwait(false);
+
+		// A freshly added radio is not live-hydrated until the next AP restart, but its config_schema is
+		// static (from the plugin factory). Publish the new instance's retained registry/config so the
+		// admin "EDIT CONFIG" button can render and persist its settings immediately (§4.4).
+		if (addedModuleId is not null)
+		{
+			await PublishAddedModuleSpecAsync(addedModuleId, definitions).ConfigureAwait(false);
+		}
 
 		await PublishCommandAckAsync(topic, msgId, "ok", null, null, null).ConfigureAwait(false);
 		AudioProcessorLog.Write("config", $"Applied {topic}; system definition persisted ({definitions.Count} module(s)). Instance hydration/teardown applies on next AP restart.");
@@ -1473,6 +1483,47 @@ internal sealed record PersistedBridgeMember(
 		_realtimeEngine.RequestRebindCapture(port, captureDevice);
 		_realtimeEngine.RequestRebindPlayback(port, playbackDevice);
 		AudioProcessorLog.Write("engine", $"Requested live re-bind for '{radioId.Value}': rx='{captureDevice}', tx='{playbackDevice}'.");
+	}
+
+	/// <summary>
+	/// Publishes the retained registry + config (and an offline status) for a radio that was just added
+	/// via add_module, so the admin UI can render its schema-driven config editor and persist settings
+	/// before the next AP restart hydrates the live instance (§4.4). A no-op if the new definition cannot
+	/// be resolved to a discovered plugin (e.g. the plugin was unloaded between validation and persist).
+	/// </summary>
+	private async Task PublishAddedModuleSpecAsync(string addedModuleId, IReadOnlyList<PersistedRadioDefinition> definitions)
+	{
+		var definition = definitions.FirstOrDefault(candidate => string.Equals(candidate.RadioId, addedModuleId, StringComparison.OrdinalIgnoreCase));
+		if (definition is null)
+		{
+			return;
+		}
+
+		// Build the runtime definition straight from the persisted record + discovered plugin metadata.
+		var radio = AudioProcessorRegistry.CreatePersistedRadio(definition, _pluginCatalog.Modules, AudioProcessorLog.Write);
+		if (radio is null)
+		{
+			return;
+		}
+
+		await _mqttRuntime.PublishAsync(
+			_topics.ModuleRegistryTopic(radio.Id),
+			AudioProcessorJson.Serialize(ModuleRegistrySpecPayload.Create(radio)),
+			retain: true,
+			cancellationToken: CancellationToken.None).ConfigureAwait(false);
+
+		await _mqttRuntime.PublishAsync(
+			_topics.ModuleConfigTopic(radio.Id),
+			AudioProcessorJson.Serialize(ModuleConfigSpecPayload.Create(radio)),
+			retain: true,
+			cancellationToken: CancellationToken.None).ConfigureAwait(false);
+
+		// Declared-but-not-yet-hydrated: report offline so the operator knows it activates on restart.
+		await _mqttRuntime.PublishAsync(
+			_topics.ModuleStatusTopic(radio.Id),
+			AudioProcessorJson.Serialize(new ModuleStatusSpecPayload(1, DateTimeOffset.UtcNow, radio.Id.Value, false, "unavailable", "Pending AP restart to hydrate the new radio instance.")),
+			retain: true,
+			cancellationToken: CancellationToken.None).ConfigureAwait(false);
 	}
 
 	/// <summary>Clears a removed module's retained topics (registry/config/status/state) (§4.4).</summary>
@@ -2146,7 +2197,9 @@ internal sealed class AudioProcessorRegistry
 			config);
 	}
 
-	private static RadioRuntimeDefinition? CreatePersistedRadio(AudioProcessorCoordinator.PersistedRadioDefinition definition, IReadOnlyList<AudioProcessorCoordinator.DiscoveredRadioModule> discoveredModules, Action<string, string> log)
+	// Internal so the coordinator can build a single radio's runtime definition when a radio is added at
+	// runtime (to publish its retained registry/config before restart, §4.4).
+	internal static RadioRuntimeDefinition? CreatePersistedRadio(AudioProcessorCoordinator.PersistedRadioDefinition definition, IReadOnlyList<AudioProcessorCoordinator.DiscoveredRadioModule> discoveredModules, Action<string, string> log)
 	{
 		ArgumentNullException.ThrowIfNull(definition);
 		ArgumentNullException.ThrowIfNull(discoveredModules);
