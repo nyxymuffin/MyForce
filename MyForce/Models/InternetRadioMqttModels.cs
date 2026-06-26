@@ -268,6 +268,17 @@ internal sealed record RadioScanCommandMessage(
 	[property: JsonPropertyName("state")] string State);
 
 /// <summary>
+/// UI-published channel-select command (myforce/module/&lt;id&gt;/cmd/channel_select, §5.3/§3.11): set the
+/// radio to the channel at the given index. Operating-class (no admin credential required).
+/// </summary>
+internal sealed record RadioChannelSelectCommandMessage(
+	int V,
+	DateTimeOffset Ts,
+	[property: JsonPropertyName("msg_id")] string? MsgId,
+	string? Auth,
+	[property: JsonPropertyName("channel")] int Channel);
+
+/// <summary>
 /// UI-published function-button press (myforce/module/&lt;id&gt;/cmd/button, §5.12, v2.8):
 /// a module-declared button was pressed on this console.
 /// </summary>
@@ -496,6 +507,21 @@ internal sealed record ModuleStatusSpecMessage(
 	bool Online,
 	string Health,
 	string? Reason);
+
+/// <summary>
+/// Retained per-radio channel list (myforce/module/&lt;id&gt;/channels, §5.3/§3.11): the effective
+/// channel list the UI reads for the CHANNELS picker, whether static (4W), pulled by the RM, or typed.
+/// </summary>
+internal sealed record ModuleChannelsMessage(
+	int V,
+	DateTimeOffset Ts,
+	string Id,
+	IReadOnlyList<ChannelEntryMessage> Channels);
+
+/// <summary>One channel record (§3.7.7): a 1-based index/number and a display label.</summary>
+internal sealed record ChannelEntryMessage(
+	int Index,
+	string Label);
 
 internal sealed record ModuleRadioStateSpecMessage(
 	int V,

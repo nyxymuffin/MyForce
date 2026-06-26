@@ -1375,7 +1375,23 @@
                             <Border Classes="panel" Padding="16">
                                 <Grid RowDefinitions="40,*,56" RowSpacing="12">
                                     <TextBlock Classes="white" FontSize="24" Text="{Binding ChannelSelectionRadioTitle}" />
-                                    <TextBlock Grid.Row="1" Classes="white" FontSize="18" VerticalAlignment="Center" HorizontalAlignment="Center" TextAlignment="Center" Text="Channel list for this radio is not available yet.&#x0a;It will be populated per radio type / plugin." />
+                                    <!-- Empty-state message shown only when the radio has no channels (e.g. an RM with no list yet). -->
+                                    <TextBlock Grid.Row="1" Classes="white" FontSize="18" VerticalAlignment="Center" HorizontalAlignment="Center" TextAlignment="Center"
+                                               IsVisible="{Binding !HasChannelSelectionItems}"
+                                               Text="No channels are available for this radio yet." />
+                                    <!-- Channel picker: one tappable row per channel, selects it on the viewed radio (§3.11). -->
+                                    <ScrollViewer Grid.Row="1" HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto"
+                                                  IsVisible="{Binding HasChannelSelectionItems}">
+                                        <ItemsControl ItemsSource="{Binding ChannelSelectionItems}">
+                                            <ItemsControl.ItemTemplate>
+                                                <DataTemplate x:DataType="viewModels:ChannelSelectionItem">
+                                                    <Border Classes="buttonFrame" Height="52" Margin="0,0,0,6" Padding="12" PointerPressed="OnChannelSelectionItemPressed">
+                                                        <TextBlock Classes="white" FontSize="18" VerticalAlignment="Center" Text="{Binding DisplayLabel}" />
+                                                    </Border>
+                                                </DataTemplate>
+                                            </ItemsControl.ItemTemplate>
+                                        </ItemsControl>
+                                    </ScrollViewer>
                                     <Border Grid.Row="2" Classes="buttonFrame" Width="160" HorizontalAlignment="Right" PointerPressed="OnChannelSelectionClosePressed">
                                         <Viewbox Stretch="Uniform"><TextBlock Classes="white" TextAlignment="Center" VerticalAlignment="Center" Text="CLOSE" /></Viewbox>
                                     </Border>

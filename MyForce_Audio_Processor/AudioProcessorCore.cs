@@ -847,7 +847,39 @@ internal sealed record PersistedBridgeMember(
 			return true;
 		}
 
-		AudioProcessorLog.Write("control", $"Accepted control action '{commandName}' for module '{moduleId}'. Module execution is staged for hosted RMs.");
+		// Route the control (e.g. channel_select, scan) to the live RM if one is hosting this radio; the
+		// command's own JSON object carries the control args (e.g. {"channel": 3}). Radios with no hosted
+		// module (resources, or an RM not loaded) just ack so the UI selection still reflects locally.
+		var hostedModule = _radioModuleHostManager.TryGetModule(radio.Id);
+		if (hostedModule is null)
+		{
+			AudioProcessorLog.Write("control", $"Accepted control action '{commandName}' for module '{moduleId}'; no hosted RM, ack only.");
+			await PublishCommandAckAsync(topic, envelope?.MsgId, "ok", null, null, null).ConfigureAwait(false);
+			return true;
+		}
+
+		OperationResult controlResult;
+		try
+		{
+			using var argsDocument = payload.IsEmpty ? JsonDocument.Parse("{}") : JsonDocument.Parse(payload);
+			controlResult = await hostedModule.ExecuteControlAsync(commandName, argsDocument.RootElement.Clone(), CancellationToken.None).ConfigureAwait(false);
+		}
+		catch (Exception ex) when (ex is JsonException or IOException or TimeoutException or InvalidOperationException)
+		{
+			AudioProcessorLog.Write("control", $"Control action '{commandName}' for module '{moduleId}' failed: {ex.Message}.");
+			await PublishCommandAckAsync(topic, envelope?.MsgId, "error", "action", "control_failed", ex.Message).ConfigureAwait(false);
+			return true;
+		}
+
+		if (controlResult.Status != MyForce.Contracts.Radio.OperationStatus.Ok)
+		{
+			var error = controlResult.Errors?.FirstOrDefault();
+			await PublishCommandAckAsync(topic, envelope?.MsgId, "rejected", error?.Field ?? "action", error?.Code ?? "rejected", error?.Message ?? $"Control '{commandName}' was rejected.").ConfigureAwait(false);
+			return true;
+		}
+
+		// Re-publish the radio's state so the UI sees the resulting channel/scan change (§5.8.5).
+		await PublishRadioModuleStateAsync(radio.Id).ConfigureAwait(false);
 		await PublishCommandAckAsync(topic, envelope?.MsgId, "ok", null, null, null).ConfigureAwait(false);
 		return true;
 	}
@@ -1539,12 +1571,19 @@ internal sealed record PersistedBridgeMember(
 			AudioProcessorJson.Serialize(new ModuleStatusSpecPayload(1, DateTimeOffset.UtcNow, radio.Id.Value, false, "unavailable", "Pending AP restart to hydrate the new radio instance.")),
 			retain: true,
 			cancellationToken: CancellationToken.None).ConfigureAwait(false);
+
+		// Publish its channel list too so the CHANNELS picker works for the new radio before restart.
+		await _mqttRuntime.PublishAsync(
+			_topics.ModuleChannelsTopic(radio.Id),
+			AudioProcessorJson.Serialize(ModuleChannelsPayload.Create(radio)),
+			retain: true,
+			cancellationToken: CancellationToken.None).ConfigureAwait(false);
 	}
 
 	/// <summary>Clears a removed module's retained topics (registry/config/status/state) (§4.4).</summary>
 	private async Task ClearModuleRetainedTopicsAsync(string id)
 	{
-		foreach (var clearTopic in new[] { _topics.ModuleRegistryTopic(id), _topics.ModuleConfigTopic(id), _topics.ModuleStatusTopic(id), _topics.ModuleStateTopic(id) })
+		foreach (var clearTopic in new[] { _topics.ModuleRegistryTopic(id), _topics.ModuleConfigTopic(id), _topics.ModuleStatusTopic(id), _topics.ModuleStateTopic(id), _topics.ModuleChannelsTopic(id) })
 		{
 			await _mqttRuntime.PublishAsync(clearTopic, string.Empty, retain: true, cancellationToken: CancellationToken.None).ConfigureAwait(false);
 		}
@@ -2033,6 +2072,13 @@ internal sealed record PersistedBridgeMember(
 			await _mqttRuntime.PublishAsync(
 				_topics.ModuleStateTopic(radio.Id),
 				AudioProcessorJson.Serialize(ModuleRadioStateSpecPayload.Create(radio, _txStateMachine.GetState(radio.Id), _callDetectByRadio.TryGetValue(radio.Id.Value, out var radioRxActive) && radioRxActive, _bridgeEngine.IsRadioBridgeKeyed(radio.Id), _radioModuleHostManager.GetLastReport(radio.Id))),
+				retain: true,
+				cancellationToken: cancellationToken).ConfigureAwait(false);
+
+			// Effective channel list for the UI's CHANNELS picker (§5.3/§3.11).
+			await _mqttRuntime.PublishAsync(
+				_topics.ModuleChannelsTopic(radio.Id),
+				AudioProcessorJson.Serialize(ModuleChannelsPayload.Create(radio)),
 				retain: true,
 				cancellationToken: cancellationToken).ConfigureAwait(false);
 		}
@@ -2770,6 +2816,15 @@ internal sealed class AudioProcessorTopicFactory
 	{
 		ArgumentNullException.ThrowIfNull(radioId);
 		return $"{ModuleRootTopic}/{radioId.Value}/state";
+	}
+
+	// Retained per-radio channel list (§5.3/§3.11).
+	public string ModuleChannelsTopic(string id) => $"{ModuleRootTopic}/{id}/channels";
+
+	public string ModuleChannelsTopic(RadioId radioId)
+	{
+		ArgumentNullException.ThrowIfNull(radioId);
+		return $"{ModuleRootTopic}/{radioId.Value}/channels";
 	}
 
 	public string ManualPttRequestTopic => $"{RootTopic}/cmd/manual-ptt";
@@ -3719,6 +3774,48 @@ internal sealed record ModuleConfigSpecPayload(int V, DateTimeOffset Ts, string 
 		return new ModuleConfigSpecPayload(1, DateTimeOffset.UtcNow, radio.Id.Value, RadioInstanceConfigPayload.Create(radio.Config));
 	}
 }
+
+// Retained per-radio channel list (§5.3/§3.11): the effective channels the UI reads for its picker.
+internal sealed record ModuleChannelsPayload(int V, DateTimeOffset Ts, string Id, IReadOnlyList<ChannelEntryPayload> Channels)
+{
+	public static ModuleChannelsPayload Create(RadioRuntimeDefinition radio)
+	{
+		ArgumentNullException.ThrowIfNull(radio);
+		return new ModuleChannelsPayload(1, DateTimeOffset.UtcNow, radio.Id.Value, BuildChannels(radio));
+	}
+
+	// 4W resource -> one static channel (label = channel1_alias, default "4W"). Other radios -> the manual
+	// "channels" array from their settings (number/index + name, §3.11), else an empty list until an RM
+	// reports or the operator types one in.
+	private static IReadOnlyList<ChannelEntryPayload> BuildChannels(RadioRuntimeDefinition radio)
+	{
+		if (string.Equals(radio.TypeId, "4w_resource", StringComparison.OrdinalIgnoreCase))
+		{
+			var alias = (radio.Config.Settings as JsonObject)?["channel1_alias"]?.GetValue<string>();
+			return [new ChannelEntryPayload(1, string.IsNullOrWhiteSpace(alias) ? "4W" : alias)];
+		}
+
+		if ((radio.Config.Settings as JsonObject)?["channels"] is not JsonArray channels)
+		{
+			return Array.Empty<ChannelEntryPayload>();
+		}
+
+		var result = new List<ChannelEntryPayload>();
+		var fallbackIndex = 1;
+		foreach (var entry in channels.OfType<JsonObject>())
+		{
+			// Accept either "index"/"number" for the channel number and "name"/"label" for the display text.
+			var index = entry["index"]?.GetValue<int?>() ?? entry["number"]?.GetValue<int?>() ?? fallbackIndex;
+			var label = entry["name"]?.GetValue<string>() ?? entry["label"]?.GetValue<string>();
+			result.Add(new ChannelEntryPayload(index, string.IsNullOrWhiteSpace(label) ? $"CH {index}" : label));
+			fallbackIndex = index + 1;
+		}
+
+		return result;
+	}
+}
+
+internal sealed record ChannelEntryPayload(int Index, string Label);
 
 internal sealed record ModuleStatusSpecPayload(int V, DateTimeOffset Ts, string Id, bool Online, string Health, string? Reason)
 {

@@ -369,6 +369,15 @@ public partial class MainWindow : Window
 	private void OnRadioSelectionClosePressed(object? sender, PointerPressedEventArgs e)
 		=> _viewModel.CloseRadioSelection();
 
+	// Channel-selection overlay: pick a channel row (selects it on the viewed radio), or close the overlay.
+	private void OnChannelSelectionItemPressed(object? sender, PointerPressedEventArgs e)
+	{
+		if (sender is Control { DataContext: ChannelSelectionItem item })
+		{
+			item.Select();
+		}
+	}
+
 	private void OnChannelSelectionClosePressed(object? sender, PointerPressedEventArgs e)
 		=> _viewModel.CloseChannelSelection();
 

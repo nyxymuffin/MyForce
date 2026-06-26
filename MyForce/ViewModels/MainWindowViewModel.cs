@@ -180,6 +180,31 @@ public sealed class RadioSelectionItem
 }
 
 /// <summary>
+/// One row in the RADIO page CHANNELS picker: a channel's index + label, and the action that selects it
+/// on the viewed radio (§3.11). Built from the radio's retained channel list (myforce/module/&lt;id&gt;/channels).
+/// </summary>
+public sealed class ChannelSelectionItem
+{
+	private readonly MainWindowViewModel _owner;
+
+	public ChannelSelectionItem(int index, string label, MainWindowViewModel owner)
+	{
+		Index = index;
+		Label = label;
+		_owner = owner;
+	}
+
+	public int Index { get; }
+
+	public string Label { get; }
+
+	// "1: CT OPS 800" so the operator sees both the channel number and its name.
+	public string DisplayLabel => $"{Index}: {Label}";
+
+	public void Select() => _owner.SelectChannel(Index, Label);
+}
+
+/// <summary>
 /// One configured channel center shown in the GEO AREA overlay: the channel, its
 /// Lat/Long, and the action that clears it (centers are optional, §radio-page-semantics).
 /// </summary>
@@ -2775,6 +2800,18 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 			return true;
 		}
 
+		// Retained per-radio channel list feeding the CHANNELS picker (§5.3/§3.11).
+		if (string.Equals(topicClass, "channels", StringComparison.OrdinalIgnoreCase))
+		{
+			var channels = JsonSerializer.Deserialize<ModuleChannelsMessage>(payloadText, MqttJsonSerializerOptions);
+			if (channels is not null)
+			{
+				Dispatcher.UIThread.Post(() => ApplyModuleChannels(channels));
+			}
+
+			return true;
+		}
+
 		return true;
 	}
 
@@ -3779,7 +3816,11 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 	private bool _isRadioSelectionOverlayVisible;
 	private bool _isChannelSelectionOverlayVisible;
 	private IReadOnlyList<RadioSelectionItem> _radioSelectionItems = Array.Empty<RadioSelectionItem>();
+	private IReadOnlyList<ChannelSelectionItem> _channelSelectionItems = Array.Empty<ChannelSelectionItem>();
 	private readonly Dictionary<string, string> _radioChannelLabels = new(StringComparer.OrdinalIgnoreCase);
+
+	// Retained per-radio channel lists (myforce/module/<id>/channels, §3.11) feeding the CHANNELS picker.
+	private readonly Dictionary<string, IReadOnlyList<ChannelEntryMessage>> _radioChannels = new(StringComparer.OrdinalIgnoreCase);
 
 	// The single operator-designated talk radio (TALK button); future PTT triggers key this one.
 	private string _talkRadioId = string.Empty;
@@ -3960,15 +4001,73 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 		PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(RadioListenBrush)));
 	}
 
-	// CHANNELS button (replaces MONITOR): open the channel-selection page for the radio.
-	// The channel list source is radio-type/plugin specific and not wired yet (TODO).
+	// CHANNELS button (replaces MONITOR): open the channel-selection page for the viewed radio, populated
+	// from its retained channel list (§3.11).
 	public void OpenChannelSelection()
 	{
+		RebuildChannelSelectionItems();
 		PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(ChannelSelectionRadioTitle)));
 		IsChannelSelectionOverlayVisible = true;
 	}
 
 	public void CloseChannelSelection() => IsChannelSelectionOverlayVisible = false;
+
+	// The channels offered in the CHANNELS picker for the currently-viewed radio.
+	public IReadOnlyList<ChannelSelectionItem> ChannelSelectionItems
+	{
+		get => _channelSelectionItems;
+		private set => SetProperty(ref _channelSelectionItems, value);
+	}
+
+	public bool HasChannelSelectionItems => ChannelSelectionItems.Count > 0;
+
+	// Apply a retained channel list and refresh the picker if it is for the radio currently being viewed.
+	private void ApplyModuleChannels(ModuleChannelsMessage channels)
+	{
+		_radioChannels[channels.Id] = channels.Channels ?? Array.Empty<ChannelEntryMessage>();
+		if (string.Equals(channels.Id, _selectedRadioId, StringComparison.OrdinalIgnoreCase))
+		{
+			RebuildChannelSelectionItems();
+		}
+	}
+
+	// Rebuild the picker rows from the viewed radio's retained channel list.
+	private void RebuildChannelSelectionItems()
+	{
+		var channels = _radioChannels.TryGetValue(_selectedRadioId, out var list) ? list : Array.Empty<ChannelEntryMessage>();
+		ChannelSelectionItems = channels
+			.Select(channel => new ChannelSelectionItem(channel.Index, channel.Label, this))
+			.ToArray();
+		PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(HasChannelSelectionItems)));
+	}
+
+	// CHANNELS picker row tapped: command the viewed radio to that channel (if it supports channel_select),
+	// reflect it locally, and close the picker (§3.11 / §5.3).
+	public void SelectChannel(int index, string label)
+	{
+		if (string.IsNullOrWhiteSpace(_selectedRadioId))
+		{
+			return;
+		}
+
+		var radio = RadioRuntimeEntries.FirstOrDefault(entry => string.Equals(entry.RadioId, _selectedRadioId, StringComparison.OrdinalIgnoreCase));
+		var supportsChannelSelect = radio?.Capabilities.Controls?.Contains("channel_select", StringComparer.OrdinalIgnoreCase) ?? false;
+		if (supportsChannelSelect)
+		{
+			var envelope = CreateCommandEnvelope(isAdminCommand: false, includeMessageId: true);
+			var command = new RadioChannelSelectCommandMessage(envelope.V, envelope.Ts, envelope.MsgId, envelope.Auth, index);
+			_ = PublishCommandAsync($"myforce/module/{_selectedRadioId}/cmd/channel_select", command);
+		}
+
+		// Optimistically reflect the new channel; the radio's reported state will confirm/replace it.
+		_radioChannelLabels[_selectedRadioId] = label;
+		CurrentRadioChannel = label;
+		PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(SelectedRadioChannelLabel)));
+		RebuildPatrolRadioChannelList();
+		RebuildRadioSelectionItems();
+		RefreshTalkRadioDisplay();
+		IsChannelSelectionOverlayVisible = false;
+	}
 
 	// Volume up/down on the radio page reuse the master output volume for now.
 	public void RadioVolumeUp() => IncreaseMasterVolume();
