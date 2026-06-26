@@ -1113,10 +1113,12 @@
                              / EXT AUDIO / SCAN controls. SELECT opens the radio picker; CHANNELS
                              (replaces MONITOR) opens the channel page. -->
                         <Border Classes="panel" Width="916" Height="637" IsVisible="{Binding IsRadioContentVisible}" Padding="24">
-                            <Grid Width="868" Height="589" ColumnDefinitions="430,*" ColumnSpacing="12">
+                            <Grid Width="868" Height="589" RowDefinitions="497,80" RowSpacing="12">
 
-                                <!-- LEFT: radio status, presets, volume -->
-                                <Grid Grid.Column="0" Width="430" Height="589" RowDefinitions="210,250,*" RowSpacing="12">
+                              <Grid Grid.Row="0" Width="868" Height="497" ColumnDefinitions="430,*" ColumnSpacing="12">
+
+                                <!-- LEFT: radio status, presets, volume (presets shrunk, volume under) -->
+                                <Grid Grid.Column="0" Width="430" Height="497" RowDefinitions="210,170,*" RowSpacing="12">
 
                                     <!-- Radio status + VU meter + TX/RX. TX is red while transmitting,
                                          RX is blue while receiving; the bar is the VU meter. -->
@@ -1142,10 +1144,10 @@
                                         </Grid>
                                     </Border>
 
-                                    <!-- CHANNEL PRESETS -->
-                                    <Border Grid.Row="1" Classes="panel" Width="430" Height="250" Padding="10">
-                                        <Grid RowDefinitions="28,*" RowSpacing="8">
-                                            <TextBlock Classes="white" FontSize="18" TextAlignment="Center" Text="CHANNEL PRESETS" />
+                                    <!-- CHANNEL PRESETS (shrunk) -->
+                                    <Border Grid.Row="1" Classes="panel" Width="430" Height="170" Padding="10">
+                                        <Grid RowDefinitions="26,*" RowSpacing="6">
+                                            <TextBlock Classes="white" FontSize="16" TextAlignment="Center" Text="CHANNEL PRESETS" />
                                             <Grid Grid.Row="1" ColumnDefinitions="*,*" RowDefinitions="*,*" ColumnSpacing="8" RowSpacing="8">
                                                 <Border Grid.Row="0" Grid.Column="0" Classes="buttonFrame" PointerPressed="OnRadioPresetPressed" />
                                                 <Border Grid.Row="0" Grid.Column="1" Classes="buttonFrame" PointerPressed="OnRadioPresetPressed" />
@@ -1155,10 +1157,10 @@
                                         </Grid>
                                     </Border>
 
-                                    <!-- VOLUME (reuses master output volume) -->
-                                    <Border Grid.Row="2" Classes="panel" Width="430" Height="105" Padding="10">
-                                        <Grid RowDefinitions="28,*" RowSpacing="6">
-                                            <TextBlock Classes="white" FontSize="18" TextAlignment="Center" Text="VOLUME" />
+                                    <!-- VOLUME, directly under the presets (reuses master output volume) -->
+                                    <Border Grid.Row="2" Classes="panel" Width="430" Padding="10">
+                                        <Grid RowDefinitions="26,*" RowSpacing="6">
+                                            <TextBlock Classes="white" FontSize="16" TextAlignment="Center" Text="VOLUME" />
                                             <Grid Grid.Row="1" ColumnDefinitions="*,*" ColumnSpacing="8">
                                                 <Border Grid.Column="0" Classes="buttonFrame" PointerPressed="OnRadioVolumeUpPressed">
                                                     <Viewbox Stretch="Uniform"><TextBlock Classes="white" TextAlignment="Center" VerticalAlignment="Center" Text="▲" /></Viewbox>
@@ -1171,8 +1173,8 @@
                                     </Border>
                                 </Grid>
 
-                                <!-- RIGHT: selection / channel / channels / ext audio / scan -->
-                                <Grid Grid.Column="1" Width="426" Height="589" RowDefinitions="150,*,110" RowSpacing="12">
+                                <!-- RIGHT: selection, then CHANNEL + shrunk GEO AREA/NUIS/CHANNELS with EXT AUDIO/SCAN under -->
+                                <Grid Grid.Column="1" Width="426" Height="497" RowDefinitions="150,*" RowSpacing="12">
 
                                     <!-- RADIO SELECTION -->
                                     <Border Grid.Row="0" Classes="panel" Width="426" Height="150" Padding="10">
@@ -1192,8 +1194,9 @@
                                         </Grid>
                                     </Border>
 
-                                    <!-- CHANNEL up/down | GEO AREA + NUIS | CHANNELS (was MONITOR) -->
-                                    <Grid Grid.Row="1" Width="426" ColumnDefinitions="*,*,*" ColumnSpacing="8">
+                                    <!-- CHANNEL up/down (left) + the shrunk GEO AREA / NUIS / CHANNELS row with
+                                         EXT AUDIO / SCAN beneath them (right). -->
+                                    <Grid Grid.Row="1" Width="426" ColumnDefinitions="120,*" ColumnSpacing="8">
                                         <Border Grid.Column="0" Classes="panel" Padding="8">
                                             <Grid RowDefinitions="24,*,*" RowSpacing="6">
                                                 <TextBlock Classes="white" FontSize="15" TextAlignment="Center" Text="CHANNEL" />
@@ -1205,34 +1208,57 @@
                                                 </Border>
                                             </Grid>
                                         </Border>
-                                        <Grid Grid.Column="1" RowDefinitions="*,*" RowSpacing="8">
-                                            <Border Grid.Row="0" Classes="buttonFrame" PointerPressed="OnRadioGeoAreaPressed">
-                                                <Viewbox Stretch="Uniform"><TextBlock Classes="white" TextAlignment="Center" VerticalAlignment="Center" Text="GEO AREA" /></Viewbox>
-                                            </Border>
-                                            <Border Grid.Row="1" Classes="buttonFrame" PointerPressed="OnRadioNuisPressed">
-                                                <Viewbox Stretch="Uniform"><TextBlock Classes="white" TextAlignment="Center" VerticalAlignment="Center" Text="NUIS" /></Viewbox>
-                                            </Border>
-                                        </Grid>
-                                        <Border Grid.Column="2" Classes="panel" Padding="8">
-                                            <Grid RowDefinitions="24,*" RowSpacing="6">
-                                                <TextBlock Classes="white" FontSize="15" TextAlignment="Center" Text="CHANNELS" />
-                                                <Border Grid.Row="1" Classes="buttonFrame" PointerPressed="OnRadioChannelsPressed">
-                                                    <Viewbox Stretch="Uniform"><TextBlock Classes="white" TextAlignment="Center" VerticalAlignment="Center" Text="SELECT" /></Viewbox>
+                                        <Grid Grid.Column="1" RowDefinitions="68,68" RowSpacing="8" VerticalAlignment="Top">
+                                            <!-- Shrunk row: GEO AREA | NUIS | CHANNELS -->
+                                            <Grid Grid.Row="0" ColumnDefinitions="*,*,*" ColumnSpacing="8">
+                                                <Border Grid.Column="0" Classes="buttonFrame" PointerPressed="OnRadioGeoAreaPressed">
+                                                    <Viewbox Stretch="Uniform" Margin="4"><TextBlock Classes="white" TextAlignment="Center" VerticalAlignment="Center" Text="GEO AREA" /></Viewbox>
+                                                </Border>
+                                                <Border Grid.Column="1" Classes="buttonFrame" PointerPressed="OnRadioNuisPressed">
+                                                    <Viewbox Stretch="Uniform" Margin="4"><TextBlock Classes="white" TextAlignment="Center" VerticalAlignment="Center" Text="NUIS" /></Viewbox>
+                                                </Border>
+                                                <Border Grid.Column="2" Classes="buttonFrame" PointerPressed="OnRadioChannelsPressed">
+                                                    <Viewbox Stretch="Uniform" Margin="4"><TextBlock Classes="white" TextAlignment="Center" VerticalAlignment="Center" Text="CHANNELS" /></Viewbox>
                                                 </Border>
                                             </Grid>
-                                        </Border>
-                                    </Grid>
-
-                                    <!-- EXT AUDIO + SCAN -->
-                                    <Grid Grid.Row="2" Width="426" Height="110" ColumnDefinitions="*,*,*" ColumnSpacing="8">
-                                        <Border Grid.Column="0" Classes="buttonFrame" PointerPressed="OnRadioExtAudioPressed">
-                                            <Viewbox Stretch="Uniform"><TextBlock Classes="white" TextAlignment="Center" VerticalAlignment="Center" Text="EXT AUDIO" /></Viewbox>
-                                        </Border>
-                                        <Border Grid.Column="1" Classes="buttonFrame" PointerPressed="OnRadioScanPressed">
-                                            <Viewbox Stretch="Uniform"><TextBlock Classes="white" TextAlignment="Center" VerticalAlignment="Center" Text="SCAN" /></Viewbox>
-                                        </Border>
+                                            <!-- EXT AUDIO | SCAN under them -->
+                                            <Grid Grid.Row="1" ColumnDefinitions="*,*,*" ColumnSpacing="8">
+                                                <Border Grid.Column="0" Classes="buttonFrame" PointerPressed="OnRadioExtAudioPressed">
+                                                    <Viewbox Stretch="Uniform" Margin="4"><TextBlock Classes="white" TextAlignment="Center" VerticalAlignment="Center" Text="EXT AUDIO" /></Viewbox>
+                                                </Border>
+                                                <Border Grid.Column="1" Classes="buttonFrame" PointerPressed="OnRadioScanPressed">
+                                                    <Viewbox Stretch="Uniform" Margin="4"><TextBlock Classes="white" TextAlignment="Center" VerticalAlignment="Center" Text="SCAN" /></Viewbox>
+                                                </Border>
+                                            </Grid>
+                                        </Grid>
                                     </Grid>
                                 </Grid>
+                              </Grid>
+
+                              <!-- Module function buttons (§3.10, v2.8): up to 24 declared by the selected
+                                   radio, rendered 10 per row. Press publishes cmd/button; active/label
+                                   update live from module state. -->
+                              <Border Grid.Row="1" Classes="panel" Width="868" Height="80" Padding="6">
+                                  <ItemsControl ItemsSource="{Binding RadioFunctionButtons}">
+                                      <ItemsControl.ItemsPanel>
+                                          <ItemsPanelTemplate>
+                                              <UniformGrid Columns="10" />
+                                          </ItemsPanelTemplate>
+                                      </ItemsControl.ItemsPanel>
+                                      <ItemsControl.ItemTemplate>
+                                          <DataTemplate>
+                                              <Grid Margin="3">
+                                                  <Border Classes="buttonFrame" PointerPressed="OnRadioFunctionButtonPressed" IsEnabled="{Binding IsEnabled}" IsVisible="{Binding !IsActive}">
+                                                      <Viewbox Stretch="Uniform" Margin="2"><TextBlock Classes="white" TextAlignment="Center" VerticalAlignment="Center" Text="{Binding Label}" /></Viewbox>
+                                                  </Border>
+                                                  <Border Classes="buttonFrame active" PointerPressed="OnRadioFunctionButtonPressed" IsEnabled="{Binding IsEnabled}" IsVisible="{Binding IsActive}">
+                                                      <Viewbox Stretch="Uniform" Margin="2"><TextBlock Classes="white" TextAlignment="Center" VerticalAlignment="Center" Text="{Binding Label}" /></Viewbox>
+                                                  </Border>
+                                              </Grid>
+                                          </DataTemplate>
+                                      </ItemsControl.ItemTemplate>
+                                  </ItemsControl>
+                              </Border>
                             </Grid>
                         </Border>
 

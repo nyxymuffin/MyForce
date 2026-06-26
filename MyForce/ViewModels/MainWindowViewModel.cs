@@ -205,6 +205,75 @@ public sealed class ChannelCenterListItem
 	public void Clear() => _owner.ClearGeoAreaCenter(Channel);
 }
 
+/// <summary>
+/// One module-declared function button (§3.10, v2.8) rendered on the radio page. Label /
+/// active / enabled update live from the module state's "buttons" map, so it carries INPC.
+/// </summary>
+public sealed class RadioFunctionButton : INotifyPropertyChanged
+{
+	private readonly MainWindowViewModel _owner;
+	private string _label;
+	private bool _isActive;
+	private bool _isEnabled = true;
+
+	public RadioFunctionButton(string id, string label, bool opensMenu, MainWindowViewModel owner)
+	{
+		Id = id;
+		_label = label;
+		OpensMenu = opensMenu;
+		_owner = owner;
+	}
+
+	public string Id { get; }
+
+	public bool OpensMenu { get; }
+
+	public string Label
+	{
+		get => _label;
+		set
+		{
+			if (!string.Equals(_label, value, StringComparison.Ordinal))
+			{
+				_label = value;
+				Raise(nameof(Label));
+			}
+		}
+	}
+
+	public bool IsActive
+	{
+		get => _isActive;
+		set
+		{
+			if (_isActive != value)
+			{
+				_isActive = value;
+				Raise(nameof(IsActive));
+			}
+		}
+	}
+
+	public bool IsEnabled
+	{
+		get => _isEnabled;
+		set
+		{
+			if (_isEnabled != value)
+			{
+				_isEnabled = value;
+				Raise(nameof(IsEnabled));
+			}
+		}
+	}
+
+	public void Press() => _owner.PressRadioFunctionButton(Id);
+
+	public event PropertyChangedEventHandler? PropertyChanged;
+
+	private void Raise(string name) => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
+}
+
 public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 {
 	private const int PresetCount = 6;
@@ -2248,6 +2317,12 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 		{
 			RadioVuLevel = Math.Clamp((rssiDbm + 120) * 100.0 / 80.0, 0, 100);
 		}
+
+		// Live function-button state (active/enabled/label) for the selected radio (§3.10.1).
+		if (state.Buttons is not null && string.Equals(state.Id, _selectedRadioId, StringComparison.OrdinalIgnoreCase))
+		{
+			ApplyFunctionButtonState(state.Buttons);
+		}
 	}
 
 	/// <summary>
@@ -2257,6 +2332,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 	{
 		ArgumentNullException.ThrowIfNull(state);
 		RadioRuntimeEntries = state.Radios ?? Array.Empty<RadioRuntimeEntryMessage>();
+		RebuildRadioFunctionButtons();   // a registry update may add/replace declared buttons
 		RaiseAdminNetworkStateChanged();
 	}
 
@@ -2904,6 +2980,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 		_selectedRadioDisplayName = string.IsNullOrWhiteSpace(match?.DisplayName) ? radioId : match!.DisplayName;
 		PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(RadioPageTitle)));
 		PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(ChannelSelectionRadioTitle)));
+		RebuildRadioFunctionButtons();
 		PublishConsoleSelect(radioId);
 		IsRadioSelectionOverlayVisible = false;
 	}
@@ -2939,6 +3016,61 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 		var envelope = CreateCommandEnvelope(isAdminCommand: false, includeMessageId: false);
 		var command = new ConsoleSelectCommandMessage(envelope.V, envelope.Ts, envelope.MsgId, envelope.Auth, radioId);
 		_ = PublishCommandAsync(InternetRadioMqttTopics.ConsoleSelectCommandTopic, command);
+	}
+
+	// --- Function buttons (§3.10, v2.8) -----------------------------------------
+	// The selected radio declares up to 24 function buttons in its registry; the UI
+	// renders them and a press publishes cmd/button. Live label/active/enabled ride in
+	// the module state's "buttons" map.
+
+	private const string ConsoleId = "vip";   // this console's id on the bus (§5.4)
+
+	private IReadOnlyList<RadioFunctionButton> _radioFunctionButtons = Array.Empty<RadioFunctionButton>();
+
+	public IReadOnlyList<RadioFunctionButton> RadioFunctionButtons
+	{
+		get => _radioFunctionButtons;
+		private set => SetProperty(ref _radioFunctionButtons, value);
+	}
+
+	// Pressing a function button publishes module/<id>/cmd/button { button_id, console_id }.
+	// A one-shot button acts; a menu button (opens_menu) makes the module push a menu (§3.10.3).
+	public void PressRadioFunctionButton(string buttonId)
+	{
+		if (string.IsNullOrWhiteSpace(_selectedRadioId) || string.IsNullOrWhiteSpace(buttonId))
+		{
+			return;
+		}
+
+		var envelope = CreateCommandEnvelope(isAdminCommand: false, includeMessageId: true);
+		var command = new ButtonPressCommandMessage(envelope.V, envelope.Ts, envelope.MsgId, buttonId, ConsoleId);
+		_ = PublishCommandAsync($"myforce/module/{_selectedRadioId}/cmd/button", command);
+	}
+
+	// Rebuild the function-button panel from the selected radio's declared buttons (§3.10.1).
+	private void RebuildRadioFunctionButtons()
+	{
+		var match = RadioRuntimeEntries.FirstOrDefault(radio => string.Equals(radio.RadioId, _selectedRadioId, StringComparison.OrdinalIgnoreCase));
+		var declared = match?.Capabilities?.Buttons;
+		RadioFunctionButtons = declared is null
+			? Array.Empty<RadioFunctionButton>()
+			: declared.Take(24).Select(button => new RadioFunctionButton(button.Id, button.Label, button.OpensMenu, this)).ToArray();
+	}
+
+	// Apply live per-button state (label / active / enabled) from the module state map.
+	private void ApplyFunctionButtonState(IReadOnlyDictionary<string, FunctionButtonStateMessage> buttonStates)
+	{
+		foreach (var button in RadioFunctionButtons)
+		{
+			if (!buttonStates.TryGetValue(button.Id, out var state))
+			{
+				continue;
+			}
+
+			if (state.Active is bool active) { button.IsActive = active; }
+			if (state.Enabled is bool enabled) { button.IsEnabled = enabled; }
+			if (!string.IsNullOrWhiteSpace(state.Label)) { button.Label = state.Label!; }
+		}
 	}
 
 	// --- Channel centers (GEO AREA) + patrol proximity list ---------------------

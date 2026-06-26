@@ -166,6 +166,17 @@ internal sealed record ConsoleSelectCommandMessage(
 	[property: JsonPropertyName("target")] string Target);
 
 /// <summary>
+/// UI-published function-button press (myforce/module/&lt;id&gt;/cmd/button, §5.12, v2.8):
+/// a module-declared button was pressed on this console.
+/// </summary>
+internal sealed record ButtonPressCommandMessage(
+	int V,
+	DateTimeOffset Ts,
+	[property: JsonPropertyName("msg_id")] string? MsgId,
+	[property: JsonPropertyName("button_id")] string ButtonId,
+	[property: JsonPropertyName("console_id")] string ConsoleId);
+
+/// <summary>
 /// UI-published momentary pulse command for the GPIO Relay Controller
 /// (myforce/module/gpio.relay1/cmd/pulse, §5.2). The firmware energises the named
 /// relay (Function) for Ms milliseconds then auto-releases it, simulating a button
@@ -290,7 +301,26 @@ public sealed record RadioCapabilitiesMessage(
 	IReadOnlyList<string> Keying,
 	IReadOnlyList<string> Detect,
 	bool ProvidesAudio,
-	IReadOnlyList<string> Controls);
+	IReadOnlyList<string> Controls,
+	// Up to 24 module-declared function buttons the UI renders as a panel (§3.10, v2.8).
+	IReadOnlyList<FunctionButtonMessage>? Buttons = null);
+
+/// <summary>A module-declared function button (§3.10.1). opens_menu = true means the press
+/// opens a module menu; false = a one-shot action.</summary>
+public sealed record FunctionButtonMessage(
+	string Id,
+	string Label,
+	[property: JsonPropertyName("opens_menu")] bool OpensMenu = false,
+	string? Icon = null,
+	int? Group = null,
+	int? Order = null);
+
+/// <summary>Optional live per-button state carried in the module state's "buttons" map,
+/// keyed by button id (§3.10.1): enabled, active/toggled, and a dynamic label.</summary>
+public sealed record FunctionButtonStateMessage(
+	bool? Enabled = null,
+	bool? Active = null,
+	string? Label = null);
 
 public sealed record RadioInstanceConfigMessage(
 	RadioKeyingConfigMessage Keying,
@@ -358,7 +388,9 @@ internal sealed record ModuleRadioStateSpecMessage(
 	ChannelInfoMessage? Channel,
 	ZoneInfoMessage? Zone,
 	string? Mode,
-	SignalInfoMessage? Signal);
+	SignalInfoMessage? Signal,
+	// Live per-button state keyed by button id (§3.10.1), e.g. active/enabled/label.
+	[property: JsonPropertyName("buttons")] IReadOnlyDictionary<string, FunctionButtonStateMessage>? Buttons = null);
 
 internal sealed record ChannelInfoMessage(int Index, string? Label);
 

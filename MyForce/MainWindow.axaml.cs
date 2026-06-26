@@ -400,6 +400,15 @@ public partial class MainWindow : Window
 		}
 	}
 
+	// Module function button (§3.10, v2.8): publish the press for the selected radio.
+	private void OnRadioFunctionButtonPressed(object? sender, PointerPressedEventArgs e)
+	{
+		if (sender is Control { DataContext: RadioFunctionButton button })
+		{
+			button.Press();
+		}
+	}
+
 	private void OnRadioNuisPressed(object? sender, PointerPressedEventArgs e) { }
 
 	private void OnRadioExtAudioPressed(object? sender, PointerPressedEventArgs e) { }
