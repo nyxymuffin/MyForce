@@ -1282,6 +1282,49 @@
                             </Border>
                         </Border>
 
+                        <!-- GEO AREA overlay: set/clear per-channel Lat/Long centers for the selected
+                             radio. Without a full channel list, "SET CENTER HERE" stamps the radio's
+                             CURRENT channel at the current location; configured centers list below
+                             with a CLEAR each. Centers feed the patrol PROXIMITY LIST. -->
+                        <Border Width="916" Height="637" IsVisible="{Binding IsGeoAreaOverlayVisible}" Background="#CC000000" Padding="40">
+                            <Border Classes="panel" Padding="16">
+                                <Grid RowDefinitions="40,Auto,*,56" RowSpacing="12">
+                                    <TextBlock Classes="white" FontSize="24" Text="{Binding GeoAreaTitle}" />
+                                    <Grid Grid.Row="1" ColumnDefinitions="*,220" ColumnSpacing="12">
+                                        <TextBlock Grid.Column="0" Classes="white" FontSize="16" VerticalAlignment="Center" TextWrapping="Wrap" Text="{Binding GeoAreaCurrentChannelLabel}" />
+                                        <Border Grid.Column="1" Classes="buttonFrame" Height="56" PointerPressed="OnGeoAreaSetHerePressed">
+                                            <Viewbox Stretch="Uniform"><TextBlock Classes="white" TextAlignment="Center" VerticalAlignment="Center" Text="SET CENTER HERE" /></Viewbox>
+                                        </Border>
+                                    </Grid>
+                                    <Border Grid.Row="2" Classes="panel" Padding="8">
+                                        <Grid RowDefinitions="26,*" RowSpacing="6">
+                                            <TextBlock Classes="white" FontSize="16" Text="CONFIGURED CENTERS" />
+                                            <ScrollViewer Grid.Row="1" HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto">
+                                                <ItemsControl ItemsSource="{Binding GeoAreaCenters}">
+                                                    <ItemsControl.ItemTemplate>
+                                                        <DataTemplate>
+                                                            <Border Classes="panel" Height="56" Margin="0,0,0,6" Padding="10">
+                                                                <Grid ColumnDefinitions="*,*,120">
+                                                                    <TextBlock Grid.Column="0" Classes="white" FontSize="16" VerticalAlignment="Center" Text="{Binding Channel}" />
+                                                                    <TextBlock Grid.Column="1" Classes="white" FontSize="14" VerticalAlignment="Center" Text="{Binding CoordsLabel}" />
+                                                                    <Border Grid.Column="2" Classes="buttonFrame" PointerPressed="OnGeoAreaCenterClearPressed">
+                                                                        <Viewbox Stretch="Uniform"><TextBlock Classes="white" TextAlignment="Center" VerticalAlignment="Center" Text="CLEAR" /></Viewbox>
+                                                                    </Border>
+                                                                </Grid>
+                                                            </Border>
+                                                        </DataTemplate>
+                                                    </ItemsControl.ItemTemplate>
+                                                </ItemsControl>
+                                            </ScrollViewer>
+                                        </Grid>
+                                    </Border>
+                                    <Border Grid.Row="3" Classes="buttonFrame" Width="160" HorizontalAlignment="Right" PointerPressed="OnGeoAreaClosePressed">
+                                        <Viewbox Stretch="Uniform"><TextBlock Classes="white" TextAlignment="Center" VerticalAlignment="Center" Text="CLOSE" /></Viewbox>
+                                    </Border>
+                                </Grid>
+                            </Border>
+                        </Border>
+
                         <Border Classes="panel"
                                 Width="916"
                                 Height="637"

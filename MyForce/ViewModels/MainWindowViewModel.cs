@@ -178,6 +178,33 @@ public sealed class RadioSelectionItem
 	public void Select() => _owner.SelectRadioTarget(RadioId);
 }
 
+/// <summary>
+/// One configured channel center shown in the GEO AREA overlay: the channel, its
+/// Lat/Long, and the action that clears it (centers are optional, §radio-page-semantics).
+/// </summary>
+public sealed class ChannelCenterListItem
+{
+	private readonly MainWindowViewModel _owner;
+
+	public ChannelCenterListItem(string channel, double latitude, double longitude, MainWindowViewModel owner)
+	{
+		Channel = channel;
+		Latitude = latitude;
+		Longitude = longitude;
+		_owner = owner;
+	}
+
+	public string Channel { get; }
+
+	public double Latitude { get; }
+
+	public double Longitude { get; }
+
+	public string CoordsLabel => string.Create(CultureInfo.InvariantCulture, $"{Latitude:0.0000}, {Longitude:0.0000}");
+
+	public void Clear() => _owner.ClearGeoAreaCenter(Channel);
+}
+
 public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 {
 	private const int PresetCount = 6;
@@ -220,6 +247,10 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 	private readonly MqttConnectionService _mqttConnectionService;
 
 	private readonly What3WordsService _what3WordsService;
+
+	// Persisted per-channel geographic centers (set via radio GEO AREA) that drive the
+	// patrol PROXIMITY LIST. Groundwork: populated once the per-radio channel list exists.
+	private readonly ChannelCenterStore _channelCenterStore = new();
 
 	private double _locationLatitude = 30.5422d;
 
@@ -434,6 +465,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 
 			PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(LocationValue)));
 			_ = RefreshWhat3WordsAsync();
+			RefreshProximityList();
 		}
 	}
 
@@ -449,6 +481,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 
 			PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(LocationValue)));
 			_ = RefreshWhat3WordsAsync();
+			RefreshProximityList();
 		}
 	}
 
@@ -2906,6 +2939,124 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 		var envelope = CreateCommandEnvelope(isAdminCommand: false, includeMessageId: false);
 		var command = new ConsoleSelectCommandMessage(envelope.V, envelope.Ts, envelope.MsgId, envelope.Auth, radioId);
 		_ = PublishCommandAsync(InternetRadioMqttTopics.ConsoleSelectCommandTopic, command);
+	}
+
+	// --- Channel centers (GEO AREA) + patrol proximity list ---------------------
+	// Groundwork ahead of the per-radio channel list: the GEO AREA screen will call
+	// SetChannelCenter/ClearChannelCenter per channel; RefreshProximityList ranks all
+	// configured centers by distance from the current location into the proximity slots.
+
+	/// <summary>The centers configured for a radio (for the GEO AREA channel-centers screen).</summary>
+	public IReadOnlyList<ChannelCenter> GetChannelCentersForRadio(string radioId) => _channelCenterStore.GetForRadio(radioId);
+
+	/// <summary>Sets a channel's geographic center and re-ranks the proximity list.</summary>
+	public void SetChannelCenter(string radioId, string channel, double latitude, double longitude)
+	{
+		_channelCenterStore.Set(radioId, channel, latitude, longitude);
+		RefreshProximityList();
+	}
+
+	/// <summary>Clears a channel's center (centers are optional) and re-ranks the proximity list.</summary>
+	public void ClearChannelCenter(string radioId, string channel)
+	{
+		_channelCenterStore.Clear(radioId, channel);
+		RefreshProximityList();
+	}
+
+	// Fill the patrol PROXIMITY LIST with the channel centers nearest the current location.
+	// When no centers are configured yet, the existing slot contents are left untouched.
+	private void RefreshProximityList()
+	{
+		var centers = _channelCenterStore.GetAll();
+		if (centers.Count == 0 || double.IsNaN(LocationLatitude) || double.IsNaN(LocationLongitude))
+		{
+			return;
+		}
+
+		var nearest = ProximityRanker.Nearest(LocationLatitude, LocationLongitude, centers, 4);
+		ProximityChannel1 = ProximitySlotLabel(nearest, 0);
+		ProximityChannel2 = ProximitySlotLabel(nearest, 1);
+		ProximityChannel3 = ProximitySlotLabel(nearest, 2);
+		ProximityChannel4 = ProximitySlotLabel(nearest, 3);
+	}
+
+	private static string ProximitySlotLabel(IReadOnlyList<RankedChannelCenter> nearest, int index)
+		=> index < nearest.Count ? nearest[index].Center.Channel : string.Empty;
+
+	// --- GEO AREA overlay -------------------------------------------------------
+	// Lets the operator drop a Lat/Long center for the selected radio's CURRENT channel
+	// at the present location (works without a full channel list), and view/clear the
+	// centers already configured for that radio.
+
+	private bool _isGeoAreaOverlayVisible;
+	private IReadOnlyList<ChannelCenterListItem> _geoAreaCenters = Array.Empty<ChannelCenterListItem>();
+
+	public bool IsGeoAreaOverlayVisible
+	{
+		get => _isGeoAreaOverlayVisible;
+		private set => SetProperty(ref _isGeoAreaOverlayVisible, value);
+	}
+
+	public IReadOnlyList<ChannelCenterListItem> GeoAreaCenters
+	{
+		get => _geoAreaCenters;
+		private set => SetProperty(ref _geoAreaCenters, value);
+	}
+
+	public string GeoAreaTitle => $"GEO AREA: {_selectedRadioDisplayName}";
+
+	// What pressing "SET CENTER HERE" will do: stamp the current channel at this location.
+	public string GeoAreaCurrentChannelLabel => string.IsNullOrWhiteSpace(CurrentRadioChannel)
+		? "No current channel reported yet, select a radio / channel first."
+		: $"Set center for current channel \"{CurrentRadioChannel}\" at this location.";
+
+	// GEO AREA button (radio page): open the channel-centers overlay for the selected radio.
+	public void OpenGeoArea()
+	{
+		RebuildGeoAreaCenters();
+		PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(GeoAreaTitle)));
+		PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(GeoAreaCurrentChannelLabel)));
+		IsGeoAreaOverlayVisible = true;
+	}
+
+	public void CloseGeoArea() => IsGeoAreaOverlayVisible = false;
+
+	// Drop a center for the selected radio's current channel at the current GPS location.
+	public void SetCurrentChannelCenterHere()
+	{
+		if (string.IsNullOrWhiteSpace(_selectedRadioId) || string.IsNullOrWhiteSpace(CurrentRadioChannel))
+		{
+			return;
+		}
+
+		if (double.IsNaN(LocationLatitude) || double.IsNaN(LocationLongitude))
+		{
+			return;
+		}
+
+		SetChannelCenter(_selectedRadioId, CurrentRadioChannel, LocationLatitude, LocationLongitude);
+		RebuildGeoAreaCenters();
+	}
+
+	// Clear one channel's center (invoked from a list row) for the selected radio.
+	public void ClearGeoAreaCenter(string channel)
+	{
+		if (string.IsNullOrWhiteSpace(_selectedRadioId))
+		{
+			return;
+		}
+
+		ClearChannelCenter(_selectedRadioId, channel);
+		RebuildGeoAreaCenters();
+	}
+
+	private void RebuildGeoAreaCenters()
+	{
+		GeoAreaCenters = string.IsNullOrWhiteSpace(_selectedRadioId)
+			? Array.Empty<ChannelCenterListItem>()
+			: GetChannelCentersForRadio(_selectedRadioId)
+				.Select(center => new ChannelCenterListItem(center.Channel, center.Latitude, center.Longitude, this))
+				.ToArray();
 	}
 
 	// Camera REC button: pulse the GPIO controller's camera_record relay, flashing

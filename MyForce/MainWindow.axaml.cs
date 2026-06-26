@@ -382,7 +382,23 @@ public partial class MainWindow : Window
 
 	private void OnRadioChannelDownPressed(object? sender, PointerPressedEventArgs e) { }
 
-	private void OnRadioGeoAreaPressed(object? sender, PointerPressedEventArgs e) { }
+	// GEO AREA: open the channel-centers overlay for the selected radio.
+	private void OnRadioGeoAreaPressed(object? sender, PointerPressedEventArgs e)
+		=> _viewModel.OpenGeoArea();
+
+	private void OnGeoAreaClosePressed(object? sender, PointerPressedEventArgs e)
+		=> _viewModel.CloseGeoArea();
+
+	private void OnGeoAreaSetHerePressed(object? sender, PointerPressedEventArgs e)
+		=> _viewModel.SetCurrentChannelCenterHere();
+
+	private void OnGeoAreaCenterClearPressed(object? sender, PointerPressedEventArgs e)
+	{
+		if (sender is Control { DataContext: ChannelCenterListItem item })
+		{
+			item.Clear();
+		}
+	}
 
 	private void OnRadioNuisPressed(object? sender, PointerPressedEventArgs e) { }
 
