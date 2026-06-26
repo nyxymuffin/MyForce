@@ -205,9 +205,26 @@ public sealed class ChannelCenterListItem
 	public void Clear() => _owner.ClearGeoAreaCenter(Channel);
 }
 
+/// <summary>What an 8-slot radio button represents on the current page.</summary>
+public enum RadioButtonSlotKind
+{
+	/// <summary>Blank, non-interactive filler slot.</summary>
+	Empty,
+
+	/// <summary>A module-declared function button.</summary>
+	Function,
+
+	/// <summary>Navigation: go to the previous page.</summary>
+	PageBack,
+
+	/// <summary>Navigation: go to the next page.</summary>
+	PageNext,
+}
+
 /// <summary>
-/// One module-declared function button (§3.10, v2.8) rendered on the radio page. Label /
-/// active / enabled update live from the module state's "buttons" map, so it carries INPC.
+/// One slot in the 8-button radio panel (§3.10, v2.8). Usually a module-declared function button
+/// (Label / active / enabled update live from the module state's "buttons" map, hence INPC), but a
+/// slot can also be a page-back / page-next nav key or an empty filler when functions span pages.
 /// </summary>
 public sealed class RadioFunctionButton : INotifyPropertyChanged
 {
@@ -227,6 +244,18 @@ public sealed class RadioFunctionButton : INotifyPropertyChanged
 	public string Id { get; }
 
 	public bool OpensMenu { get; }
+
+	/// <summary>What this slot is (function vs nav vs empty). Function slots are the live master buttons.</summary>
+	public RadioButtonSlotKind Kind { get; init; } = RadioButtonSlotKind.Function;
+
+	/// <summary>Empty slots render blank and ignore presses.</summary>
+	public bool IsInteractive => Kind != RadioButtonSlotKind.Empty;
+
+	/// <summary>Show the normal (idle) button face: interactive and not toggled-active.</summary>
+	public bool ShowNormal => IsInteractive && !_isActive;
+
+	/// <summary>Show the active (highlighted) button face: interactive and toggled-active.</summary>
+	public bool ShowActive => IsInteractive && _isActive;
 
 	public string Label
 	{
@@ -250,6 +279,8 @@ public sealed class RadioFunctionButton : INotifyPropertyChanged
 			{
 				_isActive = value;
 				Raise(nameof(IsActive));
+				Raise(nameof(ShowNormal));
+				Raise(nameof(ShowActive));
 			}
 		}
 	}
@@ -267,7 +298,31 @@ public sealed class RadioFunctionButton : INotifyPropertyChanged
 		}
 	}
 
-	public void Press() => _owner.PressRadioFunctionButton(Id);
+	public void Press()
+	{
+		switch (Kind)
+		{
+			case RadioButtonSlotKind.PageBack:
+				_owner.RadioPageBack();
+				break;
+			case RadioButtonSlotKind.PageNext:
+				_owner.RadioPageNext();
+				break;
+			case RadioButtonSlotKind.Function:
+				_owner.PressRadioFunctionButton(Id);
+				break;
+		}
+	}
+
+	// Factories for the non-function slots.
+	public static RadioFunctionButton EmptySlot(MainWindowViewModel owner) =>
+		new(string.Empty, string.Empty, false, owner) { Kind = RadioButtonSlotKind.Empty, IsEnabled = false };
+
+	public static RadioFunctionButton BackSlot(MainWindowViewModel owner) =>
+		new("__back", "◀ BACK", false, owner) { Kind = RadioButtonSlotKind.PageBack };
+
+	public static RadioFunctionButton NextSlot(MainWindowViewModel owner) =>
+		new("__next", "NEXT ▶", false, owner) { Kind = RadioButtonSlotKind.PageNext };
 
 	public event PropertyChangedEventHandler? PropertyChanged;
 
@@ -3141,12 +3196,24 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 
 	private const string ConsoleId = "vip";   // this console's id on the bus (§5.4)
 
-	private IReadOnlyList<RadioFunctionButton> _radioFunctionButtons = Array.Empty<RadioFunctionButton>();
+	// Physical panel is 8 buttons. Up to 24 functions span pages: page 1 holds 7 functions
+	// (slot 8 = NEXT when more pages exist); later pages hold 6 (slot 1 = BACK, slot 8 = NEXT
+	// when still more). Page count is dynamic from the function count.
+	private const int RadioButtonSlots = 8;
+	private const int FunctionsOnFirstPage = 7;   // slots 1-7 (slot 8 = NEXT)
+	private const int FunctionsOnLaterPage = 6;   // slots 2-7 (slot 1 = BACK, slot 8 = NEXT)
 
-	public IReadOnlyList<RadioFunctionButton> RadioFunctionButtons
+	// Master live function buttons (declared by the selected radio); state updates land here.
+	private IReadOnlyList<RadioFunctionButton> _allFunctionButtons = Array.Empty<RadioFunctionButton>();
+	private int _radioPageIndex;
+
+	// The 8 slots rendered for the current page (functions + BACK/NEXT/empty fillers).
+	private IReadOnlyList<RadioFunctionButton> _radioButtonPage = Array.Empty<RadioFunctionButton>();
+
+	public IReadOnlyList<RadioFunctionButton> RadioButtonPage
 	{
-		get => _radioFunctionButtons;
-		private set => SetProperty(ref _radioFunctionButtons, value);
+		get => _radioButtonPage;
+		private set => SetProperty(ref _radioButtonPage, value);
 	}
 
 	// Pressing a function button publishes module/<id>/cmd/button { button_id, console_id }.
@@ -3163,20 +3230,102 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 		_ = PublishCommandAsync($"myforce/module/{_selectedRadioId}/cmd/button", command);
 	}
 
-	// Rebuild the function-button panel from the selected radio's declared buttons (§3.10.1).
+	public void RadioPageNext()
+	{
+		if (_radioPageIndex < RadioPageCount - 1)
+		{
+			_radioPageIndex++;
+			BuildRadioButtonPage();
+		}
+	}
+
+	public void RadioPageBack()
+	{
+		if (_radioPageIndex > 0)
+		{
+			_radioPageIndex--;
+			BuildRadioButtonPage();
+		}
+	}
+
+	// Total pages for the current function count: 1 if <= 7, else 1 + ceil((n - 7) / 6).
+	private int RadioPageCount
+	{
+		get
+		{
+			int n = _allFunctionButtons.Count;
+			return n <= FunctionsOnFirstPage ? 1 : 1 + (int)Math.Ceiling((n - FunctionsOnFirstPage) / (double)FunctionsOnLaterPage);
+		}
+	}
+
+	// Rebuild the master function buttons from the selected radio's declared buttons (§3.10.1).
 	private void RebuildRadioFunctionButtons()
 	{
 		var match = RadioRuntimeEntries.FirstOrDefault(radio => string.Equals(radio.RadioId, _selectedRadioId, StringComparison.OrdinalIgnoreCase));
 		var declared = match?.Capabilities?.Buttons;
-		RadioFunctionButtons = declared is null
+		_allFunctionButtons = declared is null
 			? Array.Empty<RadioFunctionButton>()
 			: declared.Take(24).Select(button => new RadioFunctionButton(button.Id, button.Label, button.OpensMenu, this)).ToArray();
+		_radioPageIndex = 0;
+		BuildRadioButtonPage();
+	}
+
+	// Lay out the 8 slots for the current page. Function slots reference the live master buttons
+	// so their active/label state stays current; BACK/NEXT/empty are filler slots.
+	private void BuildRadioButtonPage()
+	{
+		int total = _allFunctionButtons.Count;
+		var slots = new RadioFunctionButton[RadioButtonSlots];
+		for (int i = 0; i < RadioButtonSlots; i++)
+		{
+			slots[i] = RadioFunctionButton.EmptySlot(this);
+		}
+
+		int firstFunctionSlot;
+		int firstFunctionIndex;
+		int functionsThisPage;
+
+		if (_radioPageIndex == 0)
+		{
+			// Page 1: no BACK; functions fill slots 1-7.
+			firstFunctionSlot = 0;
+			firstFunctionIndex = 0;
+			functionsThisPage = FunctionsOnFirstPage;
+		}
+		else
+		{
+			slots[0] = RadioFunctionButton.BackSlot(this);
+			firstFunctionSlot = 1;
+			firstFunctionIndex = FunctionsOnFirstPage + ((_radioPageIndex - 1) * FunctionsOnLaterPage);
+			functionsThisPage = FunctionsOnLaterPage;
+		}
+
+		int placed = 0;
+		for (int j = 0; j < functionsThisPage; j++)
+		{
+			int idx = firstFunctionIndex + j;
+			if (idx >= total)
+			{
+				break;
+			}
+
+			slots[firstFunctionSlot + j] = _allFunctionButtons[idx];   // live master button
+			placed++;
+		}
+
+		// Slot 8 is NEXT when there are still functions beyond this page.
+		if (firstFunctionIndex + placed < total)
+		{
+			slots[RadioButtonSlots - 1] = RadioFunctionButton.NextSlot(this);
+		}
+
+		RadioButtonPage = slots;
 	}
 
 	// Apply live per-button state (label / active / enabled) from the module state map.
 	private void ApplyFunctionButtonState(IReadOnlyDictionary<string, FunctionButtonStateMessage> buttonStates)
 	{
-		foreach (var button in RadioFunctionButtons)
+		foreach (var button in _allFunctionButtons)
 		{
 			if (!buttonStates.TryGetValue(button.Id, out var state))
 			{

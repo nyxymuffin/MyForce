@@ -1241,22 +1241,25 @@
                               </Grid>
 
                               <!-- Module function buttons (§3.10, v2.8): up to 24 declared by the selected
-                                   radio, rendered 10 per row. Press publishes cmd/button; active/label
-                                   update live from module state. -->
+                                   radio across pages of an 8-button row. Page 1 = 7 functions + NEXT; later
+                                   pages = BACK + 6 functions + NEXT (NEXT only when more pages remain).
+                                   Press publishes cmd/button; active/label update live from module state. -->
                               <Border Grid.Row="1" Classes="panel" Width="868" Height="80" Padding="6">
-                                  <ItemsControl ItemsSource="{Binding RadioFunctionButtons}">
+                                  <ItemsControl ItemsSource="{Binding RadioButtonPage}">
                                       <ItemsControl.ItemsPanel>
                                           <ItemsPanelTemplate>
-                                              <UniformGrid Columns="10" />
+                                              <UniformGrid Columns="8" />
                                           </ItemsPanelTemplate>
                                       </ItemsControl.ItemsPanel>
                                       <ItemsControl.ItemTemplate>
                                           <DataTemplate>
                                               <Grid Margin="3">
-                                                  <Border Classes="buttonFrame" PointerPressed="OnRadioFunctionButtonPressed" IsEnabled="{Binding IsEnabled}" IsVisible="{Binding !IsActive}">
+                                                  <!-- Empty filler slot: occupies the cell so the row never re-packs. -->
+                                                  <Border Background="Transparent" IsVisible="{Binding !IsInteractive}" />
+                                                  <Border Classes="buttonFrame" PointerPressed="OnRadioFunctionButtonPressed" IsEnabled="{Binding IsEnabled}" IsVisible="{Binding ShowNormal}">
                                                       <Viewbox Stretch="Uniform" Margin="2"><TextBlock Classes="white" TextAlignment="Center" VerticalAlignment="Center" Text="{Binding Label}" /></Viewbox>
                                                   </Border>
-                                                  <Border Classes="buttonFrame active" PointerPressed="OnRadioFunctionButtonPressed" IsEnabled="{Binding IsEnabled}" IsVisible="{Binding IsActive}">
+                                                  <Border Classes="buttonFrame active" PointerPressed="OnRadioFunctionButtonPressed" IsEnabled="{Binding IsEnabled}" IsVisible="{Binding ShowActive}">
                                                       <Viewbox Stretch="Uniform" Margin="2"><TextBlock Classes="white" TextAlignment="Center" VerticalAlignment="Center" Text="{Binding Label}" /></Viewbox>
                                                   </Border>
                                               </Grid>
