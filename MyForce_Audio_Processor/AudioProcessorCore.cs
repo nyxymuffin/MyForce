@@ -937,7 +937,7 @@ internal sealed record PersistedBridgeMember(
 
 			await _mqttRuntime.PublishAsync(
 				_topics.ModuleConfigTopic(radio.Id),
-				AudioProcessorJson.Serialize(new ModuleConfigSpecPayload(1, DateTimeOffset.UtcNow, radio.Id.Value, RadioInstanceConfigPayload.Create(mergedConfig))),
+				AudioProcessorJson.Serialize(new ModuleConfigSpecPayload(1, DateTimeOffset.UtcNow, radio.Id.Value, AudioProcessorRegistry.InstanceConfigToJson(mergedConfig))),
 				retain: true,
 				cancellationToken: CancellationToken.None).ConfigureAwait(false);
 			await PublishCommandAckAsync(topic, envelope?.MsgId, "ok", null, null, null).ConfigureAwait(false);
@@ -4145,12 +4145,16 @@ internal sealed record ModuleRegistrySpecPayload(
 	}
 }
 
-internal sealed record ModuleConfigSpecPayload(int V, DateTimeOffset Ts, string Id, RadioInstanceConfigPayload Config)
+// Config is published as the canonical snake_case shape (InstanceConfigToJson) whose dotted paths match
+// the instance config_schema exactly (keying.ptt_lead_ms, detect.vox.threshold_db, device.rx_device,
+// settings.*). This lets the UI's schema-driven editor prefill EVERY field from the retained config, and
+// matches the snake_case the save command (InstanceConfigFromJson) reads back.
+internal sealed record ModuleConfigSpecPayload(int V, DateTimeOffset Ts, string Id, JsonObject Config)
 {
 	public static ModuleConfigSpecPayload Create(RadioRuntimeDefinition radio)
 	{
 		ArgumentNullException.ThrowIfNull(radio);
-		return new ModuleConfigSpecPayload(1, DateTimeOffset.UtcNow, radio.Id.Value, RadioInstanceConfigPayload.Create(radio.Config));
+		return new ModuleConfigSpecPayload(1, DateTimeOffset.UtcNow, radio.Id.Value, AudioProcessorRegistry.InstanceConfigToJson(radio.Config));
 	}
 }
 
