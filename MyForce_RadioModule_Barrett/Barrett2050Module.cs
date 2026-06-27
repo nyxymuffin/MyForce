@@ -65,7 +65,11 @@ public sealed class Barrett2050ModuleFactory : IRadioModuleFactory
 public sealed class Barrett2050Module : IRadioModule, IKeyingProvider
 {
 	// Poll the radio every 25 s with "IV" to detect whether it is online (any reply = present).
-	private static readonly TimeSpan PollInterval = TimeSpan.FromSeconds(25);
+	// Status (online/scan/power) polls every 10s; the current channel (IC) polls at boot and every 60s
+	// (StatusPollInterval x ChannelPollEveryTicks) to keep the serial link light.
+	private static readonly TimeSpan StatusPollInterval = TimeSpan.FromSeconds(10);
+	private const int ChannelPollEveryTicks = 6;
+	private int _pollTick;
 
 	// Pull the channel list once the radio first answers; re-pulled on the channel_info control.
 	private bool _channelsReported;
@@ -184,7 +188,36 @@ public sealed class Barrett2050Module : IRadioModule, IKeyingProvider
 	{
 		var settings = _config as JsonObject ?? new JsonObject();
 		_comPort = (settings["com_port"]?.GetValue<string>() is { Length: > 0 } port) ? port : null;
-		_baud = settings["baud"]?.GetValue<int>() ?? 9600;
+		_baud = ReadBaud(settings);
+	}
+
+	// Baud must be a POSITIVE integer or SerialPort throws "Positive number required". The config editor can
+	// leave it blank/0, and JSON may carry it as a number or string, so parse defensively and fall back to
+	// the Barrett default (9600) on anything missing/invalid/non-positive.
+	private static int ReadBaud(JsonObject settings)
+	{
+		var node = settings["baud"];
+		if (node is null)
+		{
+			return 9600;
+		}
+
+		int baud;
+		try
+		{
+			baud = node.GetValueKind() switch
+			{
+				JsonValueKind.Number => node.GetValue<int>(),
+				JsonValueKind.String => int.TryParse(node.GetValue<string>(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed) ? parsed : 0,
+				_ => 0,
+			};
+		}
+		catch (Exception ex) when (ex is InvalidOperationException or FormatException)
+		{
+			baud = 0;
+		}
+
+		return baud > 0 ? baud : 9600;
 	}
 
 	private string? Selcall => (_config as JsonObject)?["selcall_id"]?.GetValue<string>();
@@ -430,7 +463,7 @@ public sealed class Barrett2050Module : IRadioModule, IKeyingProvider
 
 			try
 			{
-				await Task.Delay(PollInterval, cancellationToken).ConfigureAwait(false);
+				await Task.Delay(StatusPollInterval, cancellationToken).ConfigureAwait(false);
 			}
 			catch (OperationCanceledException)
 			{
@@ -464,15 +497,14 @@ public sealed class Barrett2050Module : IRadioModule, IKeyingProvider
 			_channelsReported = true;
 		}
 
-		// Current channel (IC, 4-digit channel number).
-		var channelText = await _link.SendAsync("IC", cancellationToken).ConfigureAwait(false);
-		ChannelInfo? channel = int.TryParse(channelText.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var channelNumber)
-			? new ChannelInfo(channelNumber, _channelRxLabels.TryGetValue(channelNumber, out var rxLabel) ? rxLabel : null)
-			: null;
-		if (channel is not null)
+		// Current channel (IC): only every ChannelPollEveryTicks (60s); the cached value rides every status
+		// report so the 10s status polls never blank the displayed channel.
+		if (_pollTick % ChannelPollEveryTicks == 0)
 		{
-			_lastChannel = channel.Index;
+			await UpdateCurrentChannelAsync(cancellationToken).ConfigureAwait(false);
 		}
+
+		_pollTick++;
 
 		// Scan state: "LS" -> Y = scanning, N or E0 = not scanning.
 		var scanText = await _link.SendAsync("LS", cancellationToken).ConfigureAwait(false);
@@ -491,13 +523,35 @@ public sealed class Barrett2050Module : IRadioModule, IKeyingProvider
 		_highPower = power == 'H';
 
 		_host.ReportState(new RadioStateReport(
-			Channel: channel,
+			Channel: CurrentChannelInfo(),
 			Zone: null,
 			Mode: null,
 			Signal: null,
 			Ready: true,
 			Scan: scanning,
 			Buttons: BuildButtonStates()));
+	}
+
+	// The cached current channel built into every state report (so 10s status polls don't blank it). Null
+	// until the first IC read succeeds.
+	private ChannelInfo? CurrentChannelInfo()
+		=> _lastChannel > 0
+			? new ChannelInfo(_lastChannel, _channelRxLabels.TryGetValue(_lastChannel, out var label) ? label : null)
+			: null;
+
+	// Reads the current channel (IC) and caches it in _lastChannel; no report (the caller reports).
+	private async Task UpdateCurrentChannelAsync(CancellationToken cancellationToken)
+	{
+		if (_link is null)
+		{
+			return;
+		}
+
+		var channelText = await _link.SendAsync("IC", cancellationToken).ConfigureAwait(false);
+		if (int.TryParse(channelText.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var channelNumber) && channelNumber > 0)
+		{
+			_lastChannel = channelNumber;
+		}
 	}
 
 	// Live function-button states reported with every state update: the power button is "active" (red in the
@@ -554,15 +608,14 @@ public sealed class Barrett2050Module : IRadioModule, IKeyingProvider
 
 		try
 		{
-			var channelText = await _link.SendAsync("IC", cancellationToken).ConfigureAwait(false);
-			if (!int.TryParse(channelText.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var channelNumber))
+			await UpdateCurrentChannelAsync(cancellationToken).ConfigureAwait(false);
+			if (_lastChannel <= 0)
 			{
 				return;
 			}
 
-			_lastChannel = channelNumber;
 			_host.ReportState(new RadioStateReport(
-				Channel: new ChannelInfo(channelNumber, _channelRxLabels.TryGetValue(channelNumber, out var rxLabel) ? rxLabel : null),
+				Channel: CurrentChannelInfo(),
 				Zone: null,
 				Mode: null,
 				Signal: null,

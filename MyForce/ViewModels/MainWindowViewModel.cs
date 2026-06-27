@@ -484,12 +484,14 @@ public sealed class ConfigFieldItem : INotifyPropertyChanged
 			case ConfigFieldKind.Bool:
 				return JsonValue.Create(_boolValue);
 			case ConfigFieldKind.Number:
-				if (long.TryParse(_stringValue, out var l))
+				if (long.TryParse(_stringValue, NumberStyles.Integer, CultureInfo.InvariantCulture, out var l))
 				{
 					return JsonValue.Create(l);
 				}
 
-				return double.TryParse(_stringValue, out var d) ? JsonValue.Create(d) : JsonValue.Create(0);
+				// Blank/unparseable -> null so SaveRadioConfig OMITS it instead of writing 0. Persisting 0
+				// for a left-blank baud broke the Barrett serial open ("Positive number required").
+				return double.TryParse(_stringValue, NumberStyles.Float, CultureInfo.InvariantCulture, out var d) ? JsonValue.Create(d) : null;
 			default:
 				return JsonValue.Create(_stringValue);
 		}
@@ -1576,7 +1578,13 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 		var config = new JsonObject();
 		foreach (var field in RadioConfigFields)
 		{
-			SetJsonByPath(config, field.Path, field.ToNode());
+			var node = field.ToNode();
+			if (node is null)
+			{
+				continue;   // leave blank numeric fields unset rather than persisting 0
+			}
+
+			SetJsonByPath(config, field.Path, node);
 		}
 
 		var envelope = CreateCommandEnvelope(isAdminCommand: true, includeMessageId: true);

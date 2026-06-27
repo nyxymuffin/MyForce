@@ -28,6 +28,10 @@ if (instanceLock is null)
 	return;
 }
 
+// Give THIS process XDG_RUNTIME_DIR before any audio device opens, so the in-process ALSA "pulse" PCM can
+// reach the PipeWire/Pulse socket for the operator speaker sink (otherwise: "Connection refused").
+LinuxRuntimeEnvironment.ApplyToCurrentProcess();
+
 // Resilience: never let a stray background exception (e.g. a media-player event thread or an
 // unobserved task) take the AP down. Log it and keep running; the radios/keying are the priority.
 AppDomain.CurrentDomain.UnhandledException += static (_, e) =>

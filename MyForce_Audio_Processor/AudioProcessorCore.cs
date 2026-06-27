@@ -5720,6 +5720,38 @@ internal sealed class LinuxPlayerCandidate
 /// </summary>
 internal static class LinuxRuntimeEnvironment
 {
+	/// <summary>
+	/// Sets XDG_RUNTIME_DIR on the AP's OWN process environment so in-process audio (the ALSA "pulse" PCM
+	/// the engine opens for a PipeWire speaker sink) can reach /run/user/&lt;uid&gt;/pulse/native. Without
+	/// this the speaker port fails with "PulseAudio: Unable to connect: Connection refused" and radio RX is
+	/// never heard. Must run before the audio engine opens any device.
+	/// </summary>
+	public static void ApplyToCurrentProcess()
+	{
+		if (!OperatingSystem.IsLinux())
+		{
+			return;
+		}
+
+		try
+		{
+			// Force the same value LinuxRuntimeEnvironment.Apply gives child processes that DO connect (mpv),
+			// using the NATIVE setenv: Environment.SetEnvironmentVariable does NOT propagate to the C library's
+			// getenv() in-process, so libpulse/libasound would never see a managed-only value.
+			var dir = $"/run/user/{geteuid()}";
+			setenv("XDG_RUNTIME_DIR", dir, 1);
+			Environment.SetEnvironmentVariable("XDG_RUNTIME_DIR", dir);
+			AudioProcessorLog.Write("startup", $"Applied XDG_RUNTIME_DIR={dir} to the AP process for in-process audio.");
+		}
+		catch (Exception ex) when (ex is DllNotFoundException or EntryPointNotFoundException)
+		{
+			// libc unavailable (non-Linux test host); leave the environment untouched.
+		}
+	}
+
+	[DllImport("libc", SetLastError = true)]
+	private static extern int setenv(string name, string value, int overwrite);
+
 	public static void Apply(ProcessStartInfo startInfo)
 	{
 		ArgumentNullException.ThrowIfNull(startInfo);
