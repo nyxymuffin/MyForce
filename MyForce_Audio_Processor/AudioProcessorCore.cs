@@ -146,7 +146,10 @@ internal sealed class AudioProcessorCoordinator : IAsyncDisposable
 			_registry.Radios,
 			_pluginCatalog.Modules,
 			AudioProcessorLog.Write,
-			radioId => _ = PublishRadioChannelsAsync(radioId));
+			radioId => _ = PublishRadioChannelsAsync(radioId),
+			// Publish module/<id>/state whenever a hosted RM reports state (poll scan/power/channel), so the
+			// UI updates live instead of only when a command forces a publish.
+			radioId => _ = PublishRadioModuleStateAsync(radioId));
 
 		// Phase 1 real-time engine (§3.6): build the fixed source/sink topology, open a backend,
 		// and wire the built-in keying/detect primitives and the TX state machine to it.
@@ -432,9 +435,10 @@ internal sealed class RadioModuleHostManager : IAsyncDisposable
 	private readonly Action<string, string> _log;
 	// Forwarded to each host so a module's ReportChannels re-publishes module/<id>/channels (§3.11).
 	private readonly Action<RadioId>? _onChannelsReported;
+	private readonly Action<RadioId>? _onStateReported;
 	private readonly List<HostedRadioModule> _hostedModules = [];
 
-	public RadioModuleHostManager(IReadOnlyList<RadioRuntimeDefinition> radios, IReadOnlyList<DiscoveredRadioModule> discoveredModules, Action<string, string> log, Action<RadioId>? onChannelsReported = null)
+	public RadioModuleHostManager(IReadOnlyList<RadioRuntimeDefinition> radios, IReadOnlyList<DiscoveredRadioModule> discoveredModules, Action<string, string> log, Action<RadioId>? onChannelsReported = null, Action<RadioId>? onStateReported = null)
 	{
 		ArgumentNullException.ThrowIfNull(radios);
 		ArgumentNullException.ThrowIfNull(discoveredModules);
@@ -444,6 +448,7 @@ internal sealed class RadioModuleHostManager : IAsyncDisposable
 		_discoveredModules = discoveredModules;
 		_log = log;
 		_onChannelsReported = onChannelsReported;
+		_onStateReported = onStateReported;
 	}
 
 	public async Task StartAsync(CancellationToken cancellationToken)
@@ -457,7 +462,7 @@ internal sealed class RadioModuleHostManager : IAsyncDisposable
 				continue;
 			}
 
-			var host = new RadioModuleHost(radio.Id, _log, _onChannelsReported);
+			var host = new RadioModuleHost(radio.Id, _log, _onChannelsReported, _onStateReported);
 			var module = discoveredModule.Factory.Create(host);
 			// Pass only the RM-owned settings section as a JsonElement per the reconciled contract (§3.7.7).
 			var applyResult = await module.ApplyConfigAsync(radio.Config.Settings.Deserialize<JsonElement>(), cancellationToken).ConfigureAwait(false);
@@ -523,14 +528,19 @@ internal sealed class RadioModuleHost : IModuleHost
 	// Invoked when the module reports a new channel list, so the coordinator can re-publish
 	// module/<id>/channels (§3.11/§5.3). May be called from a module thread.
 	private readonly Action<RadioId>? _onChannelsReported;
+	// Invoked when the module reports new state (channel/scan/power/...), so the coordinator re-publishes
+	// module/<id>/state. Without this the poll's scan/power/channel updates never reached the UI - they only
+	// got published when a command (channel_select/button) forced it. May be called from a module thread.
+	private readonly Action<RadioId>? _onStateReported;
 
-	public RadioModuleHost(RadioId radioId, Action<string, string> log, Action<RadioId>? onChannelsReported = null)
+	public RadioModuleHost(RadioId radioId, Action<string, string> log, Action<RadioId>? onChannelsReported = null, Action<RadioId>? onStateReported = null)
 	{
 		ArgumentNullException.ThrowIfNull(radioId);
 		ArgumentNullException.ThrowIfNull(log);
 		RadioId = radioId;
 		_log = log;
 		_onChannelsReported = onChannelsReported;
+		_onStateReported = onStateReported;
 	}
 
 	public RadioId RadioId { get; }
@@ -556,6 +566,7 @@ internal sealed class RadioModuleHost : IModuleHost
 		ArgumentNullException.ThrowIfNull(state);
 		_lastReport = state;
 		_log("module", $"Radio module '{RadioId.Value}' reported state.");
+		_onStateReported?.Invoke(RadioId);
 	}
 
 	public void ReportChannels(IReadOnlyList<ChannelInfo> channels)
