@@ -1898,6 +1898,10 @@ internal sealed record PersistedBridgeMember(
 							AudioProcessorLog.Write("engine", $"RX capture level for '{radioValue}' (source {diagSourceIndex}): {_realtimeEngine.GetSourceLevel(diagSourceIndex):0.0000}");
 						}
 					}
+
+					// Speaker sink output level (sink 0): if this is non-zero while RX is non-zero, the engine
+					// IS producing monitor audio and any silence is downstream (PipeWire stream/volume).
+					AudioProcessorLog.Write("engine", $"Speaker (sink 0) output level: {_realtimeEngine.GetSinkLevel(0):0.0000}");
 				}
 
 				// Bridge arbitration runs on the same control tick, off the RT path (§3.5).

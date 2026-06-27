@@ -26,6 +26,7 @@ internal sealed class RealtimeAudioEngine : IDisposable
 	private readonly float[][] _captureBuffers;
 	private readonly float[] _mixAccumulator;
 	private readonly float[] _sourceLevels;      // RT writes via Volatile; control thread reads.
+	private float[] _sinkLevels = Array.Empty<float>(); // post-mix RMS per sink, for output diagnostics.
 
 	// Routing is published to the RT thread as an immutable snapshot, swapped atomically.
 	private EngineRoutingSnapshot _snapshot = EngineRoutingSnapshot.Empty;
@@ -61,6 +62,7 @@ internal sealed class RealtimeAudioEngine : IDisposable
 
 		_mixAccumulator = new float[_format.FrameLength];
 		_sourceLevels = new float[captureCount];
+		_sinkLevels = new float[topology.Sinks.Count];
 	}
 
 	public EngineAudioFormat Format => _format;
@@ -93,6 +95,17 @@ internal sealed class RealtimeAudioEngine : IDisposable
 		}
 
 		return Volatile.Read(ref _sourceLevels[sourceIndex]);
+	}
+
+	/// <summary>Current post-mix RMS level (0..1) for a sink index; for output diagnostics.</summary>
+	public float GetSinkLevel(int sinkIndex)
+	{
+		if (sinkIndex < 0 || sinkIndex >= _sinkLevels.Length)
+		{
+			return 0f;
+		}
+
+		return Volatile.Read(ref _sinkLevels[sinkIndex]);
 	}
 
 	public void Start()
@@ -259,9 +272,17 @@ internal sealed class RealtimeAudioEngine : IDisposable
 			}
 
 			// Soft limiter per sink output handles summing overflow gracefully (§3.6.5).
+			var sumSquares = 0f;
 			for (var i = 0; i < frameLength; i++)
 			{
-				_mixAccumulator[i] = SoftClip(_mixAccumulator[i]);
+				var clipped = SoftClip(_mixAccumulator[i]);
+				_mixAccumulator[i] = clipped;
+				sumSquares += clipped * clipped;
+			}
+
+			if (sink < _sinkLevels.Length)
+			{
+				Volatile.Write(ref _sinkLevels[sink], frameLength > 0 ? MathF.Sqrt(sumSquares / frameLength) : 0f);
 			}
 
 			_backend.WritePlayback(snapshot.SinkPlaybackPort[sink], _mixAccumulator);
