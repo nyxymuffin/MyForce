@@ -64,7 +64,15 @@ public sealed class Barrett2050ModuleFactory : IRadioModuleFactory
 /// <summary>Runtime behaviour for a single Barrett 2050 instance, keyed via RS232 Select Tx/rx.</summary>
 public sealed class Barrett2050Module : IRadioModule, IKeyingProvider
 {
-	private static readonly TimeSpan PollInterval = TimeSpan.FromSeconds(2);
+	// Poll the radio every 25 s with "IV" to detect whether it is online (any reply = present).
+	private static readonly TimeSpan PollInterval = TimeSpan.FromSeconds(25);
+
+	// Pull the channel list once the radio first answers; re-pulled on the channel_info control.
+	private bool _channelsReported;
+
+	// Channel number -> RX frequency label (e.g. "5940.0 kHz"), so the current-channel state report can
+	// show the same label the channel picker uses.
+	private readonly Dictionary<int, string> _channelRxLabels = new();
 
 	private readonly IModuleHost _host;
 
@@ -430,22 +438,39 @@ public sealed class Barrett2050Module : IRadioModule, IKeyingProvider
 			return;
 		}
 
-		// IC returns the current channel number as 4 digits ("0022"); IL returns its label.
-		var channelText = await _link.SendAsync("IC", cancellationToken).ConfigureAwait(false);
-		if (!int.TryParse(channelText.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var channel))
+		// Online detection: "IV" (interrogate version/identity). Any non-error reply means the radio is
+		// present and responding; a timeout/blank means it is offline.
+		var iv = await _link.SendAsync("IV", cancellationToken).ConfigureAwait(false);
+		var online = !string.IsNullOrWhiteSpace(iv) && !IsErrorReply(iv);
+		if (!online)
 		{
+			_channelsReported = false;   // re-pull the channel list when it comes back
+			_host.ReportState(new RadioStateReport(Channel: null, Zone: null, Mode: null, Signal: null, Ready: false));
 			return;
 		}
 
-		var label = await _link.SendAsync("IL", cancellationToken).ConfigureAwait(false);
+		// First reply after coming online: pull the programmed channel list (IE count + IDF frequencies).
+		if (!_channelsReported)
+		{
+			await ReportChannelsAsync(cancellationToken).ConfigureAwait(false);
+			_channelsReported = true;
+		}
 
-		// IS returns scan state: Y = scanning, N = not scanning.
+		// Current channel (IC, 4-digit channel number) + scan state (IS: Y/N) for the operating display.
+		var channelText = await _link.SendAsync("IC", cancellationToken).ConfigureAwait(false);
+		ChannelInfo? channel = int.TryParse(channelText.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var channelNumber)
+			? new ChannelInfo(channelNumber, _channelRxLabels.TryGetValue(channelNumber, out var rxLabel) ? rxLabel : null)
+			: null;
+		if (channel is not null)
+		{
+			_lastChannel = channel.Index;
+		}
+
 		var scanText = await _link.SendAsync("IS", cancellationToken).ConfigureAwait(false);
 		bool? scanning = scanText.Trim().ToUpperInvariant() switch { "Y" => true, "N" => false, _ => (bool?)null };
 
-		_lastChannel = channel;
 		_host.ReportState(new RadioStateReport(
-			Channel: new ChannelInfo(channel, string.IsNullOrWhiteSpace(label) ? null : label.Trim()),
+			Channel: channel,
 			Zone: null,
 			Mode: null,
 			Signal: null,
@@ -453,9 +478,11 @@ public sealed class Barrett2050Module : IRadioModule, IKeyingProvider
 			Scan: scanning));
 	}
 
-	// Pull the channel list from the radio (IDL = all channel use labels) and report it to the AP, which
-	// publishes it on module/<id>/channels for the UI's channel picker (§3.11). Also emits a channel_labels
-	// advisory event for any listeners. Channels are numbered 1..N in IDL reply order.
+	// Pull the programmed channel list from the radio and report it to the AP, which publishes it on
+	// module/<id>/channels for the UI's channel picker (§3.11). Protocol:
+	//   IE  -> number of programmed channels.
+	//   IDF -> frequency records, 20 ASCII digits each: channel(4) + RX Hz(8) + TX Hz(8). The channel list
+	//          displays the RECEIVE frequency in kHz (e.g. 5940000 Hz -> "5940.0 kHz").
 	private async Task ReportChannelsAsync(CancellationToken cancellationToken)
 	{
 		if (_link is null)
@@ -463,25 +490,74 @@ public sealed class Barrett2050Module : IRadioModule, IKeyingProvider
 			return;
 		}
 
-		string raw;
 		try
 		{
-			raw = await _link.SendCollectAsync("IDL", TimeSpan.FromSeconds(1.5), cancellationToken).ConfigureAwait(false);
+			// IE: programmed-channel count (used to bound/validate the IDF parse and the collect window).
+			var countText = await _link.SendAsync("IE", cancellationToken).ConfigureAwait(false);
+			_ = int.TryParse(new string(countText.Where(char.IsDigit).ToArray()), NumberStyles.Integer, CultureInfo.InvariantCulture, out var channelCount);
+
+			// IDF: all programmed channels' frequency records, back to back. Allow a longer window for a
+			// large codeplug.
+			var raw = await _link.SendCollectAsync("IDF", TimeSpan.FromSeconds(channelCount > 60 ? 4 : 2), cancellationToken).ConfigureAwait(false);
+			var channels = ParseChannelFrequencies(raw);
+			if (channels.Count == 0)
+			{
+				_host.Log(LogLevel.Debug, $"Barrett 2050: IDF returned no parseable channel records (IE reported {channelCount}).");
+				return;
+			}
+
+			// Remember each channel's RX label so the current-channel state report can show it too.
+			_channelRxLabels.Clear();
+			foreach (var entry in channels)
+			{
+				_channelRxLabels[entry.Index] = entry.Label!;
+			}
+
+			_host.ReportChannels(channels);
+			_host.Log(LogLevel.Info, $"Barrett 2050: reported {channels.Count} channel(s) (IE count {channelCount}).");
 		}
 		catch (Exception ex) when (ex is IOException or TimeoutException or InvalidOperationException)
 		{
-			_host.Log(LogLevel.Debug, $"Barrett 2050: could not pull channel list (IDL): {ex.Message}");
-			return;
+			_host.Log(LogLevel.Debug, $"Barrett 2050: could not pull channel list (IE/IDF): {ex.Message}");
 		}
+	}
 
-		var labels = ParseChannelLabels(raw);
-		if (labels.Count == 0)
+	// Parse concatenated IDF frequency records (20 ASCII digits each: channel(4) + RX Hz(8) + TX Hz(8)).
+	// Returns one ChannelInfo per channel, labelled with the RECEIVE frequency in kHz.
+	private static IReadOnlyList<ChannelInfo> ParseChannelFrequencies(string raw)
+	{
+		// Keep only digits so CRs, spaces, or framing between records don't break the fixed-width parse.
+		var digits = new string((raw ?? string.Empty).Where(char.IsDigit).ToArray());
+		const int recordLength = 20;
+		var channels = new List<ChannelInfo>(digits.Length / recordLength);
+
+		for (var offset = 0; offset + recordLength <= digits.Length; offset += recordLength)
 		{
-			return;
+			var record = digits.AsSpan(offset, recordLength);
+			if (!int.TryParse(record[..4], NumberStyles.Integer, CultureInfo.InvariantCulture, out var channelNumber)
+				|| !long.TryParse(record.Slice(4, 8), NumberStyles.Integer, CultureInfo.InvariantCulture, out var rxHz))
+			{
+				continue;
+			}
+
+			if (channelNumber == 0 && rxHz == 0)
+			{
+				continue;   // padding / empty record
+			}
+
+			// RX frequency Hz -> kHz with one decimal, e.g. 5940000 -> "5940.0 kHz".
+			var rxLabel = string.Create(CultureInfo.InvariantCulture, $"{rxHz / 1000.0:0.0} kHz");
+			channels.Add(new ChannelInfo(channelNumber, rxLabel));
 		}
 
-		_host.EmitEvent("channel_labels", new JsonObject { ["labels"] = new JsonArray([.. labels.Select(label => (JsonNode?)label)]) });
-		_host.ReportChannels([.. labels.Select((label, index) => new ChannelInfo(index + 1, label))]);
+		return channels;
+	}
+
+	// An interrogate reply of the form "Exx" (e.g. "E01") is an error, not data.
+	private static bool IsErrorReply(string reply)
+	{
+		reply = reply.Trim();
+		return reply.Length >= 2 && (reply[0] == 'E' || reply[0] == 'e') && char.IsDigit(reply[1]);
 	}
 
 	// ── Helpers ───────────────────────────────────────────────────────────────────────────
@@ -531,11 +607,5 @@ public sealed class Barrett2050Module : IRadioModule, IKeyingProvider
 		var sign = response[0] == '-' ? -1 : 1;
 		var digits = (response[0] is '+' or '-') ? response[1..] : response;
 		return int.TryParse(digits, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var magnitude) ? sign * magnitude : 0;
-	}
-
-	// IDL returns labels as ASCII; split on CR/LF and drop blanks.
-	private static IReadOnlyList<string> ParseChannelLabels(string raw)
-	{
-		return raw.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 	}
 }
