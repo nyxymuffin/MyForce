@@ -24,7 +24,7 @@ public sealed class Barrett2050ModuleFactory : IRadioModuleFactory
 
 	public string DisplayName => "Barrett 2050";
 
-	public string Version => "0.7.0";
+	public string Version => "0.8.0";
 
 	public int ContractVersion => RadioContract.Version;
 
@@ -301,7 +301,18 @@ public sealed class Barrett2050Module : IRadioModule, IKeyingProvider
 					return Rejected("channel", "Channel must be an integer 1-9999.");
 				}
 
-				return await ExecuteAsync($"XC{channel}", cancellationToken).ConfigureAwait(false);
+				var channelResult = await ExecuteAsync($"XC{channel}", cancellationToken).ConfigureAwait(false);
+				// Cache the new channel and report it immediately, so the AP's follow-up state publish reflects
+				// the NEW channel instead of the stale cached one (which made the UI snap back to the old one).
+				_lastChannel = channel;
+				_host.ReportState(new RadioStateReport(
+					Channel: CurrentChannelInfo(),
+					Zone: null,
+					Mode: null,
+					Signal: null,
+					Ready: true,
+					Buttons: BuildButtonStates()));
+				return channelResult;
 
 			case "scan":
 				// { "state": "start"|"stop" }  or  { "on": true|false }

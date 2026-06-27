@@ -313,13 +313,30 @@ internal sealed class AlsaAudioBackend : IAudioBackend
 		}
 	}
 
+	private long _writeErrorCount;
+	private long _writeOkCount;
+
 	private void WriteInterleaved(AlsaPort port, ReadOnlySpan<float> frame)
 	{
 		var frames = Format.FrameSamples;
 		var written = snd_pcm_writei(port.Handle, in MemoryMarshal.GetReference(frame), (ulong)frames);
 		if (written < 0)
 		{
-			snd_pcm_recover(port.Handle, (int)written, 1);
+			var recovered = snd_pcm_recover(port.Handle, (int)written, 1);
+			// Throttled diagnostic: a flood here means the playback stream isn't consuming (underrun / the
+			// pulse stream isn't being played), which is why a non-zero sink mix produces no sound.
+			if ((++_writeErrorCount % 200) == 1)
+			{
+				_log("engine", $"ALSA writei error on '{port.DeviceId}': {DescribeError(written)} (recover={recovered}); errors={_writeErrorCount}, ok={_writeOkCount}.");
+			}
+
+			return;
+		}
+
+		// Periodically confirm writes ARE landing (so we can tell "writing fine but inaudible" from "writes failing").
+		if ((++_writeOkCount % 500) == 1)
+		{
+			_log("engine", $"ALSA writei ok on '{port.DeviceId}': wrote {written} frames; ok={_writeOkCount}, errors={_writeErrorCount}.");
 		}
 	}
 
