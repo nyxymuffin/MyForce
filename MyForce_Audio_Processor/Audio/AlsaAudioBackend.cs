@@ -66,7 +66,9 @@ internal sealed class AlsaAudioBackend : IAudioBackend
 		ArgumentNullException.ThrowIfNull(playbackDeviceIds);
 
 		_capturePorts = captureDeviceIds.Select(id => new AlsaPort(id, SND_PCM_STREAM_CAPTURE)).ToArray();
-		_playbackPorts = playbackDeviceIds.Select(id => new AlsaPort(id, SND_PCM_STREAM_PLAYBACK)).ToArray();
+		// Playback port 0 is the operator speaker: open it STEREO so PipeWire plays it on the analog-stereo
+		// sink. Remaining playback ports (radio TX) stay mono (radio mic input).
+		_playbackPorts = playbackDeviceIds.Select((id, index) => new AlsaPort(id, SND_PCM_STREAM_PLAYBACK, index == 0 ? 2 : 1)).ToArray();
 
 		return new AudioBackendBinding(
 			Array.AsReadOnly(_capturePorts.Select(static _ => false).ToArray()),
@@ -179,7 +181,9 @@ internal sealed class AlsaAudioBackend : IAudioBackend
 
 		ClosePort(existing);
 		var streamType = direction == AudioPortDirection.Capture ? SND_PCM_STREAM_CAPTURE : SND_PCM_STREAM_PLAYBACK;
-		var port = new AlsaPort(deviceId, streamType);
+		// Preserve the speaker's stereo channel count (playback port 0) across a re-bind.
+		var channels = direction == AudioPortDirection.Playback && index == 0 ? 2 : 1;
+		var port = new AlsaPort(deviceId, streamType, channels);
 		ports[index] = port;
 		_log("engine", $"Re-binding {DescribeStream(streamType)} port {index} to '{deviceId}'.");
 		if (_isRunning)
@@ -254,7 +258,7 @@ internal sealed class AlsaAudioBackend : IAudioBackend
 				handle,
 				SND_PCM_FORMAT_FLOAT_LE,
 				SND_PCM_ACCESS_RW_INTERLEAVED,
-				(uint)Format.Channels,
+				(uint)port.Channels,   // speaker = stereo, others = mono (§3.6.5)
 				(uint)Format.SampleRateHz,
 				1, // allow ALSA resampling so a device at another native rate still binds (§3.6.5)
 				100_000); // 100 ms target latency; tuned on hardware later
@@ -315,11 +319,33 @@ internal sealed class AlsaAudioBackend : IAudioBackend
 
 	private long _writeErrorCount;
 	private long _writeOkCount;
+	private float[] _stereoScratch = Array.Empty<float>();
 
 	private void WriteInterleaved(AlsaPort port, ReadOnlySpan<float> frame)
 	{
 		var frames = Format.FrameSamples;
-		var written = snd_pcm_writei(port.Handle, in MemoryMarshal.GetReference(frame), (ulong)frames);
+
+		// For a stereo port (the speaker), duplicate the mono mix into L/R interleaved so the analog-stereo
+		// sink actually plays it. snd_pcm_writei's count is in FRAMES, so it reads frames*channels samples.
+		ReadOnlySpan<float> writeFrame = frame;
+		if (port.Channels == 2)
+		{
+			if (_stereoScratch.Length < frames * 2)
+			{
+				_stereoScratch = new float[frames * 2];
+			}
+
+			for (var i = 0; i < frames; i++)
+			{
+				var sample = frame[i];
+				_stereoScratch[(i * 2) + 0] = sample;
+				_stereoScratch[(i * 2) + 1] = sample;
+			}
+
+			writeFrame = _stereoScratch;
+		}
+
+		var written = snd_pcm_writei(port.Handle, in MemoryMarshal.GetReference(writeFrame), (ulong)frames);
 		if (written < 0)
 		{
 			var recovered = snd_pcm_recover(port.Handle, (int)written, 1);
@@ -388,11 +414,16 @@ internal sealed class AlsaAudioBackend : IAudioBackend
 		_isDisposed = true;
 	}
 
-	private sealed class AlsaPort(string deviceId, int streamType)
+	private sealed class AlsaPort(string deviceId, int streamType, int channels = 1)
 	{
 		public string DeviceId { get; } = deviceId;
 
 		public int StreamType { get; } = streamType;
+
+		// Hardware channel count opened for this port. The operator speaker is opened STEREO (2) so PipeWire
+		// plays it on an analog-stereo sink (a mono stream is consumed but often inaudible); radio TX/capture
+		// stay mono.
+		public int Channels { get; } = channels;
 
 		public IntPtr Handle { get; set; }
 	}
