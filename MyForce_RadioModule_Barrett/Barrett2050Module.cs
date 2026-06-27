@@ -24,7 +24,7 @@ public sealed class Barrett2050ModuleFactory : IRadioModuleFactory
 
 	public string DisplayName => "Barrett 2050";
 
-	public string Version => "0.3.0";
+	public string Version => "0.4.0";
 
 	public int ContractVersion => RadioContract.Version;
 

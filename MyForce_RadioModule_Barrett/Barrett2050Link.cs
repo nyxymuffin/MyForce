@@ -17,6 +17,9 @@ internal interface IByteLink : IAsyncDisposable
 	Task WriteAsync(ReadOnlyMemory<byte> data, CancellationToken cancellationToken);
 
 	ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken);
+
+	/// <summary>Discard any buffered/stale received bytes so the next reply isn't polluted by leftovers.</summary>
+	void Drain();
 }
 
 /// <summary>Adapts the host's shared <see cref="IControlTransport"/> (AP owns the port).</summary>
@@ -31,6 +34,11 @@ internal sealed class ControlTransportByteLink : IByteLink
 
 	public async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken)
 		=> await _transport.ReadAsync(buffer, cancellationToken).ConfigureAwait(false);
+
+	// The shared transport has no synchronous discard; the command layer's pre-read drain handles staleness.
+	public void Drain()
+	{
+	}
 
 	// The host owns the shared transport's lifetime; nothing to release here.
 	public ValueTask DisposeAsync() => ValueTask.CompletedTask;
@@ -57,6 +65,26 @@ internal sealed class SerialPortByteLink : IByteLink
 
 	public ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken)
 		=> _port.BaseStream.ReadAsync(buffer, cancellationToken);
+
+	// Clear the OS receive buffer so a previous reply's trailing/unsolicited bytes don't shift the next read.
+	public void Drain()
+	{
+		try
+		{
+			if (_port.IsOpen)
+			{
+				_port.DiscardInBuffer();
+			}
+		}
+		catch (IOException)
+		{
+			// Best-effort.
+		}
+		catch (InvalidOperationException)
+		{
+			// Port closed mid-drain.
+		}
+	}
 
 	public ValueTask DisposeAsync()
 	{
@@ -88,6 +116,10 @@ internal sealed class Barrett2050Link : IAsyncDisposable
 
 	private static readonly TimeSpan ResponseTimeout = TimeSpan.FromMilliseconds(1500);
 
+	// The 2050 needs a brief gap between transactions; sending commands back-to-back makes it drop or
+	// garble replies. This spaces every command so each is sent separately, not all at once.
+	private static readonly TimeSpan CommandSpacing = TimeSpan.FromMilliseconds(120);
+
 	private readonly IByteLink _link;
 	private readonly SemaphoreSlim _gate = new(1, 1);
 
@@ -99,6 +131,10 @@ internal sealed class Barrett2050Link : IAsyncDisposable
 		await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
 		try
 		{
+			// Space this command from the previous one so the radio handles each separately.
+			await Task.Delay(CommandSpacing, cancellationToken).ConfigureAwait(false);
+			// Drop any leftover bytes from a prior reply so this command reads only its own response.
+			_link.Drain();
 			var payload = Encoding.ASCII.GetBytes(command + "\r");
 			await _link.WriteAsync(payload, cancellationToken).ConfigureAwait(false);
 			return await ReadResponseAsync(cancellationToken).ConfigureAwait(false);
@@ -159,6 +195,8 @@ internal sealed class Barrett2050Link : IAsyncDisposable
 		await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
 		try
 		{
+			await Task.Delay(CommandSpacing, cancellationToken).ConfigureAwait(false);
+			_link.Drain();
 			var payload = Encoding.ASCII.GetBytes(command + "\r");
 			await _link.WriteAsync(payload, cancellationToken).ConfigureAwait(false);
 
