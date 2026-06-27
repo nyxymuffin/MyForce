@@ -703,13 +703,21 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 
 	private string _adminAudioStatus = "Waiting for AP audio routing state.";
 
-	// Only the local UI is known-present at startup. Every other component (AP, GPIO controller, siren
-	// interface, radio modules) is added to this list ONLY when we actually detect it via its retained
-	// MQTT status, so the System Status page never shows modules that are not really there.
+	// The System Status page lists the fixed infrastructure components (UI + the three controllers) plus
+	// any CONFIGURED radio (added when its retained status arrives). It must NOT list radio module plugin
+	// types or unconfigured/unloaded modules - only a radio the operator actually declared shows up.
 	private IReadOnlyList<AdminSystemComponentStatus> _systemComponentStatuses =
 	[
 		new("ui", "Main UI", AdminComponentStatus.Online, "Local console is running.", "LOCAL"),
+		new("audio-processor", "Audio Processor", AdminComponentStatus.Unknown, "Waiting for retained MQTT status.", AudioProcessorStatusTopic),
+		new("gpio-controller", "GPIO Controller", AdminComponentStatus.Unknown, "Waiting for retained MQTT status.", GpioControllerStatusTopic),
+		new("siren-interface", "Siren Controller", AdminComponentStatus.Unknown, "Waiting for retained MQTT status.", SirenInterfaceStatusTopic),
 	];
+
+	// The fixed infrastructure component ids that always remain on the System Status page (never removed,
+	// only their status changes). Everything else is a configured radio that comes and goes.
+	private static readonly HashSet<string> InfrastructureComponentIds =
+		new(["ui", "audio-processor", "gpio-controller", "siren-interface"], StringComparer.OrdinalIgnoreCase);
 
 	// Tracks the currently selected directional mode.
 	private DirectionalMode _selectedDirectional = DirectionalMode.Off;
@@ -2795,12 +2803,22 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 		var payloadText = message.ConvertPayloadToString();
 		if (string.IsNullOrWhiteSpace(payloadText))
 		{
-			// A cleared (empty) retained topic means the module was removed (§4.4). Drop its System Status
-			// row so a deleted radio/controller does not linger as "online".
+			// A cleared (empty) retained status means the module went away (§4.4). A fixed controller stays
+			// on the page (marked offline); a configured radio's row is removed entirely.
 			if (string.Equals(topicParts[3], "status", StringComparison.OrdinalIgnoreCase))
 			{
 				var clearedComponentId = MapModuleIdToComponentId(topicParts[2]);
-				Dispatcher.UIThread.Post(() => RemoveSystemComponentStatus(clearedComponentId));
+				Dispatcher.UIThread.Post(() =>
+				{
+					if (InfrastructureComponentIds.Contains(clearedComponentId))
+					{
+						UpdateSystemComponentStatus(clearedComponentId, AdminComponentStatus.Offline, "Controller cleared its status (offline).", message.Topic);
+					}
+					else
+					{
+						RemoveSystemComponentStatus(clearedComponentId);
+					}
+				});
 			}
 
 			return true;
@@ -5057,7 +5075,8 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 	// local UI row is never removed.
 	private void RemoveSystemComponentStatus(string componentId)
 	{
-		if (string.IsNullOrWhiteSpace(componentId) || string.Equals(componentId, "ui", StringComparison.OrdinalIgnoreCase))
+		// Fixed infrastructure rows (UI + controllers) are never removed, only their status changes.
+		if (string.IsNullOrWhiteSpace(componentId) || InfrastructureComponentIds.Contains(componentId))
 		{
 			return;
 		}

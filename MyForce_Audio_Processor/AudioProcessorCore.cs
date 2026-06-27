@@ -604,11 +604,19 @@ internal sealed class AudioProcessorPersistedTopology
 		ArgumentNullException.ThrowIfNull(storedConfig);
 
 		return new AudioProcessorPersistedTopology(
-			DeserializeList<PersistedRadioDefinition>(storedConfig.RadioDefinitionsJson),
+			DeserializeList<PersistedRadioDefinition>(storedConfig.RadioDefinitionsJson).Where(static d => !IsLegacyAutoDeclaredRadio(d)).ToArray(),
 			DeserializeList<RelaySetDefinition>(storedConfig.RelaySetsJson),
 			DeserializeList<PersistedBridgeDefinition>(storedConfig.BridgesJson),
 			!string.IsNullOrWhiteSpace(storedConfig.RadioDefinitionsJson));
 	}
+
+	// Legacy auto-declared radios used the plugin type id as the instance id (e.g. "barrett_2050"); real
+	// operator-added radios use "radio.<type>.<n>". These phantom instances (one per discovered plugin) were
+	// persisted by an earlier reseed bug and must be dropped so they no longer appear as configured radios.
+	internal static bool IsLegacyAutoDeclaredRadio(PersistedRadioDefinition definition)
+		=> definition is not null
+			&& !string.IsNullOrWhiteSpace(definition.RadioId)
+			&& string.Equals(definition.RadioId, definition.TypeId, StringComparison.OrdinalIgnoreCase);
 
 	private static IReadOnlyList<T> DeserializeList<T>(string? json)
 	{
@@ -1487,10 +1495,11 @@ internal sealed record PersistedBridgeMember(
 				var stored = JsonSerializer.Deserialize<List<PersistedRadioDefinition>>(json, PersistedTopologySerializerOptions);
 				// Return the stored list verbatim, even when EMPTY: an empty list is the intentional result
 				// of removing every radio. Reseeding from the live registry on Count==0 was re-adding the
-				// just-removed radios (they persist in the live registry until the next AP restart).
+				// just-removed radios (they persist in the live registry until the next AP restart). Drop any
+				// legacy auto-declared phantoms so the next write self-heals the store.
 				if (stored is not null)
 				{
-					return stored;
+					return stored.Where(static d => !AudioProcessorPersistedTopology.IsLegacyAutoDeclaredRadio(d)).ToList();
 				}
 			}
 			catch (JsonException)
