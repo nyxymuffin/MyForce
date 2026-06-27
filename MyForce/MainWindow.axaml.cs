@@ -381,6 +381,22 @@ public partial class MainWindow : Window
 	private void OnChannelSelectionClosePressed(object? sender, PointerPressedEventArgs e)
 		=> _viewModel.CloseChannelSelection();
 
+	// Touchscreen-friendly paging of the channel list: scroll by roughly three rows per press so a swipe is
+	// never needed (a swipe over the rows would otherwise land on a channel and select it).
+	private void OnChannelScrollUpPressed(object? sender, PointerPressedEventArgs e)
+		=> ScrollChannelSelection(-180);
+
+	private void OnChannelScrollDownPressed(object? sender, PointerPressedEventArgs e)
+		=> ScrollChannelSelection(180);
+
+	private void ScrollChannelSelection(double delta)
+	{
+		var offset = ChannelSelectionScroll.Offset;
+		var maxY = Math.Max(0, ChannelSelectionScroll.Extent.Height - ChannelSelectionScroll.Viewport.Height);
+		var newY = Math.Clamp(offset.Y + delta, 0, maxY);
+		ChannelSelectionScroll.Offset = new Avalonia.Vector(offset.X, newY);
+	}
+
 	// RADIO page secondary controls. These depend on per-radio plugin support (channel
 	// stepping, scan, geo-area, nuisance delete, ext audio) and are placeholders for now.
 	// LISTEN button: toggle the RX monitor mute for the radio currently shown on the RADIO page.
