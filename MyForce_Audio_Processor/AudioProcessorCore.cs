@@ -1295,6 +1295,10 @@ internal sealed record PersistedBridgeMember(
 			deviceToRadio[captureDevice] = radioId.Value;
 			deviceToRadio[playbackDevice] = radioId.Value;
 			rxSourceIndexByRadio[radioId.Value] = port;
+
+			// Select the chosen input/output jack (Line In, Mic, ...) so the engine captures/plays the right one.
+			AudioFrameworkCatalog.EnsureDevicePort(captureDevice, isCapture: true);
+			AudioFrameworkCatalog.EnsureDevicePort(playbackDevice, isCapture: false);
 		}
 
 		return new EngineSetupResult(new EngineTopology(sources, sinks), captureDeviceIds, playbackDeviceIds, rxSourceIndexByRadio, deviceToRadio);
@@ -1727,6 +1731,9 @@ internal sealed record PersistedBridgeMember(
 		var playbackDevice = FirstConfiguredDevice(config.Device?.TxDevice, config.Device?.Soundcard, fallback);
 		_deviceToRadio[captureDevice] = radioId.Value;
 		_deviceToRadio[playbackDevice] = radioId.Value;
+		// Select the chosen input/output jack (Line In, Mic, ...) before the engine opens the node.
+		AudioFrameworkCatalog.EnsureDevicePort(captureDevice, isCapture: true);
+		AudioFrameworkCatalog.EnsureDevicePort(playbackDevice, isCapture: false);
 		_realtimeEngine.RequestRebindCapture(port, captureDevice);
 		_realtimeEngine.RequestRebindPlayback(port, playbackDevice);
 		AudioProcessorLog.Write("engine", $"Requested live re-bind for '{radioId.Value}': rx='{captureDevice}', tx='{playbackDevice}'.");
@@ -3311,6 +3318,37 @@ internal sealed class AudioFrameworkCatalog
 		}
 	}
 
+	/// <summary>
+	/// Selects a card's active input/output connector (e.g. Line In vs Mic) for a device id of the form
+	/// "&lt;node&gt;#port=&lt;port&gt;" via `pactl set-source-port`/`set-sink-port`. No-op when the id has no
+	/// "#port=" suffix or on non-Linux hosts. Call before binding the device so capture/playback uses the
+	/// jack the operator picked.
+	/// </summary>
+	public static void EnsureDevicePort(string? deviceId, bool isCapture)
+	{
+		if (!OperatingSystem.IsLinux() || string.IsNullOrWhiteSpace(deviceId))
+		{
+			return;
+		}
+
+		var marker = deviceId.IndexOf("#port=", StringComparison.Ordinal);
+		if (marker < 0)
+		{
+			return;
+		}
+
+		var node = deviceId[..marker];
+		var port = deviceId[(marker + "#port=".Length)..];
+		if (string.IsNullOrWhiteSpace(node) || string.IsNullOrWhiteSpace(port))
+		{
+			return;
+		}
+
+		var verb = isCapture ? "set-source-port" : "set-sink-port";
+		_ = TryRunProcess("pactl", $"{verb} {node} {port}");
+		AudioProcessorLog.Write("engine", $"Selected {(isCapture ? "input" : "output")} port '{port}' on '{node}'.");
+	}
+
 	private static string? TryRunProcess(string fileName, string arguments)
 	{
 		var startInfo = new ProcessStartInfo
@@ -3634,10 +3672,69 @@ internal sealed class AudioFrameworkCatalog
 				displayName = $"{displayName} ({alsaKey})";
 			}
 
+			// A card with multiple input connectors (Line In, Mic, ...) is ONE PipeWire source with several
+			// input ports. Emit one pick-list entry per port (deviceId "<node>#port=<port>") so the operator
+			// can choose the actual jack their radio is wired to; the AP sets the active port via pactl on bind.
+			var inputPorts = ReadInputPorts(source);
+			if (inputPorts.Count > 1)
+			{
+				foreach (var (portName, portDescription) in inputPorts)
+				{
+					devices.Add(new AudioDevice(
+						new AudioDeviceId($"{deviceId}#port={portName}"),
+						$"{displayName} - {portDescription}",
+						"capture",
+						true,
+						false));
+				}
+
+				continue;
+			}
+
 			devices.Add(new AudioDevice(new AudioDeviceId(deviceId), displayName, "capture", true, false));
 		}
 
 		return CreateOrderedPlaybackDeviceList(devices);
+	}
+
+	// Reads a pactl source's selectable input ports (name + human description). Returns empty when the
+	// source exposes no ports array (then the source itself is the single capture device).
+	private static IReadOnlyList<(string Name, string Description)> ReadInputPorts(JsonElement source)
+	{
+		if (!source.TryGetProperty("ports", out var portsElement) || portsElement.ValueKind != JsonValueKind.Array)
+		{
+			return Array.Empty<(string, string)>();
+		}
+
+		var ports = new List<(string Name, string Description)>();
+		foreach (var port in portsElement.EnumerateArray())
+		{
+			if (port.ValueKind != JsonValueKind.Object || !port.TryGetProperty("name", out var nameElement) || nameElement.ValueKind != JsonValueKind.String)
+			{
+				continue;
+			}
+
+			var name = nameElement.GetString();
+			if (string.IsNullOrWhiteSpace(name))
+			{
+				continue;
+			}
+
+			// Skip ports the card reports as physically not present.
+			if (port.TryGetProperty("availability", out var availabilityElement)
+				&& availabilityElement.ValueKind == JsonValueKind.String
+				&& string.Equals(availabilityElement.GetString(), "not available", StringComparison.OrdinalIgnoreCase))
+			{
+				continue;
+			}
+
+			var description = port.TryGetProperty("description", out var descElement) && descElement.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(descElement.GetString())
+				? descElement.GetString()!
+				: name;
+			ports.Add((name, description));
+		}
+
+		return ports;
 	}
 
 	private static IReadOnlyList<AudioDevice> ParseCaptureDevicesFromShortList(string output)

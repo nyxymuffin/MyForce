@@ -200,6 +200,14 @@ internal sealed class AlsaAudioBackend : IAudioBackend
 	/// </summary>
 	private static (string AlsaName, string? EnvVar, string? EnvValue) ResolveAlsaTarget(string deviceId, bool isCapture)
 	{
+		// Strip a "#port=<port>" suffix: that selects the card's input/output connector (e.g. Line In vs Mic)
+		// and is applied out-of-band via pactl by the AP; here we open the bare PipeWire node.
+		var portMarker = deviceId.IndexOf("#port=", StringComparison.Ordinal);
+		if (portMarker >= 0)
+		{
+			deviceId = deviceId[..portMarker];
+		}
+
 		if (deviceId.StartsWith("alsa:", StringComparison.OrdinalIgnoreCase))
 		{
 			// Use "plughw" (ALSA's format/rate/channel conversion plugin), NOT raw "hw": the engine runs
