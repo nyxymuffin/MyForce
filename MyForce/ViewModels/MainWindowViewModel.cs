@@ -585,8 +585,16 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 	// Stores the current directional status shown in the status panel.
 	private string _directionalStatus = "OFF";
 
-	// Mirrors the master output volume (_masterVolume) so the radio-page VOL display matches it.
+	// Shows the selected radio's RX mixer-input volume on the radio page (set per radio in _radioVolumes).
 	private string _currentTalkRadioVolume = "18";
+
+	// Per-radio RX mixer-input volume (0..25), keyed by radio id. The radio-page VOL buttons adjust the
+	// currently-selected radio's entry, mirroring how the AM/FM page drives the entertainment channel gain.
+	// Radios not yet touched default to DefaultRadioVolume.
+	private readonly Dictionary<string, int> _radioVolumes = new(StringComparer.OrdinalIgnoreCase);
+
+	// Default RX input volume applied to a radio the operator has not yet adjusted.
+	private const int DefaultRadioVolume = 18;
 
 	private decimal _amFmFrequency = 97.5m;
 
@@ -2471,11 +2479,10 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 		RaiseMasterVolumeChanged();
 	}
 
-	// Master and radio-page VOL are the same operator output level for now, so both displays move together
-	// when either set of volume buttons is pressed.
+	// The PATROL screen master volume is independent of the radio-page VOL, which drives the selected radio's
+	// RX mixer input. Only refresh the master display here.
 	private void RaiseMasterVolumeChanged()
 	{
-		CurrentTalkRadioVolume = _masterVolume.ToString(CultureInfo.InvariantCulture);
 		PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(MasterVolumeDisplay)));
 	}
 
@@ -4074,6 +4081,8 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 		PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(RadioPageTitle)));
 		PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(ChannelSelectionRadioTitle)));
 		PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(ActiveRadioScanLabel)));
+		// The VOL display tracks the now-viewed radio's RX input volume.
+		RefreshSelectedRadioVolumeDisplay();
 		// The TALK/LISTEN buttons reflect the now-viewed radio's talk-radio / mute state.
 		RaiseSelectedRadioTalkListenChanged();
 		IsRadioScanActive = false;   // scan state is per-radio; reset on selection
@@ -4277,10 +4286,47 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 		}
 	}
 
-	// Volume up/down on the radio page reuse the master output volume for now.
-	public void RadioVolumeUp() => IncreaseMasterVolume();
+	// Volume up/down on the radio page adjust the SELECTED radio's RX mixer-input volume (not the master
+	// output), mirroring how the AM/FM page drives the entertainment channel gain (§3.6.5).
+	public void RadioVolumeUp() => AdjustSelectedRadioVolume(+1);
 
-	public void RadioVolumeDown() => DecreaseMasterVolume();
+	public void RadioVolumeDown() => AdjustSelectedRadioVolume(-1);
+
+	// Step the selected radio's RX input volume by one, publish it to the AP mixer, and refresh the display.
+	private void AdjustSelectedRadioVolume(int delta)
+	{
+		if (string.IsNullOrWhiteSpace(_selectedRadioId))
+		{
+			return;
+		}
+
+		var current = GetRadioVolume(_selectedRadioId);
+		var updated = Math.Clamp(current + delta, 0, MaxSourceVolume);
+		_radioVolumes[_selectedRadioId] = updated;
+		PublishRadioVolumeCommand(_selectedRadioId, updated);
+		RefreshSelectedRadioVolumeDisplay();
+	}
+
+	// The stored RX volume for a radio, defaulting to DefaultRadioVolume until the operator changes it.
+	private int GetRadioVolume(string radioId) =>
+		_radioVolumes.TryGetValue(radioId, out var volume) ? volume : DefaultRadioVolume;
+
+	// Push the radio-page VOL display to the selected radio's current RX volume.
+	private void RefreshSelectedRadioVolumeDisplay()
+	{
+		var volume = string.IsNullOrWhiteSpace(_selectedRadioId) ? 0 : GetRadioVolume(_selectedRadioId);
+		CurrentTalkRadioVolume = volume.ToString(CultureInfo.InvariantCulture);
+	}
+
+	// Publish the radio's RX mixer-input gain to the AP. The AP exposes one RX channel strip per radio
+	// (channel id "radio-{id}-rx"); the same channel-gain command the AM/FM page uses sets its gain.
+	private void PublishRadioVolumeCommand(string radioId, int volume)
+	{
+		var command = CreateAudioChannelGainCommandMessage(
+			$"radio-{radioId}-rx",
+			MapEntertainmentVolumeToGain(volume));
+		_ = PublishCommandAsync(AudioProcessorChannelGainCommandTopic, command);
+	}
 
 	private void RebuildRadioSelectionItems()
 	{
