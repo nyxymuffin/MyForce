@@ -55,7 +55,7 @@ public sealed class Barrett2050ModuleFactory : IRadioModuleFactory
 			new FunctionButton("selcall", "Selcall", OpensMenu: true, Order: 1),
 			new FunctionButton("pagecall", "Pagecall", OpensMenu: true, Order: 2),
 			new FunctionButton("clarifier", "Clarifier", OpensMenu: true, Order: 3),
-			new FunctionButton("power", "Power", OpensMenu: true, Order: 4),
+			new FunctionButton("power", "Power", OpensMenu: false, Order: 4),
 		]);
 
 	public IRadioModule Create(IModuleHost host) => new Barrett2050Module(host);
@@ -324,30 +324,61 @@ public sealed class Barrett2050Module : IRadioModule, IKeyingProvider
 	// ── Function buttons (§3.10) ──────────────────────────────────────────────────────────
 	// Press acks promptly; menu buttons run their session in the background (§3.10.2).
 
-	public Task<OperationResult> PressButtonAsync(string buttonId, string consoleId, CancellationToken cancellationToken)
+	public async Task<OperationResult> PressButtonAsync(string buttonId, string consoleId, CancellationToken cancellationToken)
 	{
 		if (_link is null)
 		{
-			return Task.FromResult(OperationResult.Error("Barrett 2050: no control transport available."));
+			return OperationResult.Error("Barrett 2050: no control transport available.");
 		}
 
 		switch (buttonId)
 		{
 			case "selcall":
 				_ = RunSelcallMenuAsync(consoleId);
-				return Task.FromResult(OperationResult.Ok());
+				return OperationResult.Ok();
 			case "pagecall":
 				_ = RunPagecallMenuAsync(consoleId);
-				return Task.FromResult(OperationResult.Ok());
+				return OperationResult.Ok();
 			case "clarifier":
 				_ = RunClarifierMenuAsync(consoleId);
-				return Task.FromResult(OperationResult.Ok());
+				return OperationResult.Ok();
 			case "power":
-				_ = RunPowerMenuAsync(consoleId);
-				return Task.FromResult(OperationResult.Ok());
+				// Direct toggle (not a menu): high <-> low, then re-read so the red state reflects reality.
+				return await TogglePowerAsync(cancellationToken).ConfigureAwait(false);
 			default:
-				return Task.FromResult(OperationResult.Error($"Unknown function button '{buttonId}'."));
+				return OperationResult.Error($"Unknown function button '{buttonId}'.");
 		}
+	}
+
+	// Toggles transmit power high<->low (EHH/EHL). Reads the current level (IH), sends the opposite, re-reads
+	// and reports so the power button's red (high) state updates immediately.
+	private async Task<OperationResult> TogglePowerAsync(CancellationToken cancellationToken)
+	{
+		if (_link is null)
+		{
+			return OperationResult.Error("Barrett 2050: no control transport available.");
+		}
+
+		var current = ParsePowerLevel(await _link.SendAsync("IH", cancellationToken).ConfigureAwait(false));
+		var goHigh = current != 'H';   // if currently high, drop to low; otherwise go high
+		await _link.SendAsync(goHigh ? "EHH" : "EHL", cancellationToken).ConfigureAwait(false);
+
+		var after = ParsePowerLevel(await _link.SendAsync("IH", cancellationToken).ConfigureAwait(false));
+		if (after == 'M')
+		{
+			await _link.SendAsync("EHH", cancellationToken).ConfigureAwait(false);
+			after = ParsePowerLevel(await _link.SendAsync("IH", cancellationToken).ConfigureAwait(false));
+		}
+
+		_highPower = after == 'H';
+		_host.ReportState(new RadioStateReport(
+			Channel: CurrentChannelInfo(),
+			Zone: null,
+			Mode: null,
+			Signal: null,
+			Ready: true,
+			Buttons: BuildButtonStates()));
+		return OperationResult.Ok();
 	}
 
 	private async Task RunSelcallMenuAsync(string consoleId)
@@ -506,18 +537,18 @@ public sealed class Barrett2050Module : IRadioModule, IKeyingProvider
 
 		_pollTick++;
 
-		// Scan state: "LS" -> Y = scanning, N or E0 = not scanning.
-		var scanText = await _link.SendAsync("LS", cancellationToken).ConfigureAwait(false);
+		// Scan state: "IS" -> Y = scanning, N or E0 = not scanning.
+		var scanText = await _link.SendAsync("IS", cancellationToken).ConfigureAwait(false);
 		bool? scanning = ParseScanState(scanText);
 
-		// Power level: "LH" -> L = low, H = high, M = medium. We never run at medium: if the radio reports
+		// Power level: "IH" -> L = low, H = high, M = medium. We never run at medium: if the radio reports
 		// M, force high (EHH) and re-read so the state reflects the corrected level. The UI shows the power
 		// button red when high.
-		var power = ParsePowerLevel(await _link.SendAsync("LH", cancellationToken).ConfigureAwait(false));
+		var power = ParsePowerLevel(await _link.SendAsync("IH", cancellationToken).ConfigureAwait(false));
 		if (power == 'M')
 		{
 			await _link.SendAsync("EHH", cancellationToken).ConfigureAwait(false);
-			power = ParsePowerLevel(await _link.SendAsync("LH", cancellationToken).ConfigureAwait(false));
+			power = ParsePowerLevel(await _link.SendAsync("IH", cancellationToken).ConfigureAwait(false));
 		}
 
 		_highPower = power == 'H';
@@ -559,11 +590,11 @@ public sealed class Barrett2050Module : IRadioModule, IKeyingProvider
 	private IReadOnlyDictionary<string, RadioButtonStateReport> BuildButtonStates()
 		=> new Dictionary<string, RadioButtonStateReport> { ["power"] = new RadioButtonStateReport(Active: _highPower) };
 
-	// "LS" scan reply: Y = scanning; N or E0 (or anything else) = not scanning. Tolerates an "LS" echo.
+	// "IS" scan reply: Y = scanning; N or E0 (or anything else) = not scanning. Tolerates an "IS" echo.
 	private static bool? ParseScanState(string reply)
 	{
 		var r = reply.Trim().ToUpperInvariant();
-		if (r.StartsWith("LS", StringComparison.Ordinal))
+		if (r.StartsWith("IS", StringComparison.Ordinal))
 		{
 			r = r[2..].Trim();
 		}
@@ -576,12 +607,12 @@ public sealed class Barrett2050Module : IRadioModule, IKeyingProvider
 		return r.Length == 0 ? (bool?)null : false;
 	}
 
-	// "LH" power reply -> 'H' (high), 'L' (low), 'M' (medium), or '?' (unknown/error). Tolerates an "LH"
-	// echo prefix (e.g. "LHH").
+	// "IH" power reply -> 'H' (high), 'L' (low), 'M' (medium), or '?' (unknown/error). Tolerates an "IH"
+	// echo prefix (e.g. "IHH").
 	private static char ParsePowerLevel(string reply)
 	{
 		var r = reply.Trim().ToUpperInvariant();
-		if (r.StartsWith("LH", StringComparison.Ordinal))
+		if (r.StartsWith("IH", StringComparison.Ordinal))
 		{
 			r = r[2..].Trim();
 		}

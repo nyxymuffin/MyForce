@@ -937,9 +937,51 @@ internal sealed record PersistedBridgeMember(
 
 			await _mqttRuntime.PublishAsync(
 				_topics.ModuleConfigTopic(radio.Id),
-				AudioProcessorJson.Serialize(new ModuleConfigSpecPayload(1, DateTimeOffset.UtcNow, radio.Id.Value, AudioProcessorRegistry.InstanceConfigToJson(mergedConfig))),
+				AudioProcessorJson.Serialize(new ModuleConfigSpecPayload(1, DateTimeOffset.UtcNow, radio.Id.Value, ModuleConfigSpecPayload.BuildConfigJson(mergedConfig, radio.SettingsSchema))),
 				retain: true,
 				cancellationToken: CancellationToken.None).ConfigureAwait(false);
+			await PublishCommandAckAsync(topic, envelope?.MsgId, "ok", null, null, null).ConfigureAwait(false);
+			return true;
+		}
+
+		// Function-button press (myforce/module/<id>/cmd/button, §3.10.1). Routes to the RM's PressButtonAsync
+		// (declared in Capabilities.Buttons, NOT Controls), e.g. the Barrett power button toggles Hi/Lo.
+		if (string.Equals(commandName, "button", StringComparison.OrdinalIgnoreCase))
+		{
+			var buttonCommand = AudioProcessorJson.Deserialize<ModuleButtonCommandPayload>(payload);
+			if (string.IsNullOrWhiteSpace(buttonCommand?.ButtonId))
+			{
+				await PublishCommandAckAsync(topic, envelope?.MsgId, "rejected", "button_id", "missing_button", "Button press is missing button_id.").ConfigureAwait(false);
+				return true;
+			}
+
+			var buttonModule = _radioModuleHostManager.TryGetModule(radio.Id);
+			if (buttonModule is null)
+			{
+				await PublishCommandAckAsync(topic, envelope?.MsgId, "ok", null, null, null).ConfigureAwait(false);
+				return true;
+			}
+
+			OperationResult buttonResult;
+			try
+			{
+				buttonResult = await buttonModule.PressButtonAsync(buttonCommand.ButtonId, buttonCommand.ConsoleId ?? "console", CancellationToken.None).ConfigureAwait(false);
+			}
+			catch (Exception ex) when (ex is JsonException or IOException or TimeoutException or InvalidOperationException)
+			{
+				AudioProcessorLog.Write("control", $"Button '{buttonCommand.ButtonId}' for module '{moduleId}' failed: {ex.Message}.");
+				await PublishCommandAckAsync(topic, envelope?.MsgId, "error", "button", "button_failed", ex.Message).ConfigureAwait(false);
+				return true;
+			}
+
+			if (buttonResult.Status != MyForce.Contracts.Radio.OperationStatus.Ok)
+			{
+				var buttonError = buttonResult.Errors?.FirstOrDefault();
+				await PublishCommandAckAsync(topic, envelope?.MsgId, "rejected", buttonError?.Field ?? "button", buttonError?.Code ?? "rejected", buttonError?.Message ?? $"Button '{buttonCommand.ButtonId}' was rejected.").ConfigureAwait(false);
+				return true;
+			}
+
+			await PublishRadioModuleStateAsync(radio.Id).ConfigureAwait(false);
 			await PublishCommandAckAsync(topic, envelope?.MsgId, "ok", null, null, null).ConfigureAwait(false);
 			return true;
 		}
@@ -3585,6 +3627,13 @@ internal sealed class AudioFrameworkCatalog
 				coveredAlsaKeys?.Add(alsaKey);
 			}
 
+			// Append the ALSA hw id so two identical-model cards (same description) are distinguishable in the
+			// picker (e.g. "USB Audio Device (hw:3,0)"). Without this the operator can't tell duplicates apart.
+			if (alsaKey is not null && !displayName.Contains(alsaKey, StringComparison.OrdinalIgnoreCase))
+			{
+				displayName = $"{displayName} ({alsaKey})";
+			}
+
 			devices.Add(new AudioDevice(new AudioDeviceId(deviceId), displayName, "capture", true, false));
 		}
 
@@ -3916,6 +3965,14 @@ internal sealed record ModuleConfigCommandPayload(
 	JsonObject Config,
 	bool? Partial);
 
+// Function-button press command (myforce/module/<id>/cmd/button, §3.10.1).
+internal sealed record ModuleButtonCommandPayload(
+	int V,
+	DateTimeOffset Ts,
+	[property: JsonPropertyName("msg_id")] string? MsgId,
+	[property: JsonPropertyName("button_id")] string ButtonId,
+	[property: JsonPropertyName("console_id")] string? ConsoleId);
+
 internal sealed record InternetRadioPlaybackState(bool IsPlaying, string? StreamUrl, string? DisplayName, string? Genre, string? Language, string Status, string Detail);
 
 internal sealed record ServiceRegistryPayload(
@@ -4154,7 +4211,55 @@ internal sealed record ModuleConfigSpecPayload(int V, DateTimeOffset Ts, string 
 	public static ModuleConfigSpecPayload Create(RadioRuntimeDefinition radio)
 	{
 		ArgumentNullException.ThrowIfNull(radio);
-		return new ModuleConfigSpecPayload(1, DateTimeOffset.UtcNow, radio.Id.Value, AudioProcessorRegistry.InstanceConfigToJson(radio.Config));
+		return new ModuleConfigSpecPayload(1, DateTimeOffset.UtcNow, radio.Id.Value, BuildConfigJson(radio.Config, radio.SettingsSchema));
+	}
+
+	// Canonical published config: snake_case shape + seeded settings-schema defaults, so EVERY editor field
+	// (e.g. baud) prefills from the retained config even on a fresh radio that never had the value saved.
+	public static JsonObject BuildConfigJson(RadioModuleInstanceConfig config, string settingsSchemaJson)
+	{
+		var json = AudioProcessorRegistry.InstanceConfigToJson(config);
+		SeedSettingsDefaults(json, settingsSchemaJson);
+		return json;
+	}
+
+	// Fills any settings key that has a "default" in the RM settings schema but is missing from the config,
+	// so the UI shows the default value instead of a blank field.
+	private static void SeedSettingsDefaults(JsonObject configJson, string settingsSchemaJson)
+	{
+		if (configJson["settings"] is not JsonObject settings)
+		{
+			settings = [];
+			configJson["settings"] = settings;
+		}
+
+		JsonObject? schema;
+		try
+		{
+			schema = JsonNode.Parse(settingsSchemaJson) as JsonObject;
+		}
+		catch (JsonException)
+		{
+			return;
+		}
+
+		if (schema?["properties"] is not JsonObject properties)
+		{
+			return;
+		}
+
+		foreach (var property in properties)
+		{
+			if (settings.ContainsKey(property.Key))
+			{
+				continue;
+			}
+
+			if (property.Value is JsonObject propertySchema && propertySchema["default"] is JsonNode defaultNode)
+			{
+				settings[property.Key] = defaultNode.DeepClone();
+			}
+		}
 	}
 }
 
