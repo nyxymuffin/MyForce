@@ -4778,24 +4778,73 @@ internal sealed class InternetRadioPlaybackController : IAsyncDisposable
 			return;
 		}
 
-		var sink = GetMasterSinkName();
-		var percent = Math.Clamp((int)Math.Round((double)decimal.Clamp(gain, 0m, 1m) * 100.0), 0, 100);
+		var clampedGain = decimal.Clamp(gain, 0m, 1m);
+		var percent = Math.Clamp((int)Math.Round((double)clampedGain * 100.0), 0, 100);
+
+		// Target the sink the audio is ACTUALLY routed to: the sink the entertainment stream is on (what the
+		// operator hears). The configured-speaker/@DEFAULT_SINK@ was frequently a different sink than mpv's,
+		// so the volume changed a sink nothing was playing on. Fall back to the configured master sink.
+		var sink = ResolveActiveEntertainmentSink() ?? GetMasterSinkName();
 
 		// A muted sink swallows any volume change, so always clear mute when setting the level.
 		_ = RunProcessCapture("pactl", $"set-sink-mute {sink} 0");
+		var pactlResult = RunProcessCapture("pactl", $"set-sink-volume {sink} {percent}%");
 
-		if (RunProcessCapture("pactl", $"set-sink-volume {sink} {percent}%") is null)
+		var pactlReadback = RunProcessCapture("pactl", $"get-sink-volume {sink}")?.Trim()?.Split('\n').FirstOrDefault()?.Trim();
+		AudioProcessorLog.Write("playback", $"Master output volume set to {percent}% on sink '{sink}' (pactl {(pactlResult is null ? "FAIL" : "ok")}). Readback: {pactlReadback}");
+	}
+
+	/// <summary>
+	/// Resolves the PipeWire sink (by index) that the running entertainment stream is currently routed to,
+	/// so master volume changes the sink the operator is actually hearing. Null when nothing is playing or
+	/// pactl is unavailable.
+	/// </summary>
+	private string? ResolveActiveEntertainmentSink()
+	{
+		if (!OperatingSystem.IsLinux() || _externalPlayerProcess is null || _externalPlayerProcess.HasExited)
 		{
-			AudioProcessorLog.Write("playback", $"pactl set-sink-volume on '{sink}' failed.");
-			return;
+			return null;
 		}
 
-		// Read the volume back so the log shows what the sink actually applied (diagnoses cases where the
-		// resolved sink is not the one the audio is routed to, or PipeWire ignored the request).
-		var readback = RunProcessCapture("pactl", $"get-sink-volume {sink}")?.Trim();
-		AudioProcessorLog.Write("playback", string.IsNullOrWhiteSpace(readback)
-			? $"Master output volume set to {percent}% on '{sink}'."
-			: $"Master output volume set to {percent}% on '{sink}'. Readback: {readback}");
+		var json = RunProcessCapture("pactl", "-f json list sink-inputs");
+		if (string.IsNullOrWhiteSpace(json))
+		{
+			return null;
+		}
+
+		try
+		{
+			using var document = JsonDocument.Parse(json);
+			if (document.RootElement.ValueKind != JsonValueKind.Array)
+			{
+				return null;
+			}
+
+			foreach (var sinkInput in document.RootElement.EnumerateArray())
+			{
+				var properties = sinkInput.TryGetProperty("properties", out var props) && props.ValueKind == JsonValueKind.Object ? props : default;
+				var appName = ReadProperty(properties, "application.name");
+				var binary = ReadProperty(properties, "application.process.binary");
+				var isEntertainment = string.Equals(appName, EntertainmentSinkInputAppName, StringComparison.OrdinalIgnoreCase)
+					|| string.Equals(binary, "mpv", StringComparison.OrdinalIgnoreCase)
+					|| string.Equals(binary, "ffplay", StringComparison.OrdinalIgnoreCase);
+				if (!isEntertainment || !sinkInput.TryGetProperty("sink", out var sinkElement))
+				{
+					continue;
+				}
+
+				// pactl reports the routed sink as a numeric index; set-sink-volume accepts that index.
+				return sinkElement.ValueKind == JsonValueKind.Number && sinkElement.TryGetInt32(out var sinkIndex)
+					? sinkIndex.ToString(CultureInfo.InvariantCulture)
+					: sinkElement.GetString();
+			}
+		}
+		catch (JsonException)
+		{
+			return null;
+		}
+
+		return null;
 	}
 
 	/// <summary>

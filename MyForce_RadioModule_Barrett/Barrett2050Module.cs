@@ -116,6 +116,11 @@ public sealed class Barrett2050Module : IRadioModule, IKeyingProvider
 		// Pull the channel list from the radio once at startup and report it (§3.11). Best effort: a radio
 		// that does not answer IDL just leaves the list empty until the operator runs channel_info.
 		await ReportChannelsAsync(cancellationToken).ConfigureAwait(false);
+		_channelsReported = true;
+
+		// Report the radio's CURRENT channel (IC) at boot so the UI immediately shows what it is tuned to,
+		// without waiting for the first 25 s poll cycle.
+		await ReportCurrentChannelAsync(cancellationToken).ConfigureAwait(false);
 
 		_pollTask = Task.Run(() => PollLoopAsync(_lifetime.Token), CancellationToken.None);
 		_host.Log(LogLevel.Info, $"Barrett 2050 module started ({_comPort ?? "shared CAT port"}).");
@@ -476,6 +481,37 @@ public sealed class Barrett2050Module : IRadioModule, IKeyingProvider
 			Signal: null,
 			Ready: true,
 			Scan: scanning));
+	}
+
+	// Reads the radio's current channel (IC) and reports it, so the UI shows the tuned channel immediately
+	// (e.g. at boot) without waiting for the poll loop. Labels the channel with its RX frequency if known.
+	private async Task ReportCurrentChannelAsync(CancellationToken cancellationToken)
+	{
+		if (_link is null)
+		{
+			return;
+		}
+
+		try
+		{
+			var channelText = await _link.SendAsync("IC", cancellationToken).ConfigureAwait(false);
+			if (!int.TryParse(channelText.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var channelNumber))
+			{
+				return;
+			}
+
+			_lastChannel = channelNumber;
+			_host.ReportState(new RadioStateReport(
+				Channel: new ChannelInfo(channelNumber, _channelRxLabels.TryGetValue(channelNumber, out var rxLabel) ? rxLabel : null),
+				Zone: null,
+				Mode: null,
+				Signal: null,
+				Ready: true));
+		}
+		catch (Exception ex) when (ex is IOException or TimeoutException or InvalidOperationException)
+		{
+			_host.Log(LogLevel.Debug, $"Barrett 2050: could not read current channel (IC): {ex.Message}");
+		}
 	}
 
 	// Pull the programmed channel list from the radio and report it to the AP, which publishes it on

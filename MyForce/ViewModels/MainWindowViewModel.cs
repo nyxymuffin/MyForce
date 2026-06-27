@@ -755,6 +755,10 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 		UpdateClock();
 		LoadInternetRadioCatalog();
 		RestoreAmFmUiState();
+		// Persisted channel centers survive a UI reboot, but the patrol PROXIMITY LIST only re-ranks on a
+		// location change. Rank once at startup so the list is populated immediately instead of staying
+		// blank until the next GPS update.
+		RefreshProximityList();
 		ApplyMqttState(_mqttConnectionService.CurrentState);
 		_adminWhat3WordsApiKey = _what3WordsService.GetConfiguredApiKey() ?? string.Empty;
 		_ = RefreshWhat3WordsAsync();
@@ -3083,6 +3087,9 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 		RebuildPatrolRadioChannelList();
 		RebuildRadioSelectionItems();
 		RefreshTalkRadioDisplay();
+		// The retained channels topic can arrive before the default radio selection is established on a UI
+		// reboot; rebuild the CHANNELS picker now that the selected radio is known so its list is correct.
+		RebuildChannelSelectionItems();
 	}
 
 	// On startup (and whenever the current selection/talk radio is no longer declared) fall back to the
