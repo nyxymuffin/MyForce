@@ -113,6 +113,12 @@ internal sealed class AudioProcessorCoordinator : IAsyncDisposable
 	// Radios whose operator-mic gate is currently open (TX). Guarded by _engineRoutingGate.
 	private readonly HashSet<string> _openMicGates = new(StringComparer.OrdinalIgnoreCase);
 
+	// Per-radio RX monitor gain (0..1), keyed by radio id value. Driven by the radio-page VOL buttons via
+	// the channel-gain command for the "radio-{id}-rx" mixer channel; scales that radio's RX -> speaker
+	// crosspoint in the routing snapshot (§3.6.5). Radios absent here monitor at unity. Guarded by
+	// _engineRoutingGate.
+	private readonly Dictionary<string, float> _radioRxGain = new(StringComparer.OrdinalIgnoreCase);
+
 	private readonly object _engineRoutingGate = new();
 
 	private readonly CancellationTokenSource _lifetimeCts = new();
@@ -861,6 +867,20 @@ internal sealed record PersistedBridgeMember(
 
 			_mixerState.SetGain(command.ChannelId, command.Gain);
 			_internetRadioController.SetOutputGain(command.ChannelId, command.Gain);
+			// A radio RX channel ("radio-{id}-rx") gain is the operator's per-radio monitor volume: store it
+			// and rebuild the routing snapshot so the RT engine actually scales that radio's RX -> speaker
+			// crosspoint (the mixer-state gain alone is not read by the RT mix). (§3.6.5)
+			if (TryGetRadioRxId(command.ChannelId, out var rxRadioId))
+			{
+				lock (_engineRoutingGate)
+				{
+					_radioRxGain[rxRadioId] = (float)Math.Clamp(command.Gain, 0m, 1m);
+				}
+
+				_realtimeEngine.PublishRouting(BuildEngineRoutingSnapshot());
+				AudioProcessorLog.Write("engine", $"Applied radio RX monitor gain {command.Gain:P0} for '{rxRadioId}'.");
+			}
+
 			await PublishMixerStateAsync(CancellationToken.None).ConfigureAwait(false);
 			await PublishCommandAckAsync(topic, msgId, "ok", null, null, null).ConfigureAwait(false);
 			return;
@@ -1433,17 +1453,23 @@ internal sealed record PersistedBridgeMember(
 	private EngineRoutingSnapshot BuildEngineRoutingSnapshot()
 	{
 		var builder = new EngineRoutingBuilder(_engineTopology);
-		foreach (var radioId in _registry.RadioIds)
-		{
-			builder.SetGain($"rx:{radioId.Value}", "spk", 1.0f);
-		}
 
 		string[] openGates;
 		IReadOnlyList<BridgeRoutingEdge> bridgeEdges;
+		Dictionary<string, float> rxGains;
 		lock (_engineRoutingGate)
 		{
 			openGates = _openMicGates.ToArray();
 			bridgeEdges = _bridgeRoutingEdges;
+			// Snapshot the per-radio RX gains under the lock so the build sees a consistent set.
+			rxGains = new Dictionary<string, float>(_radioRxGain, StringComparer.OrdinalIgnoreCase);
+		}
+
+		// Monitor each radio's RX to the speaker, scaled by its operator-set RX volume (default unity).
+		foreach (var radioId in _registry.RadioIds)
+		{
+			var gain = rxGains.TryGetValue(radioId.Value, out var stored) ? stored : 1.0f;
+			builder.SetGain($"rx:{radioId.Value}", "spk", gain);
 		}
 
 		foreach (var radioValue in openGates)
@@ -1458,6 +1484,31 @@ internal sealed record PersistedBridgeMember(
 		}
 
 		return builder.Build();
+	}
+
+	/// <summary>
+	/// Resolves a mixer channel id of the form "radio-{id}-rx" to its owning radio id, but only when that
+	/// radio is in the live registry. Returns false for any non-radio channel (e.g. "entertainment",
+	/// "master") so only genuine per-radio RX volume commands touch the routing snapshot (§3.6.5).
+	/// </summary>
+	private bool TryGetRadioRxId(string channelId, out string radioId)
+	{
+		radioId = string.Empty;
+		if (string.IsNullOrWhiteSpace(channelId))
+		{
+			return false;
+		}
+
+		foreach (var id in _registry.RadioIds)
+		{
+			if (string.Equals(channelId, AudioChannelId.ForRadioRx(id).Value, StringComparison.OrdinalIgnoreCase))
+			{
+				radioId = id.Value;
+				return true;
+			}
+		}
+
+		return false;
 	}
 
 	/// <summary>Publishes a radio's retained module state (TX phase merged with VOX Call Detect, §5.8.5).</summary>
