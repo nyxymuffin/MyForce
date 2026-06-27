@@ -1720,7 +1720,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 		var current = element;
 		foreach (var segment in path.Split('.'))
 		{
-			if (current.ValueKind != JsonValueKind.Object || !current.TryGetProperty(segment, out var next))
+			if (current.ValueKind != JsonValueKind.Object || !TryGetPropertyFlexible(current, segment, out var next))
 			{
 				return null;
 			}
@@ -1729,6 +1729,32 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 		}
 
 		return current;
+	}
+
+	// Match a schema field name against a config property tolerating snake_case vs camelCase vs casing
+	// (e.g. schema "ptt_lead_ms" matches a config "pttLeadMs"), so the editor prefills regardless of how
+	// the config was serialized.
+	private static bool TryGetPropertyFlexible(JsonElement obj, string name, out JsonElement value)
+	{
+		if (obj.TryGetProperty(name, out value))
+		{
+			return true;
+		}
+
+		var target = NormalizeKey(name);
+		foreach (var property in obj.EnumerateObject())
+		{
+			if (string.Equals(NormalizeKey(property.Name), target, StringComparison.Ordinal))
+			{
+				value = property.Value;
+				return true;
+			}
+		}
+
+		value = default;
+		return false;
+
+		static string NormalizeKey(string key) => key.Replace("_", string.Empty).ToLowerInvariant();
 	}
 
 	// Write a value into a nested JsonObject by dotted path, creating intermediate objects as needed.
@@ -3087,8 +3113,10 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 		RebuildPatrolRadioChannelList();
 		RebuildRadioSelectionItems();
 		RefreshTalkRadioDisplay();
-		// The retained channels topic can arrive before the default radio selection is established on a UI
-		// reboot; rebuild the CHANNELS picker now that the selected radio is known so its list is correct.
+		// These must run AFTER EnsureDefaultRadioSelection sets the default radio: on boot the runtime list
+		// arrives with no radio selected yet, so the function-button panel and CHANNELS picker would
+		// otherwise be built for an empty selection and stay blank until the operator re-selects.
+		RebuildRadioFunctionButtons();
 		RebuildChannelSelectionItems();
 	}
 

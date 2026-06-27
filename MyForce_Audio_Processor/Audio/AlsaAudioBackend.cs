@@ -202,7 +202,16 @@ internal sealed class AlsaAudioBackend : IAudioBackend
 	{
 		if (deviceId.StartsWith("alsa:", StringComparison.OrdinalIgnoreCase))
 		{
-			return (deviceId["alsa:".Length..], null, null);
+			// Use "plughw" (ALSA's format/rate/channel conversion plugin), NOT raw "hw": the engine runs
+			// 32-bit float mono and most cards only offer S16/stereo, so raw hw fails snd_pcm_set_params
+			// with "Sample format not available". plughw converts transparently.
+			var hw = deviceId["alsa:".Length..];
+			if (hw.StartsWith("hw:", StringComparison.OrdinalIgnoreCase))
+			{
+				hw = "plughw:" + hw["hw:".Length..];
+			}
+
+			return (hw, null, null);
 		}
 
 		if (deviceId.StartsWith("alsa_", StringComparison.OrdinalIgnoreCase)
