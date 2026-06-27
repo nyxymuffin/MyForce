@@ -1914,9 +1914,10 @@ internal sealed record PersistedBridgeMember(
 					// IS producing monitor audio and any silence is downstream (PipeWire stream/volume).
 					AudioProcessorLog.Write("engine", $"Speaker (sink 0) output level: {_realtimeEngine.GetSinkLevel(0):0.0000}");
 
-					// Keep the engine's own PipeWire playback streams unmuted at full volume - PipeWire can
-					// remember them muted/at 0, which makes the monitor silent even though writes succeed.
-					AudioFrameworkCatalog.EnsureEngineStreamsAudible();
+					// Keep the engine's own PipeWire playback streams unmuted/full, and MOVE the speaker monitor
+					// stream onto the configured speaker sink (PULSE_SINK targeting is ignored by the bridge, so
+					// it otherwise lands on the wrong default sink and is inaudible).
+					AudioFrameworkCatalog.EnsureEngineStreamsAudible(_routingState.CurrentSnapshot.SpeakerSink.DeviceId);
 				}
 
 				// Bridge arbitration runs on the same control tick, off the RT path (§3.5).
@@ -3361,7 +3362,7 @@ internal sealed class AudioFrameworkCatalog
 	/// so the engine's monitor stream can sit muted/at 0 while mpv (a different app) stays audible - which is
 	/// exactly the "writes succeed, consumed, but silent" symptom. Idempotent; safe to call periodically.
 	/// </summary>
-	public static void EnsureEngineStreamsAudible()
+	public static void EnsureEngineStreamsAudible(string? speakerSink)
 	{
 		if (!OperatingSystem.IsLinux())
 		{
@@ -3373,6 +3374,9 @@ internal sealed class AudioFrameworkCatalog
 		{
 			return;
 		}
+
+		// Only a real PipeWire/Pulse sink name (e.g. "alsa_output.pci-...") can be a move target.
+		var canMove = !string.IsNullOrWhiteSpace(speakerSink) && speakerSink.Contains('.');
 
 		try
 		{
@@ -3394,7 +3398,7 @@ internal sealed class AudioFrameworkCatalog
 				var binary = ReadStringProperty(properties, "application.process.binary");
 
 				// The engine's streams are ALSA-pulse plugin streams owned by this dotnet process; mpv
-				// (entertainment) is a separate "mpv" process and must NOT be forced here.
+				// (entertainment) is a separate "mpv" process and must NOT be touched here.
 				var isEngineStream = string.Equals(binary, "dotnet", StringComparison.OrdinalIgnoreCase)
 					|| (appName is not null && appName.Contains("ALSA plug-in", StringComparison.OrdinalIgnoreCase));
 				if (!isEngineStream)
@@ -3404,12 +3408,41 @@ internal sealed class AudioFrameworkCatalog
 
 				_ = TryRunProcess("pactl", $"set-sink-input-mute {index} 0");
 				_ = TryRunProcess("pactl", $"set-sink-input-volume {index} 100%");
+
+				// The STEREO engine stream is the operator speaker monitor. PULSE_SINK was ignored so it
+				// landed on the default sink, not the speaker the operator hears - move it explicitly.
+				if (canMove && CountChannels(sinkInput) == 2)
+				{
+					_ = TryRunProcess("pactl", $"move-sink-input {index} {speakerSink}");
+				}
 			}
 		}
 		catch (JsonException)
 		{
 			// Ignore malformed pactl output.
 		}
+	}
+
+	// Channel count of a pactl sink-input, from its channel_map (array or comma string). Defaults to 1.
+	private static int CountChannels(JsonElement sinkInput)
+	{
+		if (!sinkInput.TryGetProperty("channel_map", out var map))
+		{
+			return 1;
+		}
+
+		if (map.ValueKind == JsonValueKind.Array)
+		{
+			return Math.Max(1, map.GetArrayLength());
+		}
+
+		if (map.ValueKind == JsonValueKind.String)
+		{
+			var value = map.GetString();
+			return string.IsNullOrWhiteSpace(value) ? 1 : value.Split(',').Length;
+		}
+
+		return 1;
 	}
 
 	/// <summary>
