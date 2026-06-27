@@ -24,7 +24,7 @@ public sealed class Barrett2050ModuleFactory : IRadioModuleFactory
 
 	public string DisplayName => "Barrett 2050";
 
-	public string Version => "0.2.0";
+	public string Version => "0.3.0";
 
 	public int ContractVersion => RadioContract.Version;
 
@@ -361,7 +361,8 @@ public sealed class Barrett2050Module : IRadioModule, IKeyingProvider
 
 		var current = ParsePowerLevel(await _link.SendAsync("IH", cancellationToken).ConfigureAwait(false));
 		var goHigh = current != 'H';   // if currently high, drop to low; otherwise go high
-		await _link.SendAsync(goHigh ? "EHH" : "EHL", cancellationToken).ConfigureAwait(false);
+		var setCmd = goHigh ? "EHH" : "EHL";
+		await _link.SendAsync(setCmd, cancellationToken).ConfigureAwait(false);
 
 		var after = ParsePowerLevel(await _link.SendAsync("IH", cancellationToken).ConfigureAwait(false));
 		if (after == 'M')
@@ -371,6 +372,7 @@ public sealed class Barrett2050Module : IRadioModule, IKeyingProvider
 		}
 
 		_highPower = after == 'H';
+		_host.Log(LogLevel.Info, $"Barrett 2050 power toggle: was {current}, sent {setCmd}, now {after} (high={_highPower}).");
 		_host.ReportState(new RadioStateReport(
 			Channel: CurrentChannelInfo(),
 			Zone: null,
@@ -544,7 +546,8 @@ public sealed class Barrett2050Module : IRadioModule, IKeyingProvider
 		// Power level: "IH" -> L = low, H = high, M = medium. We never run at medium: if the radio reports
 		// M, force high (EHH) and re-read so the state reflects the corrected level. The UI shows the power
 		// button red when high.
-		var power = ParsePowerLevel(await _link.SendAsync("IH", cancellationToken).ConfigureAwait(false));
+		var powerText = await _link.SendAsync("IH", cancellationToken).ConfigureAwait(false);
+		var power = ParsePowerLevel(powerText);
 		if (power == 'M')
 		{
 			await _link.SendAsync("EHH", cancellationToken).ConfigureAwait(false);
@@ -552,6 +555,7 @@ public sealed class Barrett2050Module : IRadioModule, IKeyingProvider
 		}
 
 		_highPower = power == 'H';
+		_host.Log(LogLevel.Info, $"Barrett 2050 poll: IS='{scanText.Trim()}' (scan={scanning}), IH='{powerText.Trim()}' (power={power}, high={_highPower}).");
 
 		_host.ReportState(new RadioStateReport(
 			Channel: CurrentChannelInfo(),
