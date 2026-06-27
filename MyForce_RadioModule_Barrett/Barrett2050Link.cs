@@ -171,7 +171,10 @@ internal sealed class Barrett2050Link : IAsyncDisposable
 						return builder.ToString().Trim();
 					}
 
-					if (b != (byte)'\n')
+					// Keep ONLY printable ASCII. The radio frames replies with control bytes (and journald hid
+					// them as "blob data"); worse, a stray control char left "Y"/"H" un-matched by the parsers,
+					// so scan/power read wrong. Dropping non-printables yields clean "Y"/"N"/"H"/"L"/digits.
+					if (b >= 0x20 && b <= 0x7E)
 					{
 						builder.Append((char)b);
 					}

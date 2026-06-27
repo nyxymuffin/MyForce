@@ -3589,14 +3589,10 @@ internal sealed class AudioFrameworkCatalog
 			{
 				foreach (var device in ParseCaptureDevicesFromAlsaHardwareList(alsaHardwareList))
 				{
-					var alsaKey = device.Id.Value.StartsWith("alsa:", StringComparison.OrdinalIgnoreCase)
-						? device.Id.Value["alsa:".Length..]
-						: device.Id.Value;
-					if (coveredAlsaKeys.Contains(alsaKey))
-					{
-						continue;
-					}
-
+					// ALWAYS offer the direct ALSA hw path (opened as plughw), even when a PipeWire source also
+					// covers the card. A PipeWire source captures only ONE active input port (often the wrong
+					// one, e.g. mic instead of line-in), so the operator needs the raw-hardware entry that
+					// `arecord -D plughw:x,y` proves works for the jack the radio is wired to (§3.7.8).
 					merged.Add(device);
 				}
 			}
