@@ -107,6 +107,9 @@ internal sealed class AudioProcessorCoordinator : IAsyncDisposable
 
 	private readonly Dictionary<string, bool> _callDetectByRadio = new(StringComparer.OrdinalIgnoreCase);
 
+	// Throttle counter for the periodic RX-level diagnostic log (VOX loop ticks every 20ms).
+	private int _rxLevelLogTick;
+
 	// Radios whose operator-mic gate is currently open (TX). Guarded by _engineRoutingGate.
 	private readonly HashSet<string> _openMicGates = new(StringComparer.OrdinalIgnoreCase);
 
@@ -1879,6 +1882,21 @@ internal sealed record PersistedBridgeMember(
 					{
 						_callDetectByRadio[radioValue] = detected;
 						await PublishRadioModuleStateAsync(new RadioId(radioValue)).ConfigureAwait(false);
+					}
+				}
+
+				// Throttled diagnostic (~every 5s): log each radio's raw RX capture level so we can tell if
+				// audio is actually reaching the engine. Non-zero = the bound device/port is capturing; a
+				// flat 0.0000 = wrong device or input port (no signal into the mixer).
+				if (++_rxLevelLogTick >= 250)
+				{
+					_rxLevelLogTick = 0;
+					foreach (var (radioValue, _) in _voxDetectors)
+					{
+						if (_rxSourceIndexByRadio.TryGetValue(radioValue, out var diagSourceIndex))
+						{
+							AudioProcessorLog.Write("engine", $"RX capture level for '{radioValue}' (source {diagSourceIndex}): {_realtimeEngine.GetSourceLevel(diagSourceIndex):0.0000}");
+						}
 					}
 				}
 

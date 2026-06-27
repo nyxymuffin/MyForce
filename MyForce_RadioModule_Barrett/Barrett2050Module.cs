@@ -24,7 +24,7 @@ public sealed class Barrett2050ModuleFactory : IRadioModuleFactory
 
 	public string DisplayName => "Barrett 2050";
 
-	public string Version => "0.4.0";
+	public string Version => "0.5.0";
 
 	public int ContractVersion => RadioContract.Version;
 
@@ -512,19 +512,13 @@ public sealed class Barrett2050Module : IRadioModule, IKeyingProvider
 			return;
 		}
 
-		// Online detection: "IV" (interrogate version/identity). Any non-error reply means the radio is
-		// present and responding; a timeout/blank means it is offline.
-		var iv = await _link.SendAsync("IV", cancellationToken).ConfigureAwait(false);
-		var online = !string.IsNullOrWhiteSpace(iv) && !IsErrorReply(iv);
-		if (!online)
-		{
-			_channelsReported = false;   // re-pull the channel list when it comes back
-			_host.ReportState(new RadioStateReport(Channel: null, Zone: null, Mode: null, Signal: null, Ready: false));
-			return;
-		}
+		// Each datum is its own spaced transaction (the link drains + spaces). We do NOT hard-gate on IV:
+		// this radio does not answer IV even though it answers IE/IDF/IC/IS/IH, so gating on IV wrongly
+		// declared it offline and suppressed scan/power and wiped the channel. Online = it answered ANYTHING.
+		var iv = await SendLoggedAsync("IV", cancellationToken).ConfigureAwait(false);
 
-		// First reply after coming online: pull the programmed channel list (IE count + IDF frequencies).
-		if (!_channelsReported)
+		// Pull the programmed channel list once we know the radio is talking (any reply, incl. from below).
+		if (!_channelsReported && Responded(iv))
 		{
 			await ReportChannelsAsync(cancellationToken).ConfigureAwait(false);
 			_channelsReported = true;
@@ -532,30 +526,49 @@ public sealed class Barrett2050Module : IRadioModule, IKeyingProvider
 
 		// Current channel (IC): only every ChannelPollEveryTicks (60s); the cached value rides every status
 		// report so the 10s status polls never blank the displayed channel.
+		string? icReply = null;
 		if (_pollTick % ChannelPollEveryTicks == 0)
 		{
-			await UpdateCurrentChannelAsync(cancellationToken).ConfigureAwait(false);
+			icReply = await SendLoggedAsync("IC", cancellationToken).ConfigureAwait(false);
+			if (int.TryParse(icReply.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var channelNumber) && channelNumber > 0)
+			{
+				_lastChannel = channelNumber;
+			}
 		}
 
 		_pollTick++;
 
 		// Scan state: "IS" -> Y = scanning, N or E0 = not scanning.
-		var scanText = await _link.SendAsync("IS", cancellationToken).ConfigureAwait(false);
+		var scanText = await SendLoggedAsync("IS", cancellationToken).ConfigureAwait(false);
 		bool? scanning = ParseScanState(scanText);
 
 		// Power level: "IH" -> L = low, H = high, M = medium. We never run at medium: if the radio reports
-		// M, force high (EHH) and re-read so the state reflects the corrected level. The UI shows the power
-		// button red when high.
-		var powerText = await _link.SendAsync("IH", cancellationToken).ConfigureAwait(false);
+		// M, force high (EHH) and re-read so the state reflects the corrected level. UI shows red when high.
+		var powerText = await SendLoggedAsync("IH", cancellationToken).ConfigureAwait(false);
 		var power = ParsePowerLevel(powerText);
 		if (power == 'M')
 		{
-			await _link.SendAsync("EHH", cancellationToken).ConfigureAwait(false);
-			power = ParsePowerLevel(await _link.SendAsync("IH", cancellationToken).ConfigureAwait(false));
+			await SendLoggedAsync("EHH", cancellationToken).ConfigureAwait(false);
+			powerText = await SendLoggedAsync("IH", cancellationToken).ConfigureAwait(false);
+			power = ParsePowerLevel(powerText);
 		}
 
 		_highPower = power == 'H';
-		_host.Log(LogLevel.Info, $"Barrett 2050 poll: IS='{scanText.Trim()}' (scan={scanning}), IH='{powerText.Trim()}' (power={power}, high={_highPower}).");
+
+		// Pull the channel list lazily if IV stayed silent but other queries answered (radio is clearly up).
+		if (!_channelsReported && (Responded(scanText) || Responded(powerText)))
+		{
+			await ReportChannelsAsync(cancellationToken).ConfigureAwait(false);
+			_channelsReported = true;
+		}
+
+		var online = Responded(iv) || Responded(icReply) || Responded(scanText) || Responded(powerText);
+		if (!online)
+		{
+			_channelsReported = false;   // re-pull the channel list when it comes back
+			_host.ReportState(new RadioStateReport(Channel: null, Zone: null, Mode: null, Signal: null, Ready: false));
+			return;
+		}
 
 		_host.ReportState(new RadioStateReport(
 			Channel: CurrentChannelInfo(),
@@ -565,6 +578,22 @@ public sealed class Barrett2050Module : IRadioModule, IKeyingProvider
 			Ready: true,
 			Scan: scanning,
 			Buttons: BuildButtonStates()));
+	}
+
+	// A non-empty reply means the radio responded (even an "E0" error means it is present); empty = timeout.
+	private static bool Responded(string? reply) => !string.IsNullOrWhiteSpace(reply);
+
+	// Sends a command and logs its raw reply for diagnosis (each command is a separate spaced transaction).
+	private async Task<string> SendLoggedAsync(string command, CancellationToken cancellationToken)
+	{
+		if (_link is null)
+		{
+			return string.Empty;
+		}
+
+		var reply = await _link.SendAsync(command, cancellationToken).ConfigureAwait(false);
+		_host.Log(LogLevel.Info, $"Barrett 2050 {command} -> '{reply.Trim()}'");
+		return reply;
 	}
 
 	// The cached current channel built into every state report (so 10s status polls don't blank it). Null
