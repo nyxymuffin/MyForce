@@ -24,7 +24,7 @@ public sealed class Barrett2050ModuleFactory : IRadioModuleFactory
 
 	public string DisplayName => "Barrett 2050";
 
-	public string Version => "0.6.0";
+	public string Version => "0.7.0";
 
 	public int ContractVersion => RadioContract.Version;
 
@@ -308,7 +308,11 @@ public sealed class Barrett2050Module : IRadioModule, IKeyingProvider
 				bool start = (args.ValueKind == JsonValueKind.Object && args.TryGetProperty("state", out var s) && s.ValueKind == JsonValueKind.String)
 					? string.Equals(s.GetString(), "start", StringComparison.OrdinalIgnoreCase)
 					: args.ValueKind == JsonValueKind.Object && args.TryGetProperty("on", out var on) && on.ValueKind == JsonValueKind.True;
-				return await ExecuteAsync(start ? "XN1" : "XN0", cancellationToken).ConfigureAwait(false);
+				var scanResult = await ExecuteAsync(start ? "XN1" : "XN0", cancellationToken).ConfigureAwait(false);
+				// Immediately read back the real scan state (IS) and report it, so the UI reflects the radio's
+				// actual scan state right away instead of waiting up to 10s for the next poll.
+				await ReportScanStateAsync(cancellationToken).ConfigureAwait(false);
+				return scanResult;
 
 			case "channel_info":
 				// Return all channel use labels (IDL): collect the multi-line reply, emit it, and report the
@@ -319,6 +323,27 @@ public sealed class Barrett2050Module : IRadioModule, IKeyingProvider
 			default:
 				return OperationResult.Error($"Control '{action}' is not supported by the Barrett 2050.");
 		}
+	}
+
+	// Reads the radio's current scan state (IS) right after a scan command and reports it, so the UI's SCAN
+	// button reflects the radio's real state immediately instead of after the next 10s poll.
+	private async Task ReportScanStateAsync(CancellationToken cancellationToken)
+	{
+		if (_link is null)
+		{
+			return;
+		}
+
+		var scanText = await _link.SendAsync("IS", cancellationToken).ConfigureAwait(false);
+		_host.Log(LogLevel.Info, $"Barrett 2050 IS (after scan cmd) -> '{scanText.Trim()}'");
+		_host.ReportState(new RadioStateReport(
+			Channel: CurrentChannelInfo(),
+			Zone: null,
+			Mode: null,
+			Signal: null,
+			Ready: true,
+			Scan: ParseScanState(scanText),
+			Buttons: BuildButtonStates()));
 	}
 
 	// ── Function buttons (§3.10) ──────────────────────────────────────────────────────────
