@@ -133,7 +133,7 @@ internal sealed class AudioProcessorCoordinator : IAsyncDisposable
 		_pluginCatalog = RadioPluginCatalog.Load(AudioProcessorPluginDirectory.Resolve(_configStore.StoredConfig), AudioProcessorLog.Write);
 		_persistedTopology = AudioProcessorPersistedTopology.Load(_configStore.StoredConfig);
 		_registry = AudioProcessorRegistry.Create(_persistedTopology, _pluginCatalog.Modules, AudioProcessorLog.Write);
-		_audioFramework = AudioFrameworkCatalog.CreateDefault(_registry.RadioIds, AudioFrameworkCatalog.DiscoverPlaybackDevices());
+		_audioFramework = AudioFrameworkCatalog.CreateDefault(_registry.RadioIds, AudioFrameworkCatalog.DiscoverPlaybackDevices(), AudioFrameworkCatalog.DiscoverCaptureDevices());
 		_internetRadioController = new InternetRadioPlaybackController(_configStore);
 		_mixerState = AudioMixerState.CreateDefault(_audioFramework.ChannelStrips);
 		_routingState = AudioProcessorRoutingState.CreateDefault(_registry.RadioIds, ResolveInitialSpeakerDeviceId());
@@ -3101,7 +3101,7 @@ internal sealed class AudioFrameworkCatalog
 
 	public IReadOnlyList<AudioChannelStrip> ChannelStrips { get; }
 
-	public static AudioFrameworkCatalog CreateDefault(IEnumerable<RadioId> radioIds, IReadOnlyList<AudioDevice>? playbackDevices)
+	public static AudioFrameworkCatalog CreateDefault(IEnumerable<RadioId> radioIds, IReadOnlyList<AudioDevice>? playbackDevices, IReadOnlyList<AudioDevice>? captureDevices = null)
 	{
 		ArgumentNullException.ThrowIfNull(radioIds);
 
@@ -3119,6 +3119,12 @@ internal sealed class AudioFrameworkCatalog
 		else
 		{
 			devices.Add(new AudioDevice(new AudioDeviceId(DefaultSpeakerDeviceId), SystemDefaultSpeakerDisplayName, "speaker", false, true));
+		}
+
+		// Real capture inputs (mics / line-ins / radio RX cards) for the admin RX-soundcard pick-list.
+		if (captureDevices is not null && captureDevices.Count > 0)
+		{
+			devices.AddRange(captureDevices);
 		}
 
 		devices.AddRange(radioIdList.Select(static radioId =>
@@ -3430,6 +3436,207 @@ internal sealed class AudioFrameworkCatalog
 				: $"{cardName} - {deviceName}";
 
 			devices.Add(new AudioDevice(new AudioDeviceId(deviceId), displayName, "speaker", false, true));
+		}
+
+		return CreateOrderedPlaybackDeviceList(devices);
+	}
+
+	/// <summary>
+	/// Discovers Linux capture sources (real microphones / line-ins / radio RX cards) from PipeWire or
+	/// PulseAudio plus ALSA hardware, so the admin RX-soundcard pick-list shows actual inputs instead of
+	/// only the synthetic "Operator Console". Monitor sources (loopbacks of outputs) are excluded.
+	/// </summary>
+	public static IReadOnlyList<AudioDevice> DiscoverCaptureDevices()
+	{
+		if (!OperatingSystem.IsLinux())
+		{
+			return Array.Empty<AudioDevice>();
+		}
+
+		try
+		{
+			var merged = new List<AudioDevice>();
+			var coveredAlsaKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+			var sourceJson = TryRunProcess("pactl", "-f json list sources");
+			if (!string.IsNullOrWhiteSpace(sourceJson))
+			{
+				merged.AddRange(ParseCaptureDevicesFromJson(sourceJson, coveredAlsaKeys));
+			}
+			else
+			{
+				var sourceShortList = TryRunProcess("pactl", "list short sources");
+				if (!string.IsNullOrWhiteSpace(sourceShortList))
+				{
+					merged.AddRange(ParseCaptureDevicesFromShortList(sourceShortList));
+				}
+			}
+
+			// arecord -l uses the same line format as aplay -l, so the playback ALSA regex applies.
+			var alsaHardwareList = TryRunProcess("arecord", "-l");
+			if (!string.IsNullOrWhiteSpace(alsaHardwareList))
+			{
+				foreach (var device in ParseCaptureDevicesFromAlsaHardwareList(alsaHardwareList))
+				{
+					var alsaKey = device.Id.Value.StartsWith("alsa:", StringComparison.OrdinalIgnoreCase)
+						? device.Id.Value["alsa:".Length..]
+						: device.Id.Value;
+					if (coveredAlsaKeys.Contains(alsaKey))
+					{
+						continue;
+					}
+
+					merged.Add(device);
+				}
+			}
+
+			if (merged.Count > 0)
+			{
+				AudioProcessorLog.Write("discovery", $"Discovered {merged.Count} Linux capture device(s) (PipeWire sources plus uncovered ALSA hardware).");
+				return CreateOrderedPlaybackDeviceList(merged);
+			}
+
+			AudioProcessorLog.Write("discovery", "No Linux capture devices were discovered.");
+			return Array.Empty<AudioDevice>();
+		}
+		catch (JsonException)
+		{
+			AudioProcessorLog.Write("discovery", "Linux capture discovery failed while parsing pactl JSON source output.");
+			return Array.Empty<AudioDevice>();
+		}
+		catch (InvalidOperationException)
+		{
+			AudioProcessorLog.Write("discovery", "Linux capture discovery could not launch the enumeration process.");
+			return Array.Empty<AudioDevice>();
+		}
+		catch (System.ComponentModel.Win32Exception)
+		{
+			AudioProcessorLog.Write("discovery", "Linux capture discovery requires pactl or arecord to be installed and accessible on PATH.");
+			return Array.Empty<AudioDevice>();
+		}
+	}
+
+	private static IReadOnlyList<AudioDevice> ParseCaptureDevicesFromJson(string output, ISet<string>? coveredAlsaKeys = null)
+	{
+		using var json = JsonDocument.Parse(output);
+		if (json.RootElement.ValueKind != JsonValueKind.Array)
+		{
+			return Array.Empty<AudioDevice>();
+		}
+
+		var devices = new List<AudioDevice>();
+		foreach (var source in json.RootElement.EnumerateArray())
+		{
+			if (!source.TryGetProperty("name", out var nameElement))
+			{
+				continue;
+			}
+
+			var deviceId = nameElement.GetString();
+			if (string.IsNullOrWhiteSpace(deviceId))
+			{
+				continue;
+			}
+
+			// Skip monitor sources: they are loopbacks of an output sink, not real capture inputs.
+			if (deviceId.EndsWith(".monitor", StringComparison.OrdinalIgnoreCase))
+			{
+				continue;
+			}
+
+			var displayName = deviceId;
+			if (source.TryGetProperty("properties", out var propertiesElement) && propertiesElement.ValueKind == JsonValueKind.Object)
+			{
+				if (string.Equals(ReadStringProperty(propertiesElement, "device.class"), "monitor", StringComparison.OrdinalIgnoreCase))
+				{
+					continue;
+				}
+
+				var deviceDescription = ReadStringProperty(propertiesElement, "device.description");
+				if (!string.IsNullOrWhiteSpace(deviceDescription))
+				{
+					displayName = deviceDescription;
+				}
+			}
+
+			if (source.TryGetProperty("description", out var descriptionElement)
+				&& descriptionElement.ValueKind == JsonValueKind.String
+				&& !string.IsNullOrWhiteSpace(descriptionElement.GetString()))
+			{
+				displayName = descriptionElement.GetString()!;
+			}
+
+			var alsaKey = ExtractAlsaHwKey(source);
+			if (alsaKey is not null)
+			{
+				coveredAlsaKeys?.Add(alsaKey);
+			}
+
+			devices.Add(new AudioDevice(new AudioDeviceId(deviceId), displayName, "capture", true, false));
+		}
+
+		return CreateOrderedPlaybackDeviceList(devices);
+	}
+
+	private static IReadOnlyList<AudioDevice> ParseCaptureDevicesFromShortList(string output)
+	{
+		var devices = new List<AudioDevice>();
+		using var reader = new StringReader(output);
+		string? line;
+
+		while ((line = reader.ReadLine()) is not null)
+		{
+			if (string.IsNullOrWhiteSpace(line))
+			{
+				continue;
+			}
+
+			var columns = line.Split('\t', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+			if (columns.Length < 2)
+			{
+				continue;
+			}
+
+			var deviceId = columns[1];
+			if (string.IsNullOrWhiteSpace(deviceId) || deviceId.EndsWith(".monitor", StringComparison.OrdinalIgnoreCase))
+			{
+				continue;
+			}
+
+			var displayName = columns.Length >= 5 && !string.IsNullOrWhiteSpace(columns[4]) ? columns[4] : deviceId;
+			devices.Add(new AudioDevice(new AudioDeviceId(deviceId), displayName, "capture", true, false));
+		}
+
+		return CreateOrderedPlaybackDeviceList(devices);
+	}
+
+	private static IReadOnlyList<AudioDevice> ParseCaptureDevicesFromAlsaHardwareList(string output)
+	{
+		var devices = new List<AudioDevice>();
+		using var reader = new StringReader(output);
+		string? line;
+
+		while ((line = reader.ReadLine()) is not null)
+		{
+			if (string.IsNullOrWhiteSpace(line))
+			{
+				continue;
+			}
+
+			var match = AlsaPlaybackDeviceRegex.Match(line);
+			if (!match.Success)
+			{
+				continue;
+			}
+
+			var cardNumber = match.Groups["cardNumber"].Value;
+			var deviceNumber = match.Groups["deviceNumber"].Value;
+			var cardName = match.Groups["cardName"].Value.Trim();
+			var deviceName = match.Groups["deviceName"].Value.Trim();
+			var deviceId = $"alsa:hw:{cardNumber},{deviceNumber}";
+			var displayName = string.IsNullOrWhiteSpace(deviceName) ? cardName : $"{cardName} - {deviceName}";
+
+			devices.Add(new AudioDevice(new AudioDeviceId(deviceId), displayName, "capture", true, false));
 		}
 
 		return CreateOrderedPlaybackDeviceList(devices);
@@ -4573,13 +4780,22 @@ internal sealed class InternetRadioPlaybackController : IAsyncDisposable
 
 		var sink = GetMasterSinkName();
 		var percent = Math.Clamp((int)Math.Round((double)decimal.Clamp(gain, 0m, 1m) * 100.0), 0, 100);
+
+		// A muted sink swallows any volume change, so always clear mute when setting the level.
+		_ = RunProcessCapture("pactl", $"set-sink-mute {sink} 0");
+
 		if (RunProcessCapture("pactl", $"set-sink-volume {sink} {percent}%") is null)
 		{
 			AudioProcessorLog.Write("playback", $"pactl set-sink-volume on '{sink}' failed.");
 			return;
 		}
 
-		AudioProcessorLog.Write("playback", $"Master output volume set to {percent}% on '{sink}'.");
+		// Read the volume back so the log shows what the sink actually applied (diagnoses cases where the
+		// resolved sink is not the one the audio is routed to, or PipeWire ignored the request).
+		var readback = RunProcessCapture("pactl", $"get-sink-volume {sink}")?.Trim();
+		AudioProcessorLog.Write("playback", string.IsNullOrWhiteSpace(readback)
+			? $"Master output volume set to {percent}% on '{sink}'."
+			: $"Master output volume set to {percent}% on '{sink}'. Readback: {readback}");
 	}
 
 	/// <summary>
