@@ -1913,6 +1913,10 @@ internal sealed record PersistedBridgeMember(
 					// Speaker sink output level (sink 0): if this is non-zero while RX is non-zero, the engine
 					// IS producing monitor audio and any silence is downstream (PipeWire stream/volume).
 					AudioProcessorLog.Write("engine", $"Speaker (sink 0) output level: {_realtimeEngine.GetSinkLevel(0):0.0000}");
+
+					// Keep the engine's own PipeWire playback streams unmuted at full volume - PipeWire can
+					// remember them muted/at 0, which makes the monitor silent even though writes succeed.
+					AudioFrameworkCatalog.EnsureEngineStreamsAudible();
 				}
 
 				// Bridge arbitration runs on the same control tick, off the RT path (§3.5).
@@ -3348,6 +3352,63 @@ internal sealed class AudioFrameworkCatalog
 		{
 			AudioProcessorLog.Write("discovery", "Linux playback discovery requires pactl or aplay to be installed and accessible on PATH.");
 			return Array.Empty<AudioDevice>();
+		}
+	}
+
+	/// <summary>
+	/// Forces the AP's OWN engine playback streams (the in-process ALSA-&gt;PipeWire "pulse" sink-inputs, owned
+	/// by the dotnet process) to 100% volume and unmuted. PipeWire remembers per-application stream volume,
+	/// so the engine's monitor stream can sit muted/at 0 while mpv (a different app) stays audible - which is
+	/// exactly the "writes succeed, consumed, but silent" symptom. Idempotent; safe to call periodically.
+	/// </summary>
+	public static void EnsureEngineStreamsAudible()
+	{
+		if (!OperatingSystem.IsLinux())
+		{
+			return;
+		}
+
+		var json = TryRunProcess("pactl", "-f json list sink-inputs");
+		if (string.IsNullOrWhiteSpace(json))
+		{
+			return;
+		}
+
+		try
+		{
+			using var document = JsonDocument.Parse(json);
+			if (document.RootElement.ValueKind != JsonValueKind.Array)
+			{
+				return;
+			}
+
+			foreach (var sinkInput in document.RootElement.EnumerateArray())
+			{
+				if (!sinkInput.TryGetProperty("index", out var indexElement) || !indexElement.TryGetInt32(out var index))
+				{
+					continue;
+				}
+
+				var properties = sinkInput.TryGetProperty("properties", out var props) && props.ValueKind == JsonValueKind.Object ? props : default;
+				var appName = ReadStringProperty(properties, "application.name");
+				var binary = ReadStringProperty(properties, "application.process.binary");
+
+				// The engine's streams are ALSA-pulse plugin streams owned by this dotnet process; mpv
+				// (entertainment) is a separate "mpv" process and must NOT be forced here.
+				var isEngineStream = string.Equals(binary, "dotnet", StringComparison.OrdinalIgnoreCase)
+					|| (appName is not null && appName.Contains("ALSA plug-in", StringComparison.OrdinalIgnoreCase));
+				if (!isEngineStream)
+				{
+					continue;
+				}
+
+				_ = TryRunProcess("pactl", $"set-sink-input-mute {index} 0");
+				_ = TryRunProcess("pactl", $"set-sink-input-volume {index} 100%");
+			}
+		}
+		catch (JsonException)
+		{
+			// Ignore malformed pactl output.
 		}
 	}
 
