@@ -279,9 +279,18 @@
                                                Text="CH DN" />
                                 </Viewbox>
                             </Border>
-                            <Border Grid.Column="2" Classes="buttonFrame" Width="88" Height="81" PointerPressed="OnScanPressed">
+                            <!-- SCAN reflects the active state like the RADIO/patrol scan buttons: amber frame while scanning. -->
+                            <Border Grid.Column="2" Classes="buttonFrame" Width="88" Height="81" PointerPressed="OnScanPressed" IsVisible="{Binding !IsRadioScanActive}">
                                 <Viewbox Stretch="Uniform">
                                     <!-- Current Selected Channel Scan Button -->
+                                    <TextBlock Classes="white"
+                                               TextAlignment="Center"
+                                               VerticalAlignment="Center"
+                                               Text="SCAN" />
+                                </Viewbox>
+                            </Border>
+                            <Border Grid.Column="2" Classes="buttonFrame directionalActive" Width="88" Height="81" PointerPressed="OnScanPressed" IsVisible="{Binding IsRadioScanActive}">
+                                <Viewbox Stretch="Uniform">
                                     <TextBlock Classes="white"
                                                TextAlignment="Center"
                                                VerticalAlignment="Center"

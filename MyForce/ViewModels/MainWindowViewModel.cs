@@ -583,7 +583,8 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 	// Stores the current directional status shown in the status panel.
 	private string _directionalStatus = "OFF";
 
-	private string _currentTalkRadioVolume = "13";
+	// Mirrors the master output volume (_masterVolume) so the radio-page VOL display matches it.
+	private string _currentTalkRadioVolume = "18";
 
 	private decimal _amFmFrequency = 97.5m;
 
@@ -2414,13 +2415,21 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 	{
 		_masterVolume = Math.Min(_masterVolume + 1, MaxSourceVolume);
 		PublishMasterVolumeCommand();
-		PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(MasterVolumeDisplay)));
+		RaiseMasterVolumeChanged();
 	}
 
 	public void DecreaseMasterVolume()
 	{
 		_masterVolume = Math.Max(_masterVolume - 1, 0);
 		PublishMasterVolumeCommand();
+		RaiseMasterVolumeChanged();
+	}
+
+	// Master and radio-page VOL are the same operator output level for now, so both displays move together
+	// when either set of volume buttons is pressed.
+	private void RaiseMasterVolumeChanged()
+	{
+		CurrentTalkRadioVolume = _masterVolume.ToString(CultureInfo.InvariantCulture);
 		PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(MasterVolumeDisplay)));
 	}
 

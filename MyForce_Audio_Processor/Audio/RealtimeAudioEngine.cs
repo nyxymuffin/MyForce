@@ -30,6 +30,10 @@ internal sealed class RealtimeAudioEngine : IDisposable
 	// Routing is published to the RT thread as an immutable snapshot, swapped atomically.
 	private EngineRoutingSnapshot _snapshot = EngineRoutingSnapshot.Empty;
 
+	// Master output gain (0..1) applied to the operator speaker sink only (sink 0), so master volume
+	// attenuates what the operator hears without touching radio TX levels (§3.6.5). RT reads via Volatile.
+	private float _masterGain = 1f;
+
 	// Lock-free SPSC command ring (control -> RT). Used for discrete one-shots (e.g. reset meters).
 	private readonly EngineCommandRing _commandRing = new(64);
 
@@ -69,6 +73,15 @@ internal sealed class RealtimeAudioEngine : IDisposable
 	{
 		ArgumentNullException.ThrowIfNull(snapshot);
 		Volatile.Write(ref _snapshot, snapshot);
+	}
+
+	/// <summary>
+	/// Sets the master output gain (0..1) for the operator speaker sink. Lock-free; the RT thread picks it
+	/// up on its next frame. Master volume only affects the speaker, never radio TX (§3.6.5).
+	/// </summary>
+	public void SetMasterGain(float gain)
+	{
+		Volatile.Write(ref _masterGain, Math.Clamp(gain, 0f, 1f));
 	}
 
 	/// <summary>Current RMS level (0..1) for a source index; read by the VOX primitive (§3.6.8).</summary>
@@ -212,6 +225,7 @@ internal sealed class RealtimeAudioEngine : IDisposable
 		var sourceCount = snapshot.SourceCount;
 		var sinkCount = snapshot.SinkCount;
 		var frameLength = _mixAccumulator.Length;
+		var masterGain = Volatile.Read(ref _masterGain);
 
 		for (var sink = 0; sink < sinkCount; sink++)
 		{
@@ -231,6 +245,16 @@ internal sealed class RealtimeAudioEngine : IDisposable
 				for (var i = 0; i < frameLength; i++)
 				{
 					_mixAccumulator[i] += buffer[i] * gain;
+				}
+			}
+
+			// Sink 0 is the operator speaker (§3.6 topology): apply the master output gain there only, so
+			// master volume attenuates monitoring without reducing radio TX on the other sinks.
+			if (sink == 0 && masterGain != 1f)
+			{
+				for (var i = 0; i < frameLength; i++)
+				{
+					_mixAccumulator[i] *= masterGain;
 				}
 			}
 

@@ -579,11 +579,13 @@ internal sealed class AudioProcessorPersistedTopology
 	private AudioProcessorPersistedTopology(
 		IReadOnlyList<PersistedRadioDefinition> radioDefinitions,
 		IReadOnlyList<RelaySetDefinition> relaySets,
-		IReadOnlyList<PersistedBridgeDefinition> bridges)
+		IReadOnlyList<PersistedBridgeDefinition> bridges,
+		bool hasStoredRadioDefinitions)
 	{
 		RadioDefinitions = radioDefinitions;
 		RelaySets = relaySets;
 		Bridges = bridges;
+		HasStoredRadioDefinitions = hasStoredRadioDefinitions;
 	}
 
 	public IReadOnlyList<PersistedRadioDefinition> RadioDefinitions { get; }
@@ -592,6 +594,11 @@ internal sealed class AudioProcessorPersistedTopology
 
 	public IReadOnlyList<PersistedBridgeDefinition> Bridges { get; }
 
+	// True when a radio-definitions json was ever written (even "[]"). Distinguishes a never-configured
+	// system (use the starter topology) from one the operator deliberately emptied (keep it empty, so a
+	// deleted radio such as the 4W does not get re-added on the next boot).
+	public bool HasStoredRadioDefinitions { get; }
+
 	public static AudioProcessorPersistedTopology Load(IAudioProcessorStoredConfig storedConfig)
 	{
 		ArgumentNullException.ThrowIfNull(storedConfig);
@@ -599,7 +606,8 @@ internal sealed class AudioProcessorPersistedTopology
 		return new AudioProcessorPersistedTopology(
 			DeserializeList<PersistedRadioDefinition>(storedConfig.RadioDefinitionsJson),
 			DeserializeList<RelaySetDefinition>(storedConfig.RelaySetsJson),
-			DeserializeList<PersistedBridgeDefinition>(storedConfig.BridgesJson));
+			DeserializeList<PersistedBridgeDefinition>(storedConfig.BridgesJson),
+			!string.IsNullOrWhiteSpace(storedConfig.RadioDefinitionsJson));
 	}
 
 	private static IReadOnlyList<T> DeserializeList<T>(string? json)
@@ -768,6 +776,9 @@ internal sealed record PersistedBridgeMember(
 			}
 
 			_internetRadioController.SetMasterVolume(command.Gain);
+			// Drive the operator speaker output gain so master volume changes what is actually heard, not
+			// just the entertainment source level (§3.6.5).
+			_realtimeEngine.SetMasterGain((float)command.Gain);
 			await PublishCommandAckAsync(topic, msgId, "ok", null, null, null).ConfigureAwait(false);
 			return;
 		}
@@ -1391,9 +1402,11 @@ internal sealed record PersistedBridgeMember(
 	/// </summary>
 	private async Task PublishDeclaredRadioViewAsync(IReadOnlyList<PersistedRadioDefinition> definitions)
 	{
+		// Show exactly the radios still in the persisted definition set: a removed radio (including a built-in
+		// resource like the 4W the operator deleted) must drop out of the view, not be forced back in.
 		var declaredIds = new HashSet<string>(definitions.Select(static d => d.RadioId), StringComparer.OrdinalIgnoreCase);
 		var visibleRadios = _registry.Radios
-			.Where(radio => declaredIds.Contains(radio.Id.Value) || radio.Kind == RadioRuntimeKind.Resource)
+			.Where(radio => declaredIds.Contains(radio.Id.Value))
 			.ToArray()
 			.AsReadOnly();
 		var view = new AudioProcessorRegistry(visibleRadios, _registry.Bridges);
@@ -2297,7 +2310,10 @@ internal sealed class AudioProcessorRegistry
 		ArgumentNullException.ThrowIfNull(discoveredModules);
 		ArgumentNullException.ThrowIfNull(log);
 
-		if (topology.RadioDefinitions.Count == 0)
+		// Only fall back to the starter topology when the operator has NEVER written a radio config. An
+		// explicitly emptied list (HasStoredRadioDefinitions, Count 0) is honored as "no radios", so a
+		// deleted built-in (e.g. the 4W) stays deleted instead of being re-seeded every boot.
+		if (topology.RadioDefinitions.Count == 0 && !topology.HasStoredRadioDefinitions)
 		{
 			log("config", "No persisted radio definitions found; using built-in starter topology.");
 			var defaults = CreateDefault(discoveredModules, log);
