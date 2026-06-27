@@ -15,6 +15,8 @@
 //
 // Copyright (C) 2025-2026 NyxTel Wireless / Nyx Gallini
 //
+using System.Net.Sockets;
+using System.Text;
 using MQTTnet;
 using MQTTnet.Formatter;
 using Config.Net;
@@ -64,6 +66,49 @@ internal static class AudioProcessorLog
 	}
 }
 
+/// <summary>
+/// Minimal systemd readiness/watchdog notifier (sd_notify protocol) over $NOTIFY_SOCKET. A unit with
+/// Type=notify kills the service at TimeoutStartSec (~90 s by default) unless it receives READY=1, and a
+/// unit with WatchdogSec kills it unless it receives periodic WATCHDOG=1. Without this the AP was being
+/// restarted on a fixed ~90 s cadence even though it was healthy. No-op when not launched by systemd
+/// (NOTIFY_SOCKET unset), so it is safe on Windows and under Type=simple/exec.
+/// </summary>
+internal static class SystemdNotifier
+{
+	public static void Notify(string state)
+	{
+		var socketPath = Environment.GetEnvironmentVariable("NOTIFY_SOCKET");
+		if (string.IsNullOrEmpty(socketPath))
+		{
+			return;
+		}
+
+		try
+		{
+			// systemd uses either a filesystem path or an abstract socket (leading '@' -> NUL byte).
+			var endpointPath = socketPath[0] == '@' ? "\0" + socketPath[1..] : socketPath;
+			using var socket = new Socket(AddressFamily.Unix, SocketType.Dgram, ProtocolType.Unspecified);
+			socket.Connect(new UnixDomainSocketEndPoint(endpointPath));
+			socket.Send(Encoding.UTF8.GetBytes(state));
+		}
+		catch (Exception ex) when (ex is SocketException or PlatformNotSupportedException or ArgumentException or InvalidOperationException)
+		{
+			AudioProcessorLog.Write("startup", $"systemd notify '{state}' failed (continuing): {ex.Message}");
+		}
+	}
+
+	/// <summary>The interval to ping WATCHDOG=1 (half of WATCHDOG_USEC, per systemd guidance), or null.</summary>
+	public static TimeSpan? GetWatchdogInterval()
+	{
+		if (long.TryParse(Environment.GetEnvironmentVariable("WATCHDOG_USEC"), out var micros) && micros > 0)
+		{
+			return TimeSpan.FromMilliseconds(micros / 1000.0 / 2.0);
+		}
+
+		return null;
+	}
+}
+
 internal sealed class AudioProcessorMqttApp : IAsyncDisposable
 {
 	private readonly MqttServiceRuntime _mqttRuntime;
@@ -73,6 +118,8 @@ internal sealed class AudioProcessorMqttApp : IAsyncDisposable
 	private readonly PeriodicTimer _statusHeartbeatTimer = new(TimeSpan.FromSeconds(5));
 
 	private Task? _statusHeartbeatTask;
+
+	private Task? _watchdogTask;
 
 	public AudioProcessorMqttApp()
 	{
@@ -109,6 +156,12 @@ internal sealed class AudioProcessorMqttApp : IAsyncDisposable
 			await _coordinator.StartAsync(cts.Token);
 			_statusHeartbeatTask = RunStatusHeartbeatAsync(cts.Token);
 			AudioProcessorLog.Write("startup", "Audio Processor basics ready.");
+
+			// Tell systemd we are up (Type=notify) and keep its watchdog fed (WatchdogSec); otherwise the
+			// unit kills and restarts us on a fixed timer even though we are healthy.
+			SystemdNotifier.Notify("READY=1");
+			_watchdogTask = RunSystemdWatchdogAsync(cts.Token);
+
 			await _mqttRuntime.RunUntilStoppedAsync(cts.Token);
 		}
 		finally
@@ -132,8 +185,42 @@ internal sealed class AudioProcessorMqttApp : IAsyncDisposable
 			}
 		}
 
+		if (_watchdogTask is not null)
+		{
+			try
+			{
+				await _watchdogTask.ConfigureAwait(false);
+			}
+			catch (OperationCanceledException)
+			{
+			}
+		}
+
 		await _coordinator.DisposeAsync();
 		await _mqttRuntime.DisposeAsync();
+	}
+
+	// Feeds the systemd watchdog (WATCHDOG=1) at half the configured WatchdogSec interval. No-op when the
+	// unit has no watchdog (WATCHDOG_USEC unset).
+	private async Task RunSystemdWatchdogAsync(CancellationToken cancellationToken)
+	{
+		var interval = SystemdNotifier.GetWatchdogInterval();
+		if (interval is null)
+		{
+			return;
+		}
+
+		try
+		{
+			using var timer = new PeriodicTimer(interval.Value);
+			while (await timer.WaitForNextTickAsync(cancellationToken).ConfigureAwait(false))
+			{
+				SystemdNotifier.Notify("WATCHDOG=1");
+			}
+		}
+		catch (OperationCanceledException)
+		{
+		}
 	}
 
 	private async Task RunStatusHeartbeatAsync(CancellationToken cancellationToken)
