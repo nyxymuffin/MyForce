@@ -227,7 +227,9 @@ internal sealed record ModuleRadioStateSpecPayload(
 	ZoneInfo? Zone,
 	string? Mode,
 	SignalInfo? Signal,
-	[property: JsonPropertyName("scan")] bool? Scan = null)
+	[property: JsonPropertyName("scan")] bool? Scan = null,
+	// Live per-function-button state keyed by button id (§3.10.1), e.g. {"power": {active:true}} -> red.
+	[property: JsonPropertyName("buttons")] IReadOnlyDictionary<string, ButtonStateSpecPayload>? Buttons = null)
 {
 	public static ModuleRadioStateSpecPayload Create(RadioRuntimeDefinition radio, RadioTxState state, bool rxActive, bool bridgeTxActive, RadioStateReport? report = null)
 	{
@@ -251,7 +253,12 @@ internal sealed record ModuleRadioStateSpecPayload(
 			Zone: report?.Zone,
 			Mode: report?.Mode,
 			Signal: report?.Signal,
-			Scan: report?.Scan);
+			Scan: report?.Scan,
+			// Forward live function-button states (e.g. Barrett power=high) to the UI (§3.10.1).
+			Buttons: report?.Buttons?.ToDictionary(
+				static entry => entry.Key,
+				static entry => new ButtonStateSpecPayload(entry.Value.Active, entry.Value.Enabled, entry.Value.Label),
+				StringComparer.OrdinalIgnoreCase));
 	}
 
 	// The 4W radio resource's single static channel (index 1), labelled from its "channel1_alias" setting.
@@ -267,6 +274,12 @@ internal sealed record ModuleRadioStateSpecPayload(
 		return new ChannelInfo(1, string.IsNullOrWhiteSpace(alias) ? "4W" : alias);
 	}
 }
+
+// Live function-button state serialized into the module state's "buttons" map (§3.10.1).
+internal sealed record ButtonStateSpecPayload(
+	[property: JsonPropertyName("active")] bool? Active,
+	[property: JsonPropertyName("enabled")] bool? Enabled,
+	[property: JsonPropertyName("label")] string? Label);
 
 internal sealed record ConsoleTxStatePayload(
 	int V,

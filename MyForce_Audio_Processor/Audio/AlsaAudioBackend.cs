@@ -188,14 +188,48 @@ internal sealed class AlsaAudioBackend : IAudioBackend
 		}
 	}
 
+	/// <summary>
+	/// Translates a configured device id into an ALSA PCM name that can actually be opened on this host:
+	///   - "alsa:hw:card,device"  -> raw ALSA "hw:card,device" (operator picked real hardware).
+	///   - PipeWire/Pulse node    -> the ALSA->PipeWire bridge "pulse" PCM, targeting the specific node via
+	///     PULSE_SINK/PULSE_SOURCE (raw node names like "alsa_input.usb-..." are NOT valid ALSA PCMs, which
+	///     is why opening them directly failed and radio RX was never heard).
+	///   - synthetic/logical name -> "default" (routes to the PipeWire default device).
+	/// Returns the ALSA name plus an optional env var/value to set across the open so the bridge selects the
+	/// intended node.
+	/// </summary>
+	private static (string AlsaName, string? EnvVar, string? EnvValue) ResolveAlsaTarget(string deviceId, bool isCapture)
+	{
+		if (deviceId.StartsWith("alsa:", StringComparison.OrdinalIgnoreCase))
+		{
+			return (deviceId["alsa:".Length..], null, null);
+		}
+
+		if (deviceId.StartsWith("alsa_", StringComparison.OrdinalIgnoreCase)
+			|| deviceId.StartsWith("bluez", StringComparison.OrdinalIgnoreCase)
+			|| deviceId.Contains('.'))
+		{
+			return ("pulse", isCapture ? "PULSE_SOURCE" : "PULSE_SINK", deviceId);
+		}
+
+		return ("default", null, null);
+	}
+
 	private void TryOpenPort(AlsaPort port)
 	{
+		var (alsaName, envVar, envValue) = ResolveAlsaTarget(port.DeviceId, port.StreamType == SND_PCM_STREAM_CAPTURE);
+		var previousEnv = envVar is null ? null : Environment.GetEnvironmentVariable(envVar);
+		if (envVar is not null)
+		{
+			Environment.SetEnvironmentVariable(envVar, envValue);
+		}
+
 		try
 		{
-			var result = snd_pcm_open(out var handle, port.DeviceId, port.StreamType, 0);
+			var result = snd_pcm_open(out var handle, alsaName, port.StreamType, 0);
 			if (result < 0 || handle == IntPtr.Zero)
 			{
-				_log("engine", $"ALSA could not open '{port.DeviceId}' ({DescribeStream(port.StreamType)}): {DescribeError(result)}. Port marked Unavailable.");
+				_log("engine", $"ALSA could not open '{port.DeviceId}' (as '{alsaName}'{(envVar is null ? string.Empty : $", {envVar}={envValue}")}, {DescribeStream(port.StreamType)}): {DescribeError(result)}. Port marked Unavailable.");
 				return;
 			}
 
@@ -216,7 +250,7 @@ internal sealed class AlsaAudioBackend : IAudioBackend
 			}
 
 			port.Handle = handle;
-			_log("engine", $"ALSA opened '{port.DeviceId}' ({DescribeStream(port.StreamType)}).");
+			_log("engine", $"ALSA opened '{port.DeviceId}' (as '{alsaName}', {DescribeStream(port.StreamType)}).");
 			DeviceHotplug?.Invoke(this, new AudioDeviceHotplugEventArgs(port.DeviceId, true));
 		}
 		catch (DllNotFoundException)
@@ -226,6 +260,14 @@ internal sealed class AlsaAudioBackend : IAudioBackend
 		catch (Exception ex) when (ex is not OutOfMemoryException)
 		{
 			_log("engine", $"ALSA open for '{port.DeviceId}' threw: {ex.Message}.");
+		}
+		finally
+		{
+			// Restore the global env we borrowed to target a specific PipeWire node for this open.
+			if (envVar is not null)
+			{
+				Environment.SetEnvironmentVariable(envVar, previousEnv);
+			}
 		}
 	}
 

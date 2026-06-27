@@ -1295,7 +1295,8 @@
                                                   <Border Classes="buttonFrame" PointerPressed="OnRadioFunctionButtonPressed" IsEnabled="{Binding IsEnabled}" IsVisible="{Binding ShowNormal}">
                                                       <Viewbox Stretch="Uniform" Margin="2"><TextBlock Classes="white" TextAlignment="Center" VerticalAlignment="Center" Text="{Binding Label}" /></Viewbox>
                                                   </Border>
-                                                  <Border Classes="buttonFrame active" PointerPressed="OnRadioFunctionButtonPressed" IsEnabled="{Binding IsEnabled}" IsVisible="{Binding ShowActive}">
+                                                  <!-- Active face renders RED (#CE2029): the Barrett power button reports active while on high power. -->
+                                                  <Border Classes="buttonFrame active" BorderBrush="#CE2029" Background="#55CE2029" PointerPressed="OnRadioFunctionButtonPressed" IsEnabled="{Binding IsEnabled}" IsVisible="{Binding ShowActive}">
                                                       <Viewbox Stretch="Uniform" Margin="2"><TextBlock Classes="white" TextAlignment="Center" VerticalAlignment="Center" Text="{Binding Label}" /></Viewbox>
                                                   </Border>
                                               </Grid>

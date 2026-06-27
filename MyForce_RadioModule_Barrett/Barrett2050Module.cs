@@ -74,6 +74,9 @@ public sealed class Barrett2050Module : IRadioModule, IKeyingProvider
 	// show the same label the channel picker uses.
 	private readonly Dictionary<int, string> _channelRxLabels = new();
 
+	// Latest polled power level (true = high). Drives the UI power button red state.
+	private bool _highPower;
+
 	private readonly IModuleHost _host;
 
 	private JsonNode _config = new JsonObject();
@@ -461,7 +464,7 @@ public sealed class Barrett2050Module : IRadioModule, IKeyingProvider
 			_channelsReported = true;
 		}
 
-		// Current channel (IC, 4-digit channel number) + scan state (IS: Y/N) for the operating display.
+		// Current channel (IC, 4-digit channel number).
 		var channelText = await _link.SendAsync("IC", cancellationToken).ConfigureAwait(false);
 		ChannelInfo? channel = int.TryParse(channelText.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var channelNumber)
 			? new ChannelInfo(channelNumber, _channelRxLabels.TryGetValue(channelNumber, out var rxLabel) ? rxLabel : null)
@@ -471,8 +474,21 @@ public sealed class Barrett2050Module : IRadioModule, IKeyingProvider
 			_lastChannel = channel.Index;
 		}
 
-		var scanText = await _link.SendAsync("IS", cancellationToken).ConfigureAwait(false);
-		bool? scanning = scanText.Trim().ToUpperInvariant() switch { "Y" => true, "N" => false, _ => (bool?)null };
+		// Scan state: "LS" -> Y = scanning, N or E0 = not scanning.
+		var scanText = await _link.SendAsync("LS", cancellationToken).ConfigureAwait(false);
+		bool? scanning = ParseScanState(scanText);
+
+		// Power level: "LH" -> L = low, H = high, M = medium. We never run at medium: if the radio reports
+		// M, force high (EHH) and re-read so the state reflects the corrected level. The UI shows the power
+		// button red when high.
+		var power = ParsePowerLevel(await _link.SendAsync("LH", cancellationToken).ConfigureAwait(false));
+		if (power == 'M')
+		{
+			await _link.SendAsync("EHH", cancellationToken).ConfigureAwait(false);
+			power = ParsePowerLevel(await _link.SendAsync("LH", cancellationToken).ConfigureAwait(false));
+		}
+
+		_highPower = power == 'H';
 
 		_host.ReportState(new RadioStateReport(
 			Channel: channel,
@@ -480,7 +496,51 @@ public sealed class Barrett2050Module : IRadioModule, IKeyingProvider
 			Mode: null,
 			Signal: null,
 			Ready: true,
-			Scan: scanning));
+			Scan: scanning,
+			Buttons: BuildButtonStates()));
+	}
+
+	// Live function-button states reported with every state update: the power button is "active" (red in the
+	// UI) while the radio is on high power.
+	private IReadOnlyDictionary<string, RadioButtonStateReport> BuildButtonStates()
+		=> new Dictionary<string, RadioButtonStateReport> { ["power"] = new RadioButtonStateReport(Active: _highPower) };
+
+	// "LS" scan reply: Y = scanning; N or E0 (or anything else) = not scanning. Tolerates an "LS" echo.
+	private static bool? ParseScanState(string reply)
+	{
+		var r = reply.Trim().ToUpperInvariant();
+		if (r.StartsWith("LS", StringComparison.Ordinal))
+		{
+			r = r[2..].Trim();
+		}
+
+		if (r.StartsWith("Y", StringComparison.Ordinal))
+		{
+			return true;
+		}
+
+		return r.Length == 0 ? (bool?)null : false;
+	}
+
+	// "LH" power reply -> 'H' (high), 'L' (low), 'M' (medium), or '?' (unknown/error). Tolerates an "LH"
+	// echo prefix (e.g. "LHH").
+	private static char ParsePowerLevel(string reply)
+	{
+		var r = reply.Trim().ToUpperInvariant();
+		if (r.StartsWith("LH", StringComparison.Ordinal))
+		{
+			r = r[2..].Trim();
+		}
+
+		foreach (var c in r)
+		{
+			if (c is 'H' or 'L' or 'M')
+			{
+				return c;
+			}
+		}
+
+		return '?';
 	}
 
 	// Reads the radio's current channel (IC) and reports it, so the UI shows the tuned channel immediately
@@ -506,7 +566,8 @@ public sealed class Barrett2050Module : IRadioModule, IKeyingProvider
 				Zone: null,
 				Mode: null,
 				Signal: null,
-				Ready: true));
+				Ready: true,
+				Buttons: BuildButtonStates()));
 		}
 		catch (Exception ex) when (ex is IOException or TimeoutException or InvalidOperationException)
 		{

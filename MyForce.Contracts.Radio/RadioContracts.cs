@@ -27,7 +27,8 @@ public static class RadioContract
 {
 	// v2: added module function buttons + console-scoped menus (§3.10, framework v2.8).
 	// v3: added IModuleHost.ReportChannels so RMs can pull/report their channel list (§3.11/§5.3).
-	public const int Version = 3;
+	// v4: added live per-button state to RadioStateReport.Buttons (§3.10.1, e.g. power=high -> active).
+	public const int Version = 4;
 }
 
 /// <summary>
@@ -258,7 +259,13 @@ public sealed record RadioStateReport(
 	SignalInfo? Signal,
 	bool? Ready,
 	// Whether the radio is currently scanning, when the radio reports it (null = unknown).
-	bool? Scan = null);
+	bool? Scan = null,
+	// Live per-function-button state keyed by button id (§3.10.1): e.g. {"power": {Active=true}} renders
+	// the power button active/red in the UI. Null = no button-state update in this report.
+	IReadOnlyDictionary<string, RadioButtonStateReport>? Buttons = null);
+
+/// <summary>Live state for one declared function button (§3.10.1): active/toggled, enabled, dynamic label.</summary>
+public sealed record RadioButtonStateReport(bool? Active = null, bool? Enabled = null, string? Label = null);
 
 /// <summary>
 /// Describes a channel identity reported by a radio module.
