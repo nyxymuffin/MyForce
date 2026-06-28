@@ -71,6 +71,15 @@ public sealed class Barrett2050Module : IRadioModule, IKeyingProvider
 	private const int ChannelPollEveryTicks = 6;
 	private int _pollTick;
 
+	// While scan is ON the radio hops channels on its own, so the slow 60s IC poll leaves the UI showing a
+	// stale channel. We run a dedicated watch that reads the current channel (IC) every 15s and pushes the
+	// change to the UI only while scanning; when scan turns OFF we do one final IC read so the display settles
+	// on the channel the radio parked on (per operator request).
+	private static readonly TimeSpan ScanChannelPollInterval = TimeSpan.FromSeconds(15);
+	private bool _scanning;
+	private CancellationTokenSource? _scanWatchCts;
+	private Task? _scanWatchTask;
+
 	// Pull the channel list once the radio first answers; re-pulled on the channel_info control.
 	private bool _channelsReported;
 
@@ -135,6 +144,10 @@ public sealed class Barrett2050Module : IRadioModule, IKeyingProvider
 
 	public async Task StopAsync(CancellationToken cancellationToken)
 	{
+		// Stop the scan channel watch first so it doesn't issue IC reads against a closing link.
+		StopScanChannelWatch();
+		_scanning = false;
+
 		if (_lifetime is not null)
 		{
 			await _lifetime.CancelAsync().ConfigureAwait(false);
@@ -347,13 +360,16 @@ public sealed class Barrett2050Module : IRadioModule, IKeyingProvider
 
 		var scanText = await _link.SendAsync("IS", cancellationToken).ConfigureAwait(false);
 		_host.Log(LogLevel.Info, $"Barrett 2050 IS (after scan cmd) -> '{scanText.Trim()}'");
+		var scanState = ParseScanState(scanText);
+		// Start/stop the 15s current-channel watch off this fresh scan state (and re-read the channel on stop).
+		HandleScanStateChange(scanState);
 		_host.ReportState(new RadioStateReport(
 			Channel: CurrentChannelInfo(),
 			Zone: null,
 			Mode: null,
 			Signal: null,
 			Ready: true,
-			Scan: ParseScanState(scanText),
+			Scan: scanState,
 			Buttons: BuildButtonStates()));
 	}
 
@@ -511,6 +527,87 @@ public sealed class Barrett2050Module : IRadioModule, IKeyingProvider
 		}
 	}
 
+	// ── Scan channel watch ────────────────────────────────────────────────────────────────
+
+	// Reacts to a freshly observed scan state (from a poll or a scan command). On a transition to scanning it
+	// starts the 15s current-channel watch; on a transition to not-scanning it stops the watch and does one
+	// final IC read so the UI lands on the channel the radio parked on. A null (unknown) state is ignored so a
+	// single dropped IS reply doesn't tear the watch down.
+	private void HandleScanStateChange(bool? scanning)
+	{
+		if (scanning is not bool isScanning || isScanning == _scanning)
+		{
+			return;
+		}
+
+		_scanning = isScanning;
+		if (isScanning)
+		{
+			StartScanChannelWatch();
+		}
+		else
+		{
+			StopScanChannelWatch();
+			// Scan just stopped: confirm and display the channel the radio settled on (fire-and-forget on the
+			// module lifetime, not a command token that may be cancelled when the originating call returns).
+			_ = ReportCurrentChannelAsync(_lifetime?.Token ?? CancellationToken.None);
+		}
+	}
+
+	// Spawns the 15s watch loop (cancellable via its own CTS, linked to the module lifetime). Idempotent: any
+	// existing watch is cancelled first.
+	private void StartScanChannelWatch()
+	{
+		StopScanChannelWatch();
+		var lifetime = _lifetime?.Token ?? CancellationToken.None;
+		_scanWatchCts = CancellationTokenSource.CreateLinkedTokenSource(lifetime);
+		var token = _scanWatchCts.Token;
+		_scanWatchTask = Task.Run(() => ScanChannelWatchLoopAsync(token), CancellationToken.None);
+	}
+
+	// Cancels and clears the scan channel watch (safe to call when none is running).
+	private void StopScanChannelWatch()
+	{
+		if (_scanWatchCts is not null)
+		{
+			try
+			{
+				_scanWatchCts.Cancel();
+			}
+			catch (ObjectDisposedException)
+			{
+			}
+
+			_scanWatchCts.Dispose();
+			_scanWatchCts = null;
+		}
+
+		_scanWatchTask = null;
+	}
+
+	// While scanning, read the current channel (IC) every 15s and report it so the UI tracks the radio's
+	// channel hops. The Barrett link serialises commands internally, so this interleaves safely with the
+	// status poll loop.
+	private async Task ScanChannelWatchLoopAsync(CancellationToken cancellationToken)
+	{
+		while (!cancellationToken.IsCancellationRequested)
+		{
+			try
+			{
+				await Task.Delay(ScanChannelPollInterval, cancellationToken).ConfigureAwait(false);
+				await ReportCurrentChannelAsync(cancellationToken).ConfigureAwait(false);
+			}
+			catch (OperationCanceledException)
+			{
+				return;
+			}
+			catch (Exception ex) when (ex is IOException or TimeoutException or InvalidOperationException)
+			{
+				_host.Log(LogLevel.Debug, $"Barrett 2050 scan channel watch error: {ex.Message}");
+			}
+		}
+	}
+
 	// ── State polling ─────────────────────────────────────────────────────────────────────
 
 	private async Task PollLoopAsync(CancellationToken cancellationToken)
@@ -577,6 +674,8 @@ public sealed class Barrett2050Module : IRadioModule, IKeyingProvider
 		// Scan state: "IS" -> Y = scanning, N or E0 = not scanning.
 		var scanText = await SendLoggedAsync("IS", cancellationToken).ConfigureAwait(false);
 		bool? scanning = ParseScanState(scanText);
+		// Start/stop the 15s current-channel watch on a scan on/off transition (re-reads the channel on stop).
+		HandleScanStateChange(scanning);
 
 		// Power level: "IH" -> L = low, H = high, M = medium. We never run at medium: if the radio reports
 		// M, force high (EHH) and re-read so the state reflects the corrected level. UI shows red when high.
@@ -602,6 +701,9 @@ public sealed class Barrett2050Module : IRadioModule, IKeyingProvider
 		if (!online)
 		{
 			_channelsReported = false;   // re-pull the channel list when it comes back
+			// Radio is unreachable: tear down the scan channel watch (no point polling IC on a dead link).
+			StopScanChannelWatch();
+			_scanning = false;
 			_host.ReportState(new RadioStateReport(Channel: null, Zone: null, Mode: null, Signal: null, Ready: false));
 			return;
 		}
